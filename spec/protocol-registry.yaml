@@ -27,7 +27,12 @@ objects:
     status_note: implemented in Wave 2 (R1-004); cross-language conformance (Rust + TypeScript + Python byte-exact over the vectors) held by reference/conformance (R1-003)
   - name: Advertisement
     class: wire
-    maturity: foundation
+    maturity: in-implementation
+    implementation: reference/crates/sharenet-protocol (advertisement.rs)
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: node_identity (NodeIdentity map of the announcer), 3: capabilities (optional bstr: SignedCapabilityStatement carrying-envelope bytes), 4: transports (array of transport descriptors, each a map {1: kind (text; frozen initial set: udp, nearby, wifi_aware, quic), 2: endpoint (text, kind-specific, e.g. "host:port" for udp)}; non-empty, strictly ascending bytewise by (kind, endpoint) so exactly one byte image exists per logical advertisement), 5: issued_at_unix (uint), 6: expires_at_unix (uint, > issued_at; window bounded by AD_MAX_WINDOW = 600s)}
+    signature_rule: detached Ed25519 signature by the announcer's key over the exact canonical advertisement bytes; carrying envelope = canonical CBOR {1: advertisement (bstr), 2: signature (64-byte bstr)}; advertisement_id = SHA-256(canonical advertisement bytes) — content-derived, caller-selected IDs forbidden
+    verification_rule: receivers verify (in order) strict parse, signature against the embedded node_identity's key, freshness (issued_at <= now < expires_at), window bound (expires_at - issued_at <= 600), and optional capability envelope admission (binding + signature under the same identity); replayed identical advertisements are idempotent (dedup by advertisement_id) — retransmission is expected on broadcast transports; a CHANGED advertisement from the same node_id supersedes the cached one only if strictly fresher (issued_at greater)
+    status_note: implementation scheduled as R3-002 (Wave 4); discovery is control-plane state built on authenticated identity (R1-001), capability admission (R1-004) and authenticated links (R3-001) — the advertisement itself is the announcement that makes a node discoverable at transport endpoints
   - name: LinkAuthentication
     class: wire
     maturity: implemented

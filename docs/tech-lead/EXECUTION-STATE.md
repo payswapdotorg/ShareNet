@@ -858,14 +858,59 @@ Architect decision — see Open Architect Decisions).
   wasm32 protocol check green, conformance harness PASS (177 lines),
   Android :vpn 67/67 + AAR, governance PASS.
 
+### R5-004 — Signed observations — COMPLETE (Wave 10)
+
+- Registry: SignedConnectivityObservation pre-registered (187018f)
+  BEFORE implementation; maturity → implemented at integration.
+- `reference/crates/sharenet-protocol/src/connectivity_evidence.rs`:
+  the wire object per the registry schema — provider-signed connectivity
+  observation (the frozen six machine names shared with the connectivity
+  domain, sequence >= 1 strictly increasing per (provider, contract),
+  optional integer execution map, provider NodeIdentity with R1-001
+  derivation). Ed25519 detached signature over exact canonical bytes;
+  CapabilityStatement-style carrying envelope. ObservationAdmission = the
+  R5-003 store's trust boundary as code: strict parse + identity
+  derivation + signature + known-contract rule + sequence advance + the
+  ACCEPTING node's freshness window (caller-supplied clock). Trust
+  boundary honesty in the module docs: attests neither ShareNet packet
+  delivery nor provider fulfillment.
+- Tests: 8 unit + 12 adversarial (per-field tamper, foreign key,
+  replay/regression, cross-contract confusion, envelope confusion,
+  execution-map violations, non-canonical encodings) — reference
+  168/0 (was 148). connectivity_evidence_vectors.json + all three
+  conformance legs — harness now 218 byte-identical lines (was 177).
+- Integration with the real stack: adcos_test_server produces SIGNED
+  evidence (provider identity); AdcosClient verifies via the protocol
+  core BEFORE anything reaches the connectivity domain;
+  tests/signed_observations.rs — verified observations reach the
+  R5-003 DurableProjectionStore and survive the restart; unsigned/
+  rewritten observations refused typed and NEVER enter the store;
+  freshness edges + unknown-contract rule over the real wire —
+  connectivity-client 50/50 (was 42).
+- connectivity/src/ UNTOUCHED (ADR-001 intact — the trust boundary is
+  the adapter-side verification, documented in both READMEs).
+- wasm32 green; governance PASS. Implemented by a dispatched subagent
+  that died at its context deadline with the work complete-but-
+  uncommitted; Tech Lead verified all suites independently, fixed the
+  registry kind vocabulary to the frozen machine names, committed
+  d32dcae, merged d5b744f.
+
+## Wave 10 integration record (2026-09-15)
+
+- Single-item wave: R5-004 (registry pre-registration 187018f →
+  implementation d32dcae → merge d5b744f → registry maturity +
+  EXECUTION-STATE this commit).
+- Fresh audit on merged main: reference 168/0, connectivity 50/0,
+  connectivity-client 50/0, linux 61/61, quic 9/9, ice 62/62,
+  telemetry 35/0, wasm32 green, conformance harness PASS (218 lines),
+  Android :vpn 67/67 + AAR, governance PASS.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 10 (READY): R5-004 (signed observations — predecessors R5-002,
-  R5-003 COMPLETE).
-- Wave 11 becomes READY next: R5-005 (gateway admission/backhaul
-  policy — R3-003 ✓, R5-003 ✓, R5-004 pending), R6-001 (content
-  addressing — R3-004 ✓, R4-002 ✓), R7-001 (failure detector —
-  R4-002 ✓).
+- Wave 11 (all three READY, three-way parallel): R5-005 (gateway
+  admission/backhaul policy — R3-003 ✓, R5-003 ✓, R5-004 ✓), R6-001
+  (content addressing/manifests — R3-004 ✓, R4-002 ✓), R7-001
+  (failure detector/revocation — R4-002 ✓).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

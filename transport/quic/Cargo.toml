@@ -1,0 +1,27 @@
+[package]
+name = "sharenet-transport-quic"
+description = "ShareNet QUIC/TLS tunnel transport (R4-001): node-identity-pinned QUIC endpoints carrying tunnel sessions (platform adapter layer; the protocol core stays dependency-light)."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_transport_quic"
+path = "src/lib.rs"
+
+# TEST SCAFFOLDING binary: a real second process for the multiprocess tests
+[[bin]]
+name = "sharenet_quic_peer"
+path = "src/bin/sharenet_quic_peer.rs"
+
+[dependencies]
+sharenet-protocol = { path = "../../reference/crates/sharenet-protocol" }
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["zeroize"] }
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rcgen = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "io-util"] }
+x509-parser = "0.16"

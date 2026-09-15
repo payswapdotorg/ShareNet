@@ -16,6 +16,7 @@ ShareNet that knows what an ADCOS request or response looks like.
 | Transport | `src/transport.rs` | std-TCP exchange with connect/read timeouts and a deliberate retry policy: transport failures (connect) retry; a request whose bytes were SENT is never blindly retried (a dropped POST may have been applied server-side — the safe choice); status errors surface to the caller instead of being retried semantically. |
 | Wire shapes | `src/wire.rs` | The endpoint table + DTOs + the error envelope: `{"error":{"code":"<PortError machine name>", ...typed fields}}` — the parent crate's stable machine names ARE the wire error vocabulary. Code↔status pairing is enforced (a mismatch is typed `CodeStatusMismatch`). |
 | `adcos_test_server` | `src/bin/…` | **TEST SCAFFOLDING**: a real HTTP server speaking exactly this wire shape, backed by a deterministic in-memory store, with injectable fault modes (`503:N`, `drop:N`, `garbage:N`). |
+| `projection_store_probe` | `src/bin/…` | **TEST SCAFFOLDING** (R5-003): a real separate process that loads the parent crate's durable projection store from disk (`inspect`), reports the re-derived state + typed freshness, and continues the projection (`accept` + atomic flush) — the process-boundary half of the restart verification. Machine-parsable stdout lines; typed `ERROR <machine_name>` + exit 3 on any store failure. |
 
 ## Endpoint table (the adapter's documented mapping)
 
@@ -52,14 +53,18 @@ typed `RefKindMismatch`, never silently re-typed).
 
 ## Persistence
 
-**None.** The client is runtime state; the ADCOS server holds the
-contract truth (ADR-001: ShareNet holds only references + projections).
+**None of its own** — and that is the division of labor: the client is
+runtime state; the ADCOS server holds the contract truth (ADR-001).
+The DURABLE local health projection is the parent crate's `store` module
+(R5-003, `sharenet_connectivity::DurableProjectionStore`); this crate's
+integration suite is the first place where the real client, the real test
+server and that store are wired together across process restarts.
 
 ## Build and test
 
 ```bash
 cd connectivity-client
-cargo test    # 33 unit (codec bytes, wire shapes, error tables) + 7 integration
+cargo test    # 33 unit (codec bytes, wire shapes, error tables) + 9 integration
 cargo check --target wasm32-unknown-unknown
 ```
 
@@ -68,7 +73,13 @@ The integration tests run the REAL `AdcosClient` against the REAL
 the 503-with-cached-freshness semantics, dropped connections (typed
 failure, never fabrication), garbage bodies (typed malformed on the
 inherent surface), parallel clients, unknown-ref typing, and the
-terminate idempotence.
+terminate idempotence. `tests/durable_restart.rs` (R5-003) adds the
+restart battery: the real client feeds observations into the parent
+crate's durable store, the ShareNet side is fully torn down and reloaded
+from disk — once through the `projection_store_probe` CHILD PROCESS, once
+in-process — proving state restored, staleness typed (`Fresh`/`Stale`,
+original freshness metadata never re-anchored), no sequence regression
+across the restart, and terminate idempotence preserved.
 
 ## Known limits (honest)
 
@@ -80,3 +91,8 @@ terminate idempotence.
 - No DNS: the endpoint is a socket address (documented).
 - One request per connection (Connection: close) — keep-alive is a
   future optimization, not a correctness need.
+- The durable-restart tests model the provider as SURVIVING the ShareNet
+  restart (its state is its own concern — one server stays up across the
+  epochs; the killed-provider case is covered by the 503/dead-address
+  outage phase plus a reload that needs no provider at all). A real
+  ADCOS provider restart is out of sandbox scope.

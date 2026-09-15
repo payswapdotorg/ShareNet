@@ -18,8 +18,13 @@ objects:
     status_note: implemented in Wave 1 (R1-001); schema recorded at Tech Lead integration from the verified implementation; cross-language vectors consumed by R1-003 in Wave 2
   - name: CapabilityStatement
     class: wire
-    maturity: planned
-    status_note: scheduled for R1-004 (Wave 2); schema direction — canonical CBOR map {1: scheme_version (=1, uint), 2: node_id (32-byte bstr, MUST match the Ed25519 signing key per the R1-001 derivation), 3: capabilities (array of text; initial set: gateway, relay, dtn_custodian, infrastructure), 4: issued_at_unix (uint), 5: expires_at_unix (uint, > issued_at), 6: limits (optional map of text -> int)}; Ed25519 detached signature by the node key over the canonical encoding; admission = signature + node_id binding + expiry window + capability lookup; no caller-controlled trust booleans
+    maturity: implemented
+    implementation: reference/crates/sharenet-protocol (capability.rs)
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: node_id (32-byte bstr, MUST match the Ed25519 signing key per the R1-001 derivation), 3: capabilities (array of text; strictly ascending bytewise order of the frozen initial set: dtn_custodian, gateway, infrastructure, relay; non-empty, no duplicates), 4: issued_at_unix (uint), 5: expires_at_unix (uint, > issued_at), 6: limits (optional map of text -> int; at most 32 entries, keys 1..=64 bytes)}
+    signature_rule: Ed25519 detached signature by the node key over the exact canonical statement bytes; carrying envelope = canonical CBOR map {1: statement (bstr), 2: signature (64-byte bstr)}
+    admission_rule: admission = strict parse + node_id binding + strict signature verification + (issued_at <= now < expires_at) + capability lookup; no caller-controlled trust booleans
+    conformance_vectors: reference/crates/sharenet-protocol/tests/vectors/capability_vectors.json
+    status_note: implemented in Wave 2 (R1-004); cross-language conformance (Rust + TypeScript + Python byte-exact over the vectors) held by reference/conformance (R1-003)
   - name: Advertisement
     class: wire
     maturity: foundation

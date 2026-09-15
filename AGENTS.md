@@ -17,6 +17,8 @@ Before architecture claims or implementation:
 4. inspect tests and production wiring;
 5. distinguish implementation from integration and verification.
 
+Execution scheduling authority is `spec/work-items.yaml` + `spec/roadmap.yaml`, with the detailed orchestration rules in `docs/tech-lead/SHARENET-ORCHESTRATOR-HANDOFF.md`.
+
 ## Architecture law
 
 Security-critical facts must be derived from authenticated protocol state, cryptographic evidence, and durable state. Never accept caller-controlled security booleans when the fact can be derived.
@@ -30,6 +32,10 @@ Security-critical facts must be derived from authenticated protocol state, crypt
 - ShareNet must continue local/offline operation when ADCOS is unreachable.
 - No second source of truth for ADCOS `ConnectivityContract`.
 - No second source of truth for ShareNet circuit terminal state.
+
+## Worker model
+
+Maximum three direct workers. Never force parallelism where dependencies or authority conflicts exist. Work items are atomic and dependency-declared. Every worker assignment must specify scope, predecessors, production caller, verification level, adversarial tests, and closure predicate.
 
 ## Implementation discipline
 

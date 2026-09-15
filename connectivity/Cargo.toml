@@ -1,0 +1,19 @@
+[package]
+name = "sharenet-connectivity"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet ADCOS boundary (R5-001): the ConnectivityPort trait, opaque capability references, read-only contract/execution projections, provider observations and ADCOS-unavailable failure semantics. Boundary layer — no protocol-core dependency, no async runtime, std only."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_connectivity"
+path = "src/lib.rs"
+
+[dependencies]
+# Intentionally empty. This crate is the independently freezable ADCOS boundary:
+# no dependency on the protocol core (reference/), no async runtime, no provider
+# SDKs (architecture lock L006), std only. `cargo check --target
+# wasm32-unknown-unknown` (mirroring the L007 discipline of the protocol core)
+# proves the platform independence.

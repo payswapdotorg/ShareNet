@@ -420,13 +420,153 @@ Architect decision — see Open Architect Decisions).
   node-identity-pinned QUIC + TLS 1.3 with opaque length-framed
   sessions.
 
+### R4-002 — Route-to-circuit binding — COMPLETE (Wave 7)
+
+- `reference/crates/sharenet-protocol/src/circuit.rs`: the four circuit
+  wire objects per the registry schemas — CircuitSetup (initiator MUST
+  be the route proposal's proposer; the embedded RouteCommitment is
+  FULLY verified at admission per R3-004; single-use (route_id,
+  setup_nonce)), CircuitSetupAck (setup-digest bound to the exact setup
+  bytes; accepting identity MUST be path[position]; exactly-once per
+  position — a circuit is ESTABLISHED on full position coverage,
+  mirroring the R3-004 rule; acks cannot outlive their setup),
+  CircuitFrame (direction 1|2 with per-direction strictly monotonic
+  seq from 0 — the L014 replay namespace; opaque payload 1..=2 MiB),
+  CircuitDestroy (any path member; frozen reason set link_failure/
+  policy/completed/replaced; terminal forever, idempotent duplicates).
+- circuit_id = SHA-256("sharenet-circuit-id-v1" || route_id ||
+  setup_nonce) — commitment-derived through the verified route_id (L013
+  discipline), fresh per nonce: a replacement circuit is genuinely
+  new with a fresh replay namespace (L014), and a destroyed circuit is
+  never resurrected (§11).
+- Integrity model (per architecture §9 + ADR-002): frames are NOT
+  individually signed — hop-by-hop integrity comes from the carrying
+  layers (R3-001 AEAD links / R4-001 pinned QUIC), end-to-end payload
+  integrity is R6 content addressing. The frame wire carries binding +
+  ordering only. Documented in the registry integrity_rule.
+- Verification achieved: unit (4: happy path incl. destroy terminality,
+  replacement freshness, non-proposer refusal at construction AND
+  admission, replay-namespace enforcement) + adversarial (12: tampered
+  setup/ack signatures, commitment tamper inside the setup, nonce
+  single-use incl. re-signed fresh bytes, freshness edges, position
+  forgery, outsider acks, digest confusion, double-take, ack-outlives-
+  setup, frame replay/gap/cross-circuit confusion, destroy membership
+  gating + terminal enforcement, strict wire rejects) + conformance
+  (circuit_vectors.json: 3 full deterministic flows rebuilt byte-exactly
+  by Rust, TypeScript and Python legs incl. the admission replay —
+  harness now 177 byte-identical lines). Full sweep: 148 workspace
+  tests 0 failed; wasm32 protocol check green; governance PASS.
+- Production callers: the CircuitRegistry admission pipeline is the
+  seam R4-003 (Linux gateway forwarding) and R4-004 (Android
+  VpnService) consume to run live data planes over committed routes.
+- Persistence: none — runtime verification state (durable circuit
+  state is R4-003/R4-004/R7 scope).
+
+### R4-005 — ICE/TURN — COMPLETE (Wave 7)
+
+- `transport/ice` crate `sharenet-transport-ice`: the NAT-traversal /
+  relay layer per L011 (standard STUN/TURN/ICE concepts reused, no
+  bespoke NAT protocol) and L012 (relays forward opaque end-to-end
+  traffic).
+- STUN (RFC 5389 subset): strict codec (magic cookie, 96-bit
+  transaction ids, method/class bit encoding, TLV attributes with
+  alignment, XOR-MAPPED-ADDRESS, SOFTWARE) + UDP client with
+  exact-transaction-id response matching (mismatched responses
+  discarded — adversarially verified), 3-attempt retry, fail-closed on
+  malformed responses.
+- Candidates (RFC 8445 concepts): Host/ServerReflexive/Relayed with
+  the standard priority and foundation formulas, gathering,
+  priority-ordered pairing, connectivity checks. No agent nomination
+  (documented: R4-006/R4-007 scope).
+- TURN-style relay (RFC 8656 concepts over UDP): per-5-tuple
+  allocations (identical-nonce retransmission → byte-identical
+  response; new nonce → 437 allocation mismatch, verified), relayed
+  addresses forwarding OPAQUE datagrams (never parsed — L012),
+  permission-lite activation; TEST/LOCAL control framing documented
+  (no TURN auth — R4-006 scope).
+- QUIC integration (R4-001 composition): bridge::tunnel_connect — a
+  gathered candidate is the ADDRESS source for a node-pinned QUIC
+  tunnel; a full pinned tunnel rides the relay transparently
+  (multiprocess-verified).
+- Verification achieved: unit (33: hand-computed codec vectors incl.
+  the RFC 5389 worked example, strict rejects, formulas) + multiprocess
+  + adversarial (11: STUN vs a real stun_server process; wrong-txid
+  responses ignored; fail-closed evil responses with exact typed
+  errors; opaque echo through the real relay; three candidate types
+  with RFC 8445 priorities; a node-pinned QUIC tunnel through the
+  relay; wrong pin fails closed while the relay survives; duplicate
+  allocation rules; malformed datagrams forwarded opaquely; adversarial
+  control frames survived). transport/quic 9/9 no regression.
+- Honest limits (documented in the README): local STUN/TURN servers in
+  evidence (sandbox cannot reach external ones — real-network shapes
+  are R4-007/R10); no TURN authentication (R4-006); no full ICE agent;
+  simplified relay permissions.
+- Persistence: none.
+
+### R5-001 — ConnectivityPort — COMPLETE (Wave 7)
+
+- `connectivity` crate `sharenet-connectivity`: the ADCOS boundary per
+  ADR-001 and spec/integrations/adcos.md — ZERO dependencies (std-only,
+  no protocol-core dep, no async runtime): independently freezable as
+  the architecture check enforces.
+- ConnectivityPort trait = exactly the adcos.md interface
+  (createIntent/discoverOffers/acceptOffer/getContract/getAssurance/
+  getExecution/terminate) with typed PortError (stable machine names).
+- Domain types: three opaque 32-byte refs (NOT wire objects — no CBOR,
+  no signatures, documented); versioned requirement (frozen ADR-003
+  service classes mirrored without a protocol-core dep); read-only
+  contract projection (Projected/Active/Degraded/Terminated per the
+  adcos.md event mapping; valid_from < valid_until enforced at
+  construction); observations (exactly the six adcos.md event kinds,
+  monotonic per-provider sequence); execution projections (plain u64
+  counters).
+- The law enforcements: observations are read-only data (no API can
+  mutate authoritative ShareNet state — proven by test); ADCOS-
+  unavailable failure semantics as typed errors with freshness
+  metadata (ProviderUnavailable carries the last-observation fresh-
+  until; AcquisitionUnauthorized blocks new acquisition; never
+  fabricate contract state; never destroy local state) + the caller-
+  side ObservationCache caching policy (dedup by strictly-greater
+  sequence).
+- InMemoryConnectivityPort TEST VEHICLE (clearly marked): deterministic
+  virtual clock, injectable failure modes, observation redelivery —
+  the seam R5-002 (ADCOS client) tests against; the conformance suite
+  is generic and re-runnable by R5-002's real client.
+- Verification achieved: unit (29/29: full lifecycle, event-mapping
+  state machine, determinism, sequence monotonicity, replay dedup,
+  failure semantics, terminate idempotence, unknown-ref rejection,
+  read-only-law proof) + architecture (wasm32 check green —
+  platform-independent; tools/architecture_check.py PASS; zero
+  dependencies verified by Cargo.toml).
+- Production caller: R5-002 (ADCOS wire client, wave 8) implements the
+  trait — the in-memory provider is the documented test seam until
+  then (per the R3-003 precedent of named-future-consumers).
+- Persistence: none (projections are runtime state; durable refs are
+  R5-003 scope).
+- Worker note: implemented by a dispatched subagent (Task 13-c) in one
+  clean run; Tech Lead independently re-verified (29/29, wasm32,
+  trait-vs-adcos.md interface check) before integration.
+
+## Wave 7 integration record (2026-09-15)
+
+- R4-002 implemented by the Tech Lead on `work/wave7-a-circuit-binding`
+  (registry pre-registration ee47254 preceded implementation 50040c1).
+- R4-005 implemented on `work/wave7-b-ice-turn` (d9482fb) — started by
+  two subagent dispatches that both hit context deadlines mid-work;
+  completed by the Tech Lead (repaired a dangling test variable, an
+  evil-mode expectation, restructured the STUN server-per-step test,
+  wrote the README).
+- R5-001 implemented on `work/wave7-c-connectivity-port` (44d7536) by a
+  subagent; independently verified at integration.
+- Merged: 4b58541 (W1) → d594f7a (W2) → 317c622 (W3, = new main).
+- Registry: the four circuit wire objects → implemented (this commit).
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- R4-002 (route-to-circuit binding) — READY: predecessors R3-004
-  COMPLETE and R4-001 COMPLETE.
-- R4-005 (ICE/TURN) — READY: predecessor R4-001 COMPLETE.
-- R5-001 (ConnectivityPort) — READY (no predecessors; wave-7 eligible
-  with R4-002/R4-005).
+- Wave 8 (all READY): R4-003 (Linux gateway forwarding — predecessors
+  R2-003, R4-001, R4-002 all COMPLETE), R4-004 (Android VpnService —
+  predecessors R2-001, R4-001, R4-002 all COMPLETE), R5-002 (ADCOS
+  client — predecessor R5-001 COMPLETE).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

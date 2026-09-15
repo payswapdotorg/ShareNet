@@ -1097,6 +1097,8 @@ dependencies = [
 name = "sharenet-transport-ice"
 version = "0.1.0"
 dependencies = [
+ "hmac",
+ "sha2",
  "sharenet-transport-quic",
 ]
 

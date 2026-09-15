@@ -10,13 +10,21 @@
 //!   protocol. XOR-MAPPED-ADDRESS feeds server-reflexive candidates.
 //! - **Candidates** (RFC 8445 concepts): host / server-reflexive /
 //!   relayed candidates with the standard priority and foundation
-//!   formulas, gathering, and priority-ordered pairing. No full agent
-//!   state machine — nomination is future R4-006/R4-007 scope.
+//!   formulas, gathering, and priority-ordered pairing.
+//! - **ICE agent** (R4-006, `agent`): pairing + connectivity checks +
+//!   NOMINATION of the first working pair with restrictive-network
+//!   fallback to relayed candidates — direct paths (host/srflx) first
+//!   per pair priority, a lazily-allocated local relayed candidate for
+//!   client-side restriction, typed `Direct`/`Relay` path outcomes and
+//!   the fail-closed `AgentNoPath` transcript. Role conflicts, consent
+//!   freshness and triggered checks remain R4-007/future scope.
 //! - **TURN-style relay** (RFC 8656 concepts over UDP): per-5-tuple
 //!   allocations with relayed addresses that forward OPAQUE datagrams
-//!   between the allocation's client and peers. The tiny binary control
-//!   framing is explicitly TEST/LOCAL scope (no TURN auth — future
-//!   R4-006); the payloads are never parsed (L012).
+//!   between the allocation's client and peers, with RFC 5389 §10.2-modeled
+//!   long-term-credential allocation authentication (R4-006):
+//!   challenge/nonce + HMAC-SHA256 message-integrity proof, 401/438
+//!   typed refusals, replay-safe transaction-bound proofs. The payloads
+//!   are never parsed (L012).
 //! - **QUIC integration** (R4-001): gathered candidates are the address
 //!   source for node-pinned QUIC tunnels, and a full pinned tunnel rides
 //!   the relay transparently (`bridge::tunnel_connect`).
@@ -50,6 +58,7 @@
 //! the two-process tests of the sibling crates). They are clearly marked
 //! TEST SCAFFOLDING.
 
+pub mod agent;
 pub mod bridge;
 pub mod candidate;
 mod entropy;
@@ -57,17 +66,18 @@ pub mod error;
 pub mod relay;
 pub mod stun;
 
+pub use agent::{nominate, AgentConfig, Nomination, PairAttempt, PathKind, RelayEndpoint};
 pub use bridge::tunnel_connect;
 pub use candidate::{
     gather, pair_candidates, Candidate, CandidatePair, CandidateType, GatherConfig, Gathered,
 };
 pub use error::IceError;
 pub use relay::{
-    check_datagram_limit, ControlFrame, RelayClient, RelayServer, RelayServerAdapter,
-    MAX_RELAY_DATAGRAM,
+    check_datagram_limit, ControlFrame, RelayClient, RelayCredential, RelayServer,
+    RelayServerAdapter, MAX_RELAY_DATAGRAM,
 };
 pub use stun::{
-    binding_request, connectivity_check, Attribute, BindingOutcome, DatagramPipe, MessageClass,
-    StunConfig, StunMessage, TransactionId, ATTR_SOFTWARE, ATTR_XOR_MAPPED_ADDRESS, MAGIC_COOKIE,
-    METHOD_BINDING, SOFTWARE_MAX_BYTES,
+    binding_request, connectivity_check, connectivity_check_with, Attribute, BindingOutcome,
+    DatagramPipe, MessageClass, StunConfig, StunMessage, TransactionId,
+    ATTR_SOFTWARE, ATTR_XOR_MAPPED_ADDRESS, MAGIC_COOKIE, METHOD_BINDING, SOFTWARE_MAX_BYTES,
 };

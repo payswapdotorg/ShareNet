@@ -591,7 +591,18 @@ pub fn connectivity_check<P: DatagramPipe>(
     pipe: &P,
     target: SocketAddr,
 ) -> Result<SocketAddr, IceError> {
-    let outcome = binding_request(pipe, target, &StunConfig::default())?;
+    connectivity_check_with(pipe, target, &StunConfig::default())
+}
+
+/// A connectivity check with an explicit policy (the R4-006 ICE agent
+/// walks many candidate pairs and needs a faster/tunable retry policy
+/// than the default Binding exchange).
+pub fn connectivity_check_with<P: DatagramPipe>(
+    pipe: &P,
+    target: SocketAddr,
+    config: &StunConfig,
+) -> Result<SocketAddr, IceError> {
+    let outcome = binding_request(pipe, target, config)?;
     Ok(outcome.mapped)
 }
 

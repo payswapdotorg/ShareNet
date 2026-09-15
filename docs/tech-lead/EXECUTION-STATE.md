@@ -318,11 +318,49 @@ Architect decision — see Open Architect Decisions).
   a83609a preceded implementation.
 - Registry: TopologyEvidence maturity → implemented.
 
+### R3-004 — Route commitment — COMPLETE (Wave 6)
+
+- `reference/crates/sharenet-protocol/src/route.rs`: the three route
+  wire objects per the registry schemas — RouteProposal (proposer-
+  signed; path of unique node ids in canonical ascending order;
+  service class live/opportunistic/dtn; nonce makes every proposal
+  new), RouteAcceptance (per-position, bound to the proposal_id,
+  identity-matched to the path slot), RouteCommitment (Merkle root
+  over the acceptance bytes ordered by position; route_id =
+  SHA-256(context || root) — commitment-derived, caller-selected IDs
+  impossible by construction per L013).
+- Verification is fail-closed end-to-end: proposal signature +
+  invariants, per-acceptance signature/binding/freshness, exact
+  position coverage, re-derived root and route id. Replacement routes
+  (fresh nonce) produce genuinely fresh route ids — vector-verified.
+- Production caller: `sharenet-route` CLI (propose/accept/commit/verify
+  — real multi-party file-based flow); R4-002 (route-to-circuit
+  binding) consumes the verified commitments.
+- Verification achieved: unit + conformance (route_vectors.json: 3
+  cases incl. fresh-nonce distinctness, 2 tampered-commitment rejects;
+  all three language legs byte-identical — harness now 167 lines) +
+  adversarial (caller-selected id, missing acceptance, non-path
+  identity, expiry, tamper, Merkle reference shape) + multiprocess
+  (three REAL processes form a route through the CLI: propose, two
+  hop accepts + proposer accept, commit, verify; missing-acceptance
+  commitment refused with positions_not_covered; CLI/library
+  interop byte-identical).
+- Persistence: none — commitments are computed/verified objects;
+  durable circuit state is R4/R7 scope.
+
+## Wave 6 integration record (2026-09-15, part 1: R3-004)
+
+- Implemented directly by the Tech Lead on
+  `work/wave6-w1-route-commitment`; registry pre-registration bf12c4e
+  preceded implementation.
+- Registry: RouteProposal/RouteAcceptance/RouteCommitment → implemented.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- R3-004 (route commitment) — READY: predecessor R3-003 COMPLETE.
 - R4-001 (QUIC/TLS tunnel) — READY: predecessors R2-003 and R3-001
-  COMPLETE (wave 6 pairs it with R3-004).
+  COMPLETE (the wave-6 partner of R3-004, now also COMPLETE).
+- R4-002 (route-to-circuit binding) — READY once R3-004 (COMPLETE) and
+  R4-001 land.
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 - R2-002 (Wi-Fi Aware) remains unscheduled in the frozen registry waves

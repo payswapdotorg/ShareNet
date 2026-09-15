@@ -10,11 +10,14 @@ Exit code 0 only when every in-language check passes.
 
 from __future__ import annotations
 
+import hashlib
+
 import json
 import os
 import sys
 
 from . import advertisement as admod
+from . import route as routemod
 from . import topology as topomod
 from . import ed25519
 from . import link as linkmod
@@ -357,6 +360,65 @@ def run(vectors_dir: str) -> int:
         print(f"TOPO_RECV {i} now={now} {outcome}")
     for i, r in enumerate(topo_file["parse_reject"]):
         print(f"TOPO_REJ {i} {r['error']}")
+
+    # ---------------- route vectors ----------------
+    route_file = load_json(vectors_dir, "route_vectors.json")
+    for i, c in enumerate(route_file["cases"]):
+        try:
+            proposer_pk = public_key(bytes.fromhex(c["proposer_seed_hex"]))
+            hop_pks = [public_key(bytes.fromhex(s)) for s in c["hop_seed_hexes"]]
+            path = [derive_node_id(pk) for pk in hop_pks] + [derive_node_id(proposer_pk)]
+            sorted_path = sorted(path)
+            proposal = routemod.build_proposal(
+                proposer_pk,
+                c["proposer_created_at_unix"],
+                sorted_path,
+                c["service_class"],
+                c["proposed_at_unix"],
+                c["validity_secs"],
+                bytes.fromhex(c["proposal_nonce_hex"]),
+            )
+            from . import ed25519 as ed
+
+            proposal_sig = ed.sign(bytes.fromhex(c["proposer_seed_hex"]), proposal)
+            proposal_env = routemod.envelope(proposal, proposal_sig)
+            pid = routemod.proposal_id_of(proposal)
+            members = [
+                (pk, c["hop_created_at_unix"], seed)
+                for pk, seed in zip(hop_pks, c["hop_seed_hexes"])
+            ] + [
+                (
+                    proposer_pk,
+                    c["proposer_created_at_unix"],
+                    c["proposer_seed_hex"],
+                )
+            ]
+            members.sort(key=lambda m: derive_node_id(m[0]))
+            acceptance_envs = []
+            for pos, (pk, created, seed) in enumerate(members):
+                acc = routemod.build_acceptance(
+                    pid, pk, created, pos, c["accepted_at_unix"], c["acceptance_validity_secs"]
+                )
+                sig = ed.sign(bytes.fromhex(seed), acc)
+                acceptance_envs.append(routemod.envelope(acc, sig))
+            # merkle over acceptance inner bytes ordered by position
+            from .cbor import decode as cbor_decode
+
+            leaves = []
+            for env in acceptance_envs:
+                v = cbor_decode(env)
+                leaves.append(hashlib.sha256(v[0][1]).digest())
+            root = routemod.merkle_root(leaves)
+            route_id = routemod.derive_route_id(root)
+            print(
+                f"ROUTE {i} proposal={proposal_env.hex()} "
+                f"acceptances={','.join(e.hex() for e in acceptance_envs)} "
+                f"root={root.hex()} id={route_id.hex()}"
+            )
+        except Exception as e:  # noqa: BLE001
+            fail(f"route {i}: {e}")
+    for i, r in enumerate(route_file["rejects"]):
+        print(f"ROUTE_REJ {i} {r['error']}")
 
     return 0 if failures == 0 else 1
 

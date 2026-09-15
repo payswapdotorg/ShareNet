@@ -30,6 +30,7 @@ use std::process::ExitCode;
 use serde::Deserialize;
 
 use sharenet_protocol::cbor::{decode, encode, Value};
+use sharenet_protocol::route::{RouteAcceptance, RouteCommitment, RouteProposal};
 use sharenet_protocol::topology::{
     LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence, TopologyEvidence,
     TopologyStore,
@@ -539,6 +540,95 @@ fn main() -> ExitCode {
                 failures += 1;
             }
         }
+    }
+
+    // ---------------- route vectors ----------------
+    #[derive(Deserialize)]
+    struct RouteFile {
+        cases: Vec<RouteCaseV>,
+        rejects: Vec<RouteRejectV>,
+    }
+    #[derive(Deserialize)]
+    struct RouteCaseV {
+        proposer_seed_hex: String,
+        proposer_created_at_unix: u64,
+        hop_seed_hexes: Vec<String>,
+        hop_created_at_unix: u64,
+        service_class: String,
+        proposed_at_unix: u64,
+        #[allow(dead_code)]
+        validity_secs: u64,
+        proposal_nonce_hex: String,
+        accepted_at_unix: u64,
+        acceptance_validity_secs: u64,
+    }
+    #[derive(Deserialize)]
+    struct RouteRejectV {
+        hex: String,
+        #[allow(dead_code)]
+        error: String,
+    }
+    let route_file: RouteFile = load_json(&vectors_dir.join("route_vectors.json"));
+    for (i, c) in route_file.cases.iter().enumerate() {
+        let seed: [u8; 32] = from_hex(&c.proposer_seed_hex).try_into().expect("seed");
+        let proposer = Identity::from_seed(seed, c.proposer_created_at_unix, None).expect("id");
+        let hops: Vec<Identity> = c
+            .hop_seed_hexes
+            .iter()
+            .map(|s| {
+                let seed: [u8; 32] = from_hex(s).try_into().expect("seed");
+                Identity::from_seed(seed, c.hop_created_at_unix, None).expect("id")
+            })
+            .collect();
+        let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
+        path.push(*proposer.node_id().as_bytes());
+        let nonce: [u8; 32] = from_hex(&c.proposal_nonce_hex).try_into().unwrap();
+        let proposal =
+            RouteProposal::new(&proposer, path, c.service_class.clone(), c.proposed_at_unix, 600, nonce)
+                .expect("proposal");
+        let env = proposal.sign(&proposer).expect("sign");
+        let proposal_id =
+            sharenet_protocol::route::derive_proposal_id(env.bytes());
+        let mut members: Vec<&Identity> = hops.iter().collect();
+        members.push(&proposer);
+        members.sort_by_key(|m| *m.node_id().as_bytes());
+        let acceptance_envs: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(pos, m)| {
+                let a = RouteAcceptance::new(
+                    m,
+                    proposal_id,
+                    pos as u64,
+                    c.accepted_at_unix,
+                    c.acceptance_validity_secs,
+                )
+                .expect("acceptance");
+                a.sign(m).expect("sign")
+            })
+            .collect();
+        let acceptance_hexes: Vec<String> = acceptance_envs
+            .iter()
+            .map(|e| to_hex(&e.to_envelope_bytes()))
+            .collect();
+        let proposal_hex = to_hex(&env.to_envelope_bytes());
+        let commitment = RouteCommitment::build(1_200, env, acceptance_envs).expect("commit");
+        println!(
+            "ROUTE {i} proposal={} acceptances={} root={} id={}",
+            proposal_hex,
+            acceptance_hexes.join(","),
+            to_hex(commitment.commitment_root()),
+            to_hex(commitment.route_id()),
+        );
+    }
+    for (i, r) in route_file.rejects.iter().enumerate() {
+        let bytes = from_hex(&r.hex);
+        let commitment = RouteCommitment::from_wire_bytes(&bytes).expect("parse");
+        let outcome = match commitment.verify(1_200) {
+            Err(e) => e.name(),
+            Ok(_) => "ok".to_string(),
+        };
+        println!("ROUTE_REJ {i} {outcome}");
     }
 
     // ---------------- NodeIdentity decode spot check ----------------

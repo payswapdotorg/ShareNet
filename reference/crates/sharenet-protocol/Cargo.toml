@@ -1,0 +1,29 @@
+[package]
+name = "sharenet-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "ShareNet protocol core: canonical CBOR wire profile v1 and Ed25519 node-identity binding (R1-001, R1-002)"
+publish = false
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }
+sha2 = "0.10"
+zeroize = "1"
+
+# OS entropy for key generation. getrandom (via rand 0.8) cannot compile for
+# wasm32-unknown-unknown (no OS entropy source on bare wasm); on that target
+# keys must be constructed from host-provided seeds via from_seed.
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+rand = "0.8"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+
+[[bin]]
+name = "sharenet-id"
+path = "src/bin/sharenet-id.rs"
+
+[lib]
+name = "sharenet_protocol"
+path = "src/lib.rs"

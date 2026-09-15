@@ -1,0 +1,677 @@
+{
+  "description": "Golden vectors for the ShareNet Canonical CBOR Profile v1. Encode cases test both directions (value -> hex and hex -> value) plus byte-stability (encode(decode(hex)) == hex). Reject cases must be decoded to a typed error whose variant name is given in \"error\".",
+  "encode_cases": [
+    {
+      "hex": "00",
+      "name": "int-zero",
+      "value": {
+        "t": "int",
+        "v": 0
+      }
+    },
+    {
+      "hex": "17",
+      "name": "int-23",
+      "value": {
+        "t": "int",
+        "v": 23
+      }
+    },
+    {
+      "hex": "1818",
+      "name": "int-24",
+      "value": {
+        "t": "int",
+        "v": 24
+      }
+    },
+    {
+      "hex": "18ff",
+      "name": "int-255",
+      "value": {
+        "t": "int",
+        "v": 255
+      }
+    },
+    {
+      "hex": "190100",
+      "name": "int-256",
+      "value": {
+        "t": "int",
+        "v": 256
+      }
+    },
+    {
+      "hex": "19ffff",
+      "name": "int-65535",
+      "value": {
+        "t": "int",
+        "v": 65535
+      }
+    },
+    {
+      "hex": "1a00010000",
+      "name": "int-65536",
+      "value": {
+        "t": "int",
+        "v": 65536
+      }
+    },
+    {
+      "hex": "1b7fffffffffffffff",
+      "name": "int-i64-max",
+      "value": {
+        "t": "int",
+        "v": 9223372036854775807
+      }
+    },
+    {
+      "hex": "20",
+      "name": "int-minus-1",
+      "value": {
+        "t": "int",
+        "v": -1
+      }
+    },
+    {
+      "hex": "37",
+      "name": "int-minus-24",
+      "value": {
+        "t": "int",
+        "v": -24
+      }
+    },
+    {
+      "hex": "3818",
+      "name": "int-minus-25",
+      "value": {
+        "t": "int",
+        "v": -25
+      }
+    },
+    {
+      "hex": "3b7fffffffffffffff",
+      "name": "int-i64-min",
+      "value": {
+        "t": "int",
+        "v": -9223372036854775808
+      }
+    },
+    {
+      "hex": "f4",
+      "name": "bool-false",
+      "value": {
+        "t": "bool",
+        "v": false
+      }
+    },
+    {
+      "hex": "f5",
+      "name": "bool-true",
+      "value": {
+        "t": "bool",
+        "v": true
+      }
+    },
+    {
+      "hex": "f6",
+      "name": "null",
+      "value": {
+        "t": "null"
+      }
+    },
+    {
+      "hex": "40",
+      "name": "bytes-empty",
+      "value": {
+        "t": "bytes",
+        "v": ""
+      }
+    },
+    {
+      "hex": "4401020304",
+      "name": "bytes-01020304",
+      "value": {
+        "t": "bytes",
+        "v": "01020304"
+      }
+    },
+    {
+      "hex": "5820abababababababababababababababababababababababababababababababab",
+      "name": "bytes-32",
+      "value": {
+        "t": "bytes",
+        "v": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "hex": "59012c5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "name": "bytes-300",
+      "value": {
+        "t": "bytes",
+        "v": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+      }
+    },
+    {
+      "hex": "60",
+      "name": "text-empty",
+      "value": {
+        "t": "text",
+        "v": ""
+      }
+    },
+    {
+      "hex": "6161",
+      "name": "text-a",
+      "value": {
+        "t": "text",
+        "v": "a"
+      }
+    },
+    {
+      "hex": "6449455446",
+      "name": "text-ietf",
+      "value": {
+        "t": "text",
+        "v": "IETF"
+      }
+    },
+    {
+      "hex": "7453686172654e657420e4b8ade6968720f09f8c8d",
+      "name": "text-utf8-multibyte",
+      "value": {
+        "t": "text",
+        "v": "ShareNet 中文 🌍"
+      }
+    },
+    {
+      "hex": "80",
+      "name": "array-empty",
+      "value": {
+        "t": "array",
+        "v": []
+      }
+    },
+    {
+      "hex": "83010203",
+      "name": "array-123",
+      "value": {
+        "t": "array",
+        "v": [
+          {
+            "t": "int",
+            "v": 1
+          },
+          {
+            "t": "int",
+            "v": 2
+          },
+          {
+            "t": "int",
+            "v": 3
+          }
+        ]
+      }
+    },
+    {
+      "hex": "8301820203820405",
+      "name": "array-nested",
+      "value": {
+        "t": "array",
+        "v": [
+          {
+            "t": "int",
+            "v": 1
+          },
+          {
+            "t": "array",
+            "v": [
+              {
+                "t": "int",
+                "v": 2
+              },
+              {
+                "t": "int",
+                "v": 3
+              }
+            ]
+          },
+          {
+            "t": "array",
+            "v": [
+              {
+                "t": "int",
+                "v": 4
+              },
+              {
+                "t": "int",
+                "v": 5
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "hex": "8517616141f0f5f6",
+      "name": "array-mixed",
+      "value": {
+        "t": "array",
+        "v": [
+          {
+            "t": "int",
+            "v": 23
+          },
+          {
+            "t": "text",
+            "v": "a"
+          },
+          {
+            "t": "bytes",
+            "v": "f0"
+          },
+          {
+            "t": "bool",
+            "v": true
+          },
+          {
+            "t": "null"
+          }
+        ]
+      }
+    },
+    {
+      "hex": "a0",
+      "name": "map-empty",
+      "value": {
+        "t": "map",
+        "v": []
+      }
+    },
+    {
+      "hex": "a201020304",
+      "name": "map-int-keys",
+      "value": {
+        "t": "map",
+        "v": [
+          [
+            {
+              "t": "int",
+              "v": 1
+            },
+            {
+              "t": "int",
+              "v": 2
+            }
+          ],
+          [
+            {
+              "t": "int",
+              "v": 3
+            },
+            {
+              "t": "int",
+              "v": 4
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "hex": "a26161016162820203",
+      "name": "map-text-keys",
+      "value": {
+        "t": "map",
+        "v": [
+          [
+            {
+              "t": "text",
+              "v": "a"
+            },
+            {
+              "t": "int",
+              "v": 1
+            }
+          ],
+          [
+            {
+              "t": "text",
+              "v": "b"
+            },
+            {
+              "t": "array",
+              "v": [
+                {
+                  "t": "int",
+                  "v": 2
+                },
+                {
+                  "t": "int",
+                  "v": 3
+                }
+              ]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "hex": "a261620262616201",
+      "name": "map-length-prefix-sorts-first",
+      "value": {
+        "t": "map",
+        "v": [
+          [
+            {
+              "t": "text",
+              "v": "b"
+            },
+            {
+              "t": "int",
+              "v": 2
+            }
+          ],
+          [
+            {
+              "t": "text",
+              "v": "ab"
+            },
+            {
+              "t": "int",
+              "v": 1
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "hex": "a200647a65726f20656d696e7573",
+      "name": "map-int-negative-key-sorts-after-zero",
+      "value": {
+        "t": "map",
+        "v": [
+          [
+            {
+              "t": "int",
+              "v": 0
+            },
+            {
+              "t": "text",
+              "v": "zero"
+            }
+          ],
+          [
+            {
+              "t": "int",
+              "v": -1
+            },
+            {
+              "t": "text",
+              "v": "minus"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "hex": "a301010258204242424242424242424242424242424242424242424242424242424242424242031a6553f100",
+      "name": "nodeidentity-like-shape",
+      "value": {
+        "t": "map",
+        "v": [
+          [
+            {
+              "t": "int",
+              "v": 1
+            },
+            {
+              "t": "int",
+              "v": 1
+            }
+          ],
+          [
+            {
+              "t": "int",
+              "v": 2
+            },
+            {
+              "t": "bytes",
+              "v": "4242424242424242424242424242424242424242424242424242424242424242"
+            }
+          ],
+          [
+            {
+              "t": "int",
+              "v": 3
+            },
+            {
+              "t": "int",
+              "v": 1700000000
+            }
+          ]
+        ]
+      }
+    }
+  ],
+  "profile": "sharenet-cbor-v1",
+  "reject_cases": [
+    {
+      "error": "NonMinimalInteger",
+      "hex": "1800",
+      "name": "non-minimal-int-0"
+    },
+    {
+      "error": "NonMinimalInteger",
+      "hex": "1817",
+      "name": "non-minimal-int-23"
+    },
+    {
+      "error": "NonMinimalInteger",
+      "hex": "190018",
+      "name": "non-minimal-int-24-uint16"
+    },
+    {
+      "error": "NonMinimalInteger",
+      "hex": "1900ff",
+      "name": "non-minimal-int-255-uint16"
+    },
+    {
+      "error": "NonMinimalInteger",
+      "hex": "3800",
+      "name": "non-minimal-neg-1"
+    },
+    {
+      "error": "NonMinimalInteger",
+      "hex": "5803414244",
+      "name": "non-minimal-bstr-length"
+    },
+    {
+      "error": "IndefiniteLength",
+      "hex": "1f",
+      "name": "indefinite-int"
+    },
+    {
+      "error": "IndefiniteLength",
+      "hex": "5fff",
+      "name": "indefinite-bstr"
+    },
+    {
+      "error": "IndefiniteLength",
+      "hex": "7f6161ff",
+      "name": "indefinite-text"
+    },
+    {
+      "error": "IndefiniteLength",
+      "hex": "9f01ff",
+      "name": "indefinite-array"
+    },
+    {
+      "error": "IndefiniteLength",
+      "hex": "bf0161afff",
+      "name": "indefinite-map"
+    },
+    {
+      "error": "BreakCode",
+      "hex": "ff",
+      "name": "break-code"
+    },
+    {
+      "error": "UnsortedMapKeys",
+      "hex": "a203040102",
+      "name": "unsorted-map-keys"
+    },
+    {
+      "error": "DuplicateMapKey",
+      "hex": "a201020103",
+      "name": "duplicate-map-keys"
+    },
+    {
+      "error": "TagForbidden",
+      "hex": "c000",
+      "name": "tag-0"
+    },
+    {
+      "error": "TagForbidden",
+      "hex": "c11a514b67b0",
+      "name": "tag-1-epoch"
+    },
+    {
+      "error": "TagForbidden",
+      "hex": "c2420100",
+      "name": "tag-2-bignum"
+    },
+    {
+      "error": "TagForbidden",
+      "hex": "c349010000000000000000",
+      "name": "tag-3-negbigint"
+    },
+    {
+      "error": "FloatForbidden",
+      "hex": "f90000",
+      "name": "float-f16-zero"
+    },
+    {
+      "error": "FloatForbidden",
+      "hex": "f97e00",
+      "name": "float-f16-nan"
+    },
+    {
+      "error": "FloatForbidden",
+      "hex": "f97c00",
+      "name": "float-f16-inf"
+    },
+    {
+      "error": "FloatForbidden",
+      "hex": "fa47c35000",
+      "name": "float-f32"
+    },
+    {
+      "error": "FloatForbidden",
+      "hex": "fb3ff0000000000000",
+      "name": "float-f64"
+    },
+    {
+      "error": "SimpleValueForbidden",
+      "hex": "f7",
+      "name": "undefined"
+    },
+    {
+      "error": "SimpleValueForbidden",
+      "hex": "f0",
+      "name": "simple-16"
+    },
+    {
+      "error": "SimpleValueForbidden",
+      "hex": "f800",
+      "name": "simple-2byte-0"
+    },
+    {
+      "error": "InvalidUtf8",
+      "hex": "62c328",
+      "name": "invalid-utf8"
+    },
+    {
+      "error": "TrailingBytes",
+      "hex": "0000",
+      "name": "trailing-bytes"
+    },
+    {
+      "error": "UnexpectedEnd",
+      "hex": "18",
+      "name": "truncated-int-arg"
+    },
+    {
+      "error": "LengthExceedsInput",
+      "hex": "440102",
+      "name": "truncated-bstr"
+    },
+    {
+      "error": "LengthExceedsInput",
+      "hex": "82ff",
+      "name": "truncated-array"
+    },
+    {
+      "error": "EmptyInput",
+      "hex": "",
+      "name": "empty-input"
+    },
+    {
+      "error": "IntegerOutOfRange",
+      "hex": "1bffffffffffffffff",
+      "name": "uint-exceeds-i64"
+    },
+    {
+      "error": "IntegerNegativeOutOfRange",
+      "hex": "3bffffffffffffffff",
+      "name": "negative-exceeds-i64"
+    },
+    {
+      "error": "ReservedAdditionalInfo",
+      "hex": "1c",
+      "name": "reserved-info-28"
+    },
+    {
+      "error": "LengthExceedsInput",
+      "hex": "9affffffff",
+      "name": "hostile-array-count"
+    }
+  ],
+  "value_encoding": {
+    "array": {
+      "t": "array",
+      "v": [
+        "<value>",
+        "..."
+      ]
+    },
+    "bool": {
+      "t": "bool",
+      "v": "<true|false>"
+    },
+    "bytes": {
+      "t": "bytes",
+      "v": "<hex>"
+    },
+    "int": {
+      "t": "int",
+      "v": "<i64>"
+    },
+    "map": {
+      "t": "map",
+      "v": [
+        [
+          "<key>",
+          "<value>"
+        ],
+        "..."
+      ]
+    },
+    "null": {
+      "t": "null"
+    },
+    "text": {
+      "t": "text",
+      "v": "<utf-8 string>"
+    }
+  }
+}

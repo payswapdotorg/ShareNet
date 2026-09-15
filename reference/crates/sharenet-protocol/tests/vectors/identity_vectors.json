@@ -1,0 +1,105 @@
+{
+  "description": "Golden vectors for ShareNet NodeIdentity (scheme v1). node_id = SHA-256(canonical CBOR of {1: scheme_version, 2: public_key}). Identity cases cover seed -> public key (Ed25519), node_id derivation and the canonical wire bytes. Signature cases are Ed25519 detached signatures (deterministic RFC 8032); 'expected' tells whether strict verification must accept ('valid') or reject ('invalid') them.",
+  "identity_cases": [
+    {
+      "created_at_unix": 1700000000,
+      "display_name": null,
+      "name": "rfc8032-test1-no-name",
+      "node_id_hex": "a72f5df313a965faf0138ebeebd698c5bb3eac07278e925fff8f69bb0f5d1188",
+      "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "wire_hex": "a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a031a6553f100"
+    },
+    {
+      "created_at_unix": 1700000001,
+      "display_name": "gateway-alpha",
+      "name": "rfc8032-test1-with-name",
+      "node_id_hex": "a72f5df313a965faf0138ebeebd698c5bb3eac07278e925fff8f69bb0f5d1188",
+      "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "wire_hex": "a40101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a031a6553f101046d676174657761792d616c706861"
+    },
+    {
+      "created_at_unix": 0,
+      "display_name": null,
+      "name": "rfc8032-test2-epoch-zero",
+      "node_id_hex": "d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f96302326",
+      "public_key_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "wire_hex": "a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c0300"
+    },
+    {
+      "created_at_unix": 4294967296,
+      "display_name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "rfc8032-test3-name-at-limit",
+      "node_id_hex": "c2f57fa541690e754a2e06c9462f85acfc72b862560b4e5ae37769529a27b7b5",
+      "public_key_hex": "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+      "seed_hex": "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+      "wire_hex": "a40101025820fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025031b000000010000000004784078787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878"
+    }
+  ],
+  "profile": "sharenet-identity-v1",
+  "scheme": {
+    "algorithm": "Ed25519 (RFC 8032), strict verification",
+    "identity_file": "{1: seed(32-byte bstr), 2: NodeIdentity map}; permissions 0600; atomic write (tmp+fsync+rename+dir fsync); fail-closed load",
+    "node_id_derivation": "SHA-256(canonical_cbor({1: scheme_version, 2: public_key}))",
+    "scheme_version": 1,
+    "wire": "NodeIdentity = {1: scheme_version(uint), 2: public_key(32-byte bstr), 3: created_at_unix(uint), 4: display_name(optional text, <= 64 bytes)}"
+  },
+  "signature_cases": [
+    {
+      "expected": "valid",
+      "name": "rfc8032-test1-empty-payload",
+      "note": "RFC 8032 §7.1 test 1 (deterministic signature)",
+      "payload_hex": "",
+      "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "signature_hex": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    },
+    {
+      "expected": "valid",
+      "name": "rfc8032-test2",
+      "note": "RFC 8032 §7.1 test 2",
+      "payload_hex": "72",
+      "public_key_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "signature_hex": "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+    },
+    {
+      "expected": "valid",
+      "name": "rfc8032-test3",
+      "note": "RFC 8032 §7.1 test 3",
+      "payload_hex": "af82",
+      "public_key_hex": "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+      "seed_hex": "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+      "signature_hex": "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"
+    },
+    {
+      "expected": "valid",
+      "name": "custom-payload",
+      "note": "implementation-generated golden",
+      "payload_hex": "53686172654e65743a20627269646765207061796c6f61642c2063616e6f6e6963616c2043424f52207631",
+      "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "signature_hex": "6b74cc4ac2b34689eb39857477015da7358e57324b6b087e61f5fb266c4fb5141f6e8290a6563c13ce524e81a5b58373b1912a21aac55af3bbdc7016810a5a0e"
+    },
+    {
+      "expected": "invalid",
+      "name": "malleable-s-plus-order",
+      "note": "S' = S + L verifies under lenient verifiers; strict must reject",
+      "payload_hex": "53686172654e65743a20627269646765207061796c6f61642c2063616e6f6e6963616c2043424f52207631",
+      "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "signature_hex": "6b74cc4ac2b34689eb39857477015da7358e57324b6b087e61f5fb266c4fb5140c4278edc0b94e6ba4ef452484af6288b1912a21aac55af3bbdc7016810a5a1e"
+    },
+    {
+      "expected": "invalid",
+      "name": "replay-against-different-payload",
+      "note": "signature of payload A replayed against payload B",
+      "payload_hex": "646966666572656e74207061796c6f6164",
+      "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "signature_hex": "6b74cc4ac2b34689eb39857477015da7358e57324b6b087e61f5fb266c4fb5141f6e8290a6563c13ce524e81a5b58373b1912a21aac55af3bbdc7016810a5a0e"
+    }
+  ]
+}

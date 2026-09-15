@@ -547,6 +547,132 @@ Architect decision — see Open Architect Decisions).
   clean run; Tech Lead independently re-verified (29/29, wasm32,
   trait-vs-adcos.md interface check) before integration.
 
+### R4-003 — Linux gateway forwarding — COMPLETE (Wave 8)
+
+- `transport/linux/src/gateway.rs`: GatewayServer (pinned QUIC accept →
+  R3-004 route commitment verified inside setup admission → R4-002
+  circuit setup admitted fail-closed → BOTH acks exchanged so position
+  coverage is exact on BOTH ends → established) + per-circuit uplink
+  UDP sockets + a dedicated thread turning uplink responses into
+  direction-2 frames. GatewayClient/ParticipantSession mirror the
+  admission locally — tampering anywhere in the chain is caught on both
+  ends.
+- Timestamp discipline (design-level fix caught by the multiprocess
+  tests): the gateway's acceptance/ack timestamps anchor to the
+  PROPOSAL's proposed_at / the SETUP's issued_at — never the gateway
+  wall clock — so cross-process clock skew (even millisecond-forward)
+  can never break admission.
+- Destroy is application-level acknowledged (BYE) before teardown —
+  process exit never races in-flight frames (the QUIC close-semantics
+  rule).
+- `transport/quic`: TunnelStream::split() → TunnelSender/TunnelReceiver
+  halves (the data plane needs one side blocking on the next participant
+  frame while another thread returns uplink responses; the
+  single-stream API cannot express it; drop semantics preserved).
+- Verification achieved: multiprocess/adversarial (7: full data plane
+  two-process — 5 packets echoed through a real UDP "Internet" echo +
+  GATEWAY_DONE handshake; full flow via both real binaries; wrong
+  gateway pin fails closed; unpinned participant refused; oversize/empty
+  rejected locally; in-process server thread; binary argument hygiene).
+  Full sweep: linux crate 58/58 green (38 unit + 7 gateway + 4
+  udp_multiprocess + 5 probe_rtt + 4 tun_gated); quic 9/9 no regression;
+  governance PASS.
+- Production caller: `sharenet-transport-linux` binary `gateway` +
+  `participant` subcommands (READY/GATEWAY_DONE/PARTICIPANT_DONE
+  protocol) — the on-ramp R4-007 (mission gate real Internet bridge)
+  and R7-003/R7-004 (gateway recovery) build on.
+- Persistence: none — circuit admission state is runtime state (durable
+  is R7 scope per the R7-002 recovery-attempts item).
+- Registry note: no registry change — R4-003 consumes registered wire
+  objects (RouteCommitment/CircuitSetup/Ack/Frame/Destroy); the tunnel
+  control protocol (READY/BYE) is documented runtime state, not wire
+  objects.
+
+### R4-004 — Android VpnService — COMPLETE (Wave 8)
+
+- `transport/android/vpn` module (:vpn, com.android.library, compileSdk
+  35 / minSdk 26, EMPTY production dependencies): the Android VPN data
+  plane. Platform adapter, not protocol semantics (L009, ADR-002).
+- Pure-JVM core, unit-tested end-to-end: VpnConfig strict total typed
+  validation + PURE toBuilderParams (NetTypes strict IP/CIDR parsing —
+  no java.net.InetAddress: no leading-zero octets, no embedded IPv4
+  tails in IPv6, routes reject host bits below the prefix, duplicates
+  by parsed value); IpPacketFilter (IPv4 deep-strict: IHL/total-length
+  equality/protocol policy with fixed test-asserted check order; IPv6
+  shallow pass-through with payload-length consistency; best-effort
+  FlowKey); PacketLoop (stop flag first; oversized consumed-and-continue;
+  post-read stop drops the packet; throwing backhaul = typed terminal
+  fail-closed; responses defensively re-filtered before write).
+- Android boundary confined to ShareNetVpnService + FdPacketIo: 1:1
+  Builder mapping over validated params, setBlocking(true) matching the
+  PacketIO contract, loop on a dedicated thread, stop-then-close
+  teardown, reconfigure = restart, VpnNotPrepared typed refusal,
+  configureBackhaul skeleton wiring (no factory installed = never starts
+  a loop with no backhaul).
+- Seams: PacketIO (fd I/O; pipe-backed fake in tests), TunnelBackhaul
+  (the tunnel join point — the JNI bridge to the Rust QUIC TunnelStream
+  is R10-002 scope; no NDK in this wave, deliberately).
+- Verification achieved: unit (67/67: 25 filter + 28 config + 14 loop,
+  incl. stop-flag races: stop-before-run, concurrent stop, stop during
+  blocked read, re-entrant stop from inside the backhaul) + android
+  (REAL SDK build: :vpn:assembleDebug AAR 68750 bytes against
+  platforms;android-35). Two test bugs fixed at integration: the
+  IHL-below-minimum shape must carry ≥20 bytes so ShortHeader does not
+  shadow BadHeaderLength; PacketPipe needed closeTunSide() so a
+  same-thread run()+receive() drains instead of blocking forever.
+- Known gaps (accepted, documented): no on-device verification (real
+  TUN, consent flow) — R10-002 scope per the work item's real-device
+  verify level; no JNI backhaul (R10-002); IPv6 filter is
+  pass-through-only (documented seam).
+- Implemented by a dispatched subagent that died mid-work leaving
+  high-quality WIP; completed by the Tech Lead (fixed the two test
+  bugs, wrote the README, verified, committed).
+
+### R5-002 — ADCOS client — COMPLETE (Wave 8)
+
+- `connectivity-client/` crate `sharenet-connectivity-client`: the wire
+  client `spec/integrations/adcos.md` mandates — "The actual wire client
+  speaks the ADCOS developer API. The domain does not import ADCOS server
+  internals." AdcosClient implements the parent crate's ConnectivityPort
+  trait against a minimal JSON-over-HTTP/1.1 mapping of the ADCOS
+  developer API over std TCP. It is the boundary ADAPTER — the only
+  place in ShareNet that knows the ADCOS transport format.
+- Deliberately tiny dependency set: sharenet-connectivity (the boundary
+  being implemented) + serde/serde_json (the JSON bodies live ONLY here
+  — the parent connectivity crate stays zero-dependency). No protocol
+  core, no async runtime, no HTTP framework, no TLS (documented as
+  future hardening in the README).
+- Layout: wire (DTOs, endpoint builders/parsers, typed error envelope —
+  the PortError machine names are the wire error vocabulary), http
+  (hand-rolled minimal HTTP/1.1 codec, strict parsing), hex (strict
+  lowercase-hex for the 32-byte opaque refs), error (AdcosError — full
+  typed surface flattened into PortError at the trait boundary),
+  transport (std TCP dial/write/read with timeouts and method-aware
+  host-only retry), client (the ConnectivityPort impl).
+- Failure semantics per adcos.md: ProviderUnavailable carries the
+  caller cache's freshness bound; AcquisitionUnauthorized blocks
+  acquisition only; unknown refs typed NotFound; the client never
+  fabricates contract state (the parent crate's ObservationCache law).
+- Platform independence: the domain mapping (wire/http/hex/error) is
+  pure data and compiles for wasm32-unknown-unknown; the TCP transport
+  and client are gated #[cfg(not(target_family = "wasm"))].
+- Verification achieved: unit (33) + integration (7, against the
+  adcos_test_server TEST SCAFFOLDING binary — a real std::TCP server
+  speaking exactly this wire shape over a deterministic in-memory
+  store with injectable faults: connection drop, 503 + recovery with
+  cached freshness, garbage body, parallel clients, full lifecycle,
+  typed not-found; the suite re-runs the parent crate's generic
+  conformance_core battery against this client) — 40/40 green; wasm32
+  check green; zero build warnings; governance PASS.
+- Production caller: R5-003 (contract projection) builds on this
+  client; the seam is the ConnectivityPort trait.
+- Persistence: none — the ADCOS server is the contract authority (the
+  no-second-contract-authority law); the client caches only read-only
+  observations per the parent crate's policy type.
+- Registry note: no registry change — the client consumes the
+  adcos.md-frozen boundary and speaks an EXTERNAL API (adapter rule:
+  no ShareNet wire objects originate here).
+
 ## Wave 7 integration record (2026-09-15)
 
 - R4-002 implemented by the Tech Lead on `work/wave7-a-circuit-binding`
@@ -561,12 +687,47 @@ Architect decision — see Open Architect Decisions).
 - Merged: 4b58541 (W1) → d594f7a (W2) → 317c622 (W3, = new main).
 - Registry: the four circuit wire objects → implemented (this commit).
 
+## Wave 8 integration record (2026-09-15)
+
+- R4-003 implemented by the Tech Lead directly on main (0e944c1) in the
+  main checkout; the two worktree dispatches (w8b, w8c) ran in parallel
+  git worktrees (the shared-checkout race lesson from Wave 7 applied).
+- R4-004 implemented on `work/wave8-b-android-vpn` (7d20ff6) — a
+  dispatched subagent died mid-work leaving high-quality WIP (all nine
+  production sources + six test files + the :vpn Gradle module); the
+  Tech Lead completed it: fixed two test bugs (the IHL-below-minimum
+  shape was shadowed by ShortHeader; PacketPipe lacked closeTunSide()
+  so same-thread run()+receive() hung forever), wrote the module README,
+  re-ran the real-SDK build (67/67 + AAR), committed.
+- R5-002 implemented on `work/wave8-c-adcos-client` (c30066d) by a
+  dispatched subagent (one clean run); independently re-verified at
+  integration: 40/40 tests, wasm32 check green, zero warnings.
+- Merged: 7728204 (R4-004) → 3766654 (R5-002, = new main); R4-003 was
+  already on main. Zero merge conflicts (disjoint file scopes:
+  transport/android/vpn, connectivity-client, transport/linux).
+- Registry: NO registry change in Wave 8 — all three items consume
+  already-registered wire objects or frozen boundary specs (R4-003:
+  registered route/circuit objects + documented runtime control
+  protocol; R4-004: platform adapter, no wire objects; R5-002: adapter
+  for the external ADCOS developer API per adcos.md). Recorded here
+  per the registry-update-before-implementation rule's scope (ShareNet
+  wire objects only).
+- Fresh audit on merged main: reference 148/0, connectivity 29/0,
+  connectivity-client 40/0, linux 58/58 incl. gateway multiprocess,
+  quic 9/9, ice 44/0, telemetry 35/0, wasm32 protocol check green,
+  conformance harness PASS (177 byte-identical lines), Android
+  :vpn:testDebugUnitTest 67/0 + :vpn:assembleDebug AAR, governance
+  PASS. (Full sweep performed post-merge — see audit log below.)
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 8 (all READY): R4-003 (Linux gateway forwarding — predecessors
-  R2-003, R4-001, R4-002 all COMPLETE), R4-004 (Android VpnService —
-  predecessors R2-001, R4-001, R4-002 all COMPLETE), R5-002 (ADCOS
-  client — predecessor R5-001 COMPLETE).
+- Wave 9 (all READY): R4-006 (restrictive-network fallback — predecessor
+  R4-005 COMPLETE), R4-007 (mission gate real Internet bridge —
+  predecessors R4-003, R4-004, R4-005 all COMPLETE; NOTE verify levels
+  are real-device/real-network — the sandbox can only deliver the
+  build/harness portions; the Tech Lead will record what was actually
+  verified and mark the rest as explicit gaps for the operator), R5-003
+  (contract projection — predecessor R5-002 COMPLETE).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

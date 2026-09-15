@@ -1,6 +1,6 @@
 [package]
 name = "sharenet-transport-ice"
-description = "ShareNet ICE/TURN transport (R4-005): RFC 5389 STUN subset, RFC 8445 candidate model, TURN-style UDP relay — candidates as the address source for node-pinned QUIC tunnels (platform adapter layer; the protocol core stays dependency-light)."
+description = "ShareNet ICE/TURN transport (R4-005/R4-006): RFC 5389 STUN subset, RFC 8445 candidate model + agent nomination with restrictive-network fallback, TURN-style UDP relay with long-term-credential allocation auth — candidates as the address source for node-pinned QUIC tunnels (platform adapter layer; the protocol core stays dependency-light)."
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
@@ -11,7 +11,7 @@ publish = false
 name = "sharenet_transport_ice"
 path = "src/lib.rs"
 
-# TEST SCAFFOLDING binaries: real second processes for the R4-005
+# TEST SCAFFOLDING binaries: real second processes for the R4-005/R4-006
 # multiprocess verification (same honest pattern as the QUIC peer binary
 # in transport/quic — the sandbox cannot reach external STUN/TURN servers,
 # so the tests run local ones).
@@ -27,5 +27,19 @@ path = "src/bin/turn_relay.rs"
 name = "turn_client"
 path = "src/bin/turn_client.rs"
 
+[[bin]]
+name = "ice_peer"
+path = "src/bin/ice_peer.rs"
+
 [dependencies]
 sharenet-transport-quic = { path = "../quic" }
+# R4-006 relay allocation auth: HMAC-SHA256 message integrity over the SN
+# control framing (RFC 5389 §10.2 long-term-credential model). BOTH crates
+# are already in this crate's dependency tree (hmac 0.12 transitively via
+# rustls/hkdf, sha2 used directly by transport/quic and the protocol
+# core), so this adds ZERO new crates to the build — see the README and
+# the commit message for the full justification (the RFC-faithful
+# HMAC-SHA1 alternative would have required the NEW `sha1` crate, and
+# RFC 8489 §9 itself defines HMAC-SHA-256 message integrity).
+hmac = "0.12"
+sha2 = "0.10"

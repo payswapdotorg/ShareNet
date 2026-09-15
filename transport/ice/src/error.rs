@@ -7,6 +7,8 @@
 
 use std::net::SocketAddr;
 
+use crate::agent::PairAttempt;
+
 /// Errors of the ICE/TURN transport layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IceError {
@@ -94,6 +96,32 @@ pub enum IceError {
     CandidateComponentInvalid { component: u32 },
     /// Local preference above 2^24-1 (would overflow the priority formula).
     CandidateLocalPreferenceInvalid { local_preference: u32 },
+
+    // ------------------------------------------------------------------
+    // ICE agent nomination (R4-006)
+    // ------------------------------------------------------------------
+    /// The remote candidate list is empty: nothing to pair or check.
+    AgentNoRemoteCandidates,
+    /// Every candidate pair's connectivity check failed. The payload is
+    /// the full attempt transcript — one typed failure per pair, in
+    /// attempt order (fail-closed: no nomination is fabricated).
+    AgentNoPath { attempts: Vec<PairAttempt> },
+
+    // ------------------------------------------------------------------
+    // TURN relay authentication (R4-006)
+    // ------------------------------------------------------------------
+    /// An authenticated relay demanded credentials the caller did not
+    /// present (an uncredentialed ALLOCATE received an auth challenge).
+    RelayAuthRequired,
+    /// The relay refused the authenticated allocation: 401 (wrong
+    /// credential / message-integrity mismatch) or 438 (stale or invalid
+    /// nonce), per the RFC 5389-style code model.
+    RelayAuthRejected { code: u16, reason: String },
+    /// An authentication control payload is structurally invalid.
+    RelayAuthMalformed { reason: &'static str },
+    /// The relay/credential configuration itself is invalid (empty
+    /// username, oversized realm, …).
+    RelayAuthConfigInvalid { reason: &'static str },
 }
 
 impl std::fmt::Display for IceError {
@@ -213,6 +241,44 @@ impl std::fmt::Display for IceError {
                 f,
                 "candidate local preference {local_preference} exceeds 2^24-1"
             ),
+            IceError::AgentNoRemoteCandidates => {
+                write!(f, "the remote candidate list is empty: nothing to pair or check")
+            }
+            IceError::AgentNoPath { attempts } => write!(
+                f,
+                "no candidate pair passed its connectivity check ({} pairs tried, in order: {})",
+                attempts.len(),
+                attempts
+                    .iter()
+                    .map(|a| match &a.outcome {
+                        Ok(observed) => format!(
+                            "{}->{}: ok (observed {observed})",
+                            a.pair.local.candidate_type().foundation_prefix(),
+                            a.pair.remote.candidate_type().foundation_prefix()
+                        ),
+                        Err(e) => format!(
+                            "{}->{}: {e}",
+                            a.pair.local.candidate_type().foundation_prefix(),
+                            a.pair.remote.candidate_type().foundation_prefix()
+                        ),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            IceError::RelayAuthRequired => write!(
+                f,
+                "the relay requires allocation authentication (present a credential)"
+            ),
+            IceError::RelayAuthRejected { code, reason } => write!(
+                f,
+                "relay refused the authenticated allocation (code {code}): {reason}"
+            ),
+            IceError::RelayAuthMalformed { reason } => {
+                write!(f, "malformed relay authentication payload: {reason}")
+            }
+            IceError::RelayAuthConfigInvalid { reason } => {
+                write!(f, "invalid relay authentication configuration: {reason}")
+            }
         }
     }
 }

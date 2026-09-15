@@ -14,12 +14,13 @@ use std::net::{SocketAddr, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use sharenet_transport_ice::agent::{AgentConfig, PathKind, RelayEndpoint};
 use sharenet_transport_ice::candidate::{
     gather, Candidate, CandidateType, GatherConfig,
 };
 use sharenet_transport_ice::relay::{
-    ControlFrame, RelayClient, MAX_RELAY_DATAGRAM, MSG_ALLOCATE, MSG_ALLOCATE_SUCCESS, MSG_DATA,
-    MSG_RELAY_ERROR, MSG_SEND, RELAY_MAGIC,
+    ControlFrame, RelayClient, RelayCredential, MAX_RELAY_DATAGRAM, MSG_ALLOCATE,
+    MSG_ALLOCATE_SUCCESS, MSG_DATA, MSG_RELAY_ERROR, MSG_SEND, RELAY_MAGIC,
 };
 use sharenet_transport_ice::stun::{binding_request, StunConfig};
 use sharenet_transport_ice::IceError;
@@ -102,6 +103,17 @@ fn spawn_relay() -> (Proc, SocketAddr) {
         .strip_prefix("READY ")
         .and_then(|a| a.parse().ok())
         .unwrap_or_else(|| panic!("bad relay READY line: {ready:?}"));
+    (proc, addr)
+}
+
+/// Spawn the relay demanding the long-term credential `user:secret`.
+fn spawn_relay_with_auth(user: &str, secret: &str) -> (Proc, SocketAddr) {
+    let auth = format!("{user}:{secret}");
+    let (proc, ready) = Proc::spawn(RELAY_BIN, &["--auth", &auth]);
+    let addr = ready
+        .strip_prefix("READY ")
+        .and_then(|a| a.parse().ok())
+        .unwrap_or_else(|| panic!("bad auth relay READY line: {ready:?}"));
     (proc, addr)
 }
 
@@ -597,4 +609,284 @@ fn relay_forwards_malformed_relayed_datagrams_opaquely() {
 #[test]
 fn relay_control_magic_constant() {
     assert_eq!(RELAY_MAGIC, [0x53, 0x4E]);
+}
+
+// ---------------------------------------------------------------------------
+// R4-006: the ICE agent — nomination with restrictive-network fallback,
+// against the REAL ice_peer / turn_relay processes
+// ---------------------------------------------------------------------------
+
+const ICE_PEER_BIN: &str = env!("CARGO_BIN_EXE_ice_peer");
+
+/// Spawn the ICE-lite peer and parse its `READY <addr> <node-id-hex>` line.
+fn spawn_ice_peer(args: &[&str]) -> (Proc, SocketAddr, [u8; 32]) {
+    let (proc, ready) = Proc::spawn(ICE_PEER_BIN, args);
+    let mut parts = ready
+        .strip_prefix("READY ")
+        .unwrap_or_else(|| panic!("bad ice_peer READY line: {ready:?}"))
+        .split(' ');
+    let addr: SocketAddr = parts.next().unwrap().parse().expect("candidate addr");
+    let node_hex = parts.next().expect("node id hex");
+    assert_eq!(node_hex.len(), 64, "node id hex: {node_hex}");
+    let mut node_id = [0u8; 32];
+    for (i, byte) in node_id.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&node_hex[2 * i..2 * i + 2], 16).expect("hex");
+    }
+    (proc, addr, node_id)
+}
+
+/// An unreachable host candidate: a loopback port with no listener.
+fn dead_host_candidate() -> Candidate {
+    let probe = UdpSocket::bind("127.0.0.1:0").expect("bind probe");
+    let dead = probe.local_addr().expect("addr");
+    drop(probe);
+    Candidate::new(CandidateType::Host, dead, dead, 1, 65_535).expect("candidate")
+}
+
+#[test]
+fn agent_nominates_direct_on_open_network_and_tunnel_completes() {
+    let (peer_proc, addr, node_id) = spawn_ice_peer(&[
+        "--mode",
+        "direct",
+        "--seed-hex",
+        PEER_SEED_HEX,
+        "--frames",
+        "3",
+    ]);
+
+    let remote = [Candidate::new(CandidateType::Host, addr, addr, 1, 65_535).expect("candidate")];
+    let mut config = AgentConfig::default();
+    config.check = fast_stun_config(); // no relay configured at all
+    let nomination = sharenet_transport_ice::agent::nominate(&config, &remote)
+        .expect("agent must nominate on the open loopback network");
+
+    assert_eq!(nomination.path, PathKind::Direct);
+    assert!(!nomination.local_relay_used, "an open network must never touch the relay");
+    assert!(nomination.attempts.is_empty(), "the first (host→host) pair must win");
+    assert_eq!(nomination.pair.remote.transport_addr(), addr);
+
+    // The nominated pair is the address source for the node-pinned QUIC
+    // tunnel: full handshake + framed echo against the real peer process.
+    let mut stream = sharenet_transport_ice::tunnel_connect(
+        &nomination.pair.remote,
+        CLIENT_SEED,
+        node_id,
+    )
+    .expect("pinned QUIC connect on the nominated direct pair");
+    for i in 1..=3u32 {
+        let payload = format!("agent-direct-{i}").into_bytes();
+        stream.send_frame(&payload).expect("send");
+        let echoed = stream.recv_frame().expect("recv");
+        let mut want = b"echo:".to_vec();
+        want.extend_from_slice(&payload);
+        assert_eq!(echoed, want);
+    }
+    stream.send_frame(b"done").expect("client done");
+    let _ = stream.finish();
+
+    let (ok, lines) = peer_proc.finish();
+    assert!(ok, "ice_peer direct failed");
+    assert!(lines.iter().any(|l| l == "CLIENT_DONE"), "lines: {lines:?}");
+}
+
+#[test]
+fn agent_falls_back_to_relayed_pair_when_target_is_relay_only() {
+    // The TARGET is restricted: it is reachable ONLY at its relayed
+    // address (no direct candidate exists). The agent's pair walk finds
+    // the lower-priority host→relayed pair and nominates it.
+    let (relay_proc, relay_addr) = spawn_relay();
+    let (peer_proc, relayed, node_id) = spawn_ice_peer(&[
+        "--mode",
+        "relay",
+        "--relay",
+        &relay_addr.to_string(),
+        "--seed-hex",
+        PEER_SEED_HEX,
+        "--frames",
+        "2",
+    ]);
+
+    let remote = [Candidate::new(CandidateType::Relayed, relayed, relayed, 1, 65_535)
+        .expect("candidate")];
+    let mut config = AgentConfig::default();
+    config.check = fast_stun_config();
+    config.relay = Some(RelayEndpoint {
+        addr: relay_addr,
+        credential: None,
+    });
+    let nomination = sharenet_transport_ice::agent::nominate(&config, &remote)
+        .expect("the relay-only target must be nominated through its relayed pair");
+
+    assert_eq!(nomination.path, PathKind::Relay, "relay-only target = relay path");
+    assert!(!nomination.local_relay_used, "client side is open: no local allocation");
+
+    let mut stream = sharenet_transport_ice::tunnel_connect(
+        &nomination.pair.remote,
+        CLIENT_SEED,
+        node_id,
+    )
+    .expect("pinned QUIC connect through the relayed pair");
+    for i in 1..=2u32 {
+        let payload = format!("agent-relay-{i}").into_bytes();
+        stream.send_frame(&payload).expect("send");
+        let echoed = stream.recv_frame().expect("recv");
+        let mut want = b"echo:".to_vec();
+        want.extend_from_slice(&payload);
+        assert_eq!(echoed, want);
+    }
+    stream.send_frame(b"done").expect("client done");
+    let _ = stream.finish();
+
+    let (ok, lines) = peer_proc.finish();
+    assert!(ok, "ice_peer relay failed");
+    assert!(lines.iter().any(|l| l == "CLIENT_DONE"), "lines: {lines:?}");
+    drop(relay_proc);
+}
+
+#[test]
+fn agent_continues_past_dead_direct_candidate_to_the_relayed_one() {
+    // A hostile/dead higher-priority direct candidate must not poison
+    // the walk: its typed failure is recorded, the relayed pair still
+    // wins.
+    let (relay_proc, relay_addr) = spawn_relay();
+    let (peer_proc, relayed, node_id) = spawn_ice_peer(&[
+        "--mode",
+        "relay",
+        "--relay",
+        &relay_addr.to_string(),
+        "--seed-hex",
+        PEER_SEED_HEX,
+        "--frames",
+        "1",
+    ]);
+
+    let remote = [
+        dead_host_candidate(),
+        Candidate::new(CandidateType::Relayed, relayed, relayed, 1, 65_535)
+            .expect("candidate"),
+    ];
+    let mut config = AgentConfig::default();
+    config.check = fast_stun_config();
+    config.relay = Some(RelayEndpoint {
+        addr: relay_addr,
+        credential: None,
+    });
+    let nomination = sharenet_transport_ice::agent::nominate(&config, &remote)
+        .expect("the relayed pair must win after the dead direct candidate fails");
+
+    assert_eq!(nomination.path, PathKind::Relay);
+    assert_eq!(nomination.pair.remote.transport_addr(), relayed);
+    assert!(
+        nomination.attempts.iter().all(|a| a.outcome.is_err()),
+        "the transcript records only the failed dead-direct attempt"
+    );
+
+    let mut stream = sharenet_transport_ice::tunnel_connect(
+        &nomination.pair.remote,
+        CLIENT_SEED,
+        node_id,
+    )
+    .expect("tunnel on the post-fallback nomination");
+    let payload = b"agent-fallback".to_vec();
+    stream.send_frame(&payload).expect("send");
+    let echoed = stream.recv_frame().expect("recv");
+    let mut want = b"echo:".to_vec();
+    want.extend_from_slice(&payload);
+    assert_eq!(echoed, want);
+    stream.send_frame(b"done").expect("client done");
+    let _ = stream.finish();
+
+    let (ok, lines) = peer_proc.finish();
+    assert!(ok);
+    assert!(lines.iter().any(|l| l == "CLIENT_DONE"), "lines: {lines:?}");
+    drop(relay_proc);
+}
+
+#[test]
+fn agent_local_relay_allocation_with_wrong_credential_fails_typed() {
+    // Client-side fallback with the WRONG long-term credential: the
+    // allocation is refused with the typed auth error (never a crash,
+    // never a fabricated path), and the relay survives for a correct
+    // credential afterwards.
+    let (relay_proc, relay_addr) = spawn_relay_with_auth("alice", "wonderland");
+
+    // All direct candidates dead → phase 2 (local relayed allocation).
+    let remote = [dead_host_candidate()];
+    let mut config = AgentConfig::default();
+    config.check = fast_stun_config();
+    config.relay = Some(RelayEndpoint {
+        addr: relay_addr,
+        credential: Some(
+            RelayCredential::parse("alice:wrong-secret").expect("credential"),
+        ),
+    });
+    let refused = sharenet_transport_ice::agent::nominate(&config, &remote);
+    match refused.err().expect("wrong credential must refuse") {
+        IceError::RelayAuthRejected { .. } => {}
+        other => panic!("expected RelayAuthRejected, got {other:?}"),
+    }
+
+    // The relay survived: the CORRECT credential allocates fine.
+    let good = RelayCredential::parse("alice:wonderland").expect("credential");
+    let client =
+        RelayClient::allocate_authenticated(relay_addr, "127.0.0.1:0".parse().expect("addr"), &good);
+    assert!(client.is_ok(), "relay must survive refused auth: {client:?}");
+    drop(relay_proc);
+}
+
+#[test]
+fn authenticated_relay_serves_the_agent_path_end_to_end() {
+    // The full authenticated dance over real processes: the peer sits
+    // behind the credentialed relay; the agent's relay-only walk rides
+    // the authenticated allocation transparently; the tunnel completes.
+    let (relay_proc, relay_addr) = spawn_relay_with_auth("carol", "s3cret");
+    let (peer_proc, relayed, node_id) = spawn_ice_peer(&[
+        "--mode",
+        "relay",
+        "--relay",
+        &relay_addr.to_string(),
+        "--credential",
+        "carol:s3cret",
+        "--seed-hex",
+        PEER_SEED_HEX,
+        "--frames",
+        "2",
+    ]);
+
+    let remote = [Candidate::new(CandidateType::Relayed, relayed, relayed, 1, 65_535)
+        .expect("candidate")];
+    let mut config = AgentConfig::default();
+    config.check = fast_stun_config();
+    config.relay = Some(RelayEndpoint {
+        addr: relay_addr,
+        credential: Some(
+            RelayCredential::parse("carol:s3cret").expect("credential"),
+        ),
+    });
+    let nomination = sharenet_transport_ice::agent::nominate(&config, &remote)
+        .expect("nomination through the authenticated relay");
+
+    assert_eq!(nomination.path, PathKind::Relay);
+
+    let mut stream = sharenet_transport_ice::tunnel_connect(
+        &nomination.pair.remote,
+        CLIENT_SEED,
+        node_id,
+    )
+    .expect("pinned QUIC connect through the authenticated relay path");
+    for i in 1..=2u32 {
+        let payload = format!("agent-auth-{i}").into_bytes();
+        stream.send_frame(&payload).expect("send");
+        let echoed = stream.recv_frame().expect("recv");
+        let mut want = b"echo:".to_vec();
+        want.extend_from_slice(&payload);
+        assert_eq!(echoed, want);
+    }
+    stream.send_frame(b"done").expect("client done");
+    let _ = stream.finish();
+
+    let (ok, lines) = peer_proc.finish();
+    assert!(ok);
+    assert!(lines.iter().any(|l| l == "CLIENT_DONE"), "lines: {lines:?}");
+    drop(relay_proc);
 }

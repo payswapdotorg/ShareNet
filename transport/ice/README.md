@@ -1,4 +1,4 @@
-# sharenet-transport-ice — R4-005 (ICE/TURN)
+# sharenet-transport-ice — R4-005 + R4-006 (ICE/TURN + agent fallback)
 
 ShareNet NAT-traversal / relay transport. **Platform adapter layer**
 per `spec/architecture-lock.md` L009/L011/L012 and
@@ -16,10 +16,12 @@ to; ShareNet-level authentication rides inside the tunnel).
 |---|---|---|
 | STUN codec (RFC 5389 subset) | `src/stun.rs` | Strict 20-byte-header codec: magic cookie `0x2112A442`, 96-bit transaction ids, method/class bit encoding (§6), attribute TLVs with 4-byte alignment, XOR-MAPPED-ADDRESS (§15.2), SOFTWARE. Rejects: bad cookie, unknown comprehension-required attributes, malformed TLV lengths, trailing garbage, unaligned message lengths, duplicate attributes. |
 | STUN client | `src/stun.rs` | `binding_request` over any `DatagramPipe` (real UDP): random transaction id, response matched by EXACT transaction id (mismatched responses discarded — verified adversarially), 3-attempt retry with timeout, fail-closed on any malformed response. `connectivity_check` = the RFC 8445 §7-subset check (returns the address the target observed). |
-| Candidate model (RFC 8445) | `src/candidate.rs` | `CandidateType::{Host, ServerReflexive, Relayed}` with the standard priority formula `(2^24)*type_pref + (2^8)*local_pref + (256 - component)` and type+base-derived foundations; `gather` (host always; srflx via STUN; relayed via allocation), `pair_candidates` ordered by pair priority (controlling-agent rule). No agent nomination state machine — that is future R4-006/R4-007 scope (documented). |
-| TURN-style relay (RFC 8656 concepts) | `src/relay.rs` | `RelayServer`: per-5-tuple allocations (RFC 8656 437 allocation-mismatch on a conflicting new nonce; identical-nonce retransmission returns the byte-identical response), a relayed UDP address per allocation forwarding OPAQUE datagrams (never parsed — L012), permission-lite activation (relayed socket silent until the client has sent first — documented simplification). `RelayClient`: allocate/send/recv with typed errors; `RelayServerAdapter` pumps a real QUIC endpoint's datagrams through an allocation. Control framing: 12-byte `magic "SN" + msg_type + allocation_id + len` — TEST/LOCAL scope (no TURN auth; production TURN is R4-006 scope). |
+| Candidate model (RFC 8445) | `src/candidate.rs` | `CandidateType::{Host, ServerReflexive, Relayed}` with the standard priority formula `(2^24)*type_pref + (2^8)*local_pref + (256 - component)` and type+base-derived foundations; `gather` (host always; srflx via STUN; relayed via allocation), `pair_candidates` ordered by pair priority (controlling-agent rule). Consumed by the R4-006 agent below. |
+| **ICE agent** (R4-006) | `src/agent.rs` | `nominate(config, remote)` — the controlling-agent nomination with **restrictive-network fallback**: gathers host (+srflx), walks ALL pairs in RFC 8445 §6.1.2.3 pair-priority order (direct pairs first by construction) with `connectivity_check`, nominates the FIRST working pair; when every host/srflx-base pair fails and a relay is configured, allocates a LOCAL relayed candidate (authenticated when credentialed) and completes the walk through it. Open networks never touch the relay (`local_relay_used == false` is a first-class tested outcome); hostile/lying/dead candidates fail per-pair typed without poisoning the walk; no path → `AgentNoPath` with the FULL attempt transcript (reachability is never fabricated). Deliberately NOT implemented (honest): RFC 8445 role negotiation/conflicts, consent freshness (§11), triggered checks, peer-reflexive candidates, multi-component — R4-007 real-network / future scope; the remote peer is an ICE-lite responder. |
+| **Relay allocation auth** (R4-006) | `src/relay.rs` | Long-term-credential allocation dance in the RFC 5389 §10.2 / RFC 8489 §9 model, adapted to the SN control framing: 401-challenge (nonce + realm) → keyed response with HMAC-SHA-256 message integrity over the exact request bytes (`long_term_key` = MD5-free HMAC derivation; the `sha1` crate is deliberately avoided — `hmac`+`sha2` were already in the dependency tree, and RFC 8489 itself defines HMAC-SHA-256 integrity). Wrong credential → typed `RelayAuthRejected`; replayed nonce/challenge → typed refusal; the relay survives adversarial auth attempts unharmed; data datagrams stay opaque (L012). `turn_relay` gained `--auth user:secret` + `--realm` (multiple credentials supported). |
+| TURN-style relay (RFC 8656 concepts) | `src/relay.rs` | `RelayServer`: per-5-tuple allocations (RFC 8656 437 allocation-mismatch on a conflicting new nonce; identical-nonce retransmission returns the byte-identical response), a relayed UDP address per allocation forwarding OPAQUE datagrams (never parsed — L012), permission-lite activation (relayed socket silent until the client has sent first — documented simplification), optional long-term-credential auth (R4-006 row above). `RelayClient`: allocate/send/recv (authenticated allocate included) with typed errors; `RelayServerAdapter` pumps a real QUIC endpoint's datagrams through an allocation. Control framing: 12-byte `magic "SN" + msg_type + allocation_id + len` — LOCAL scope (serves the local relay + tests; interop with production TURN servers is future adapter work). |
 | QUIC bridge | `src/bridge.rs` | `tunnel_connect(candidate, seed, expected_node_id)`: a gathered candidate is the ADDRESS source for a node-pinned `sharenet_transport_quic` tunnel (R4-001) — authentication is entirely the tunnel layer's; relays carry the QUIC datagrams opaque (L012). |
-| binaries | `src/bin/…` | **TEST SCAFFOLDING**: `stun_server` (Binding Request → XOR-MAPPED-ADDRESS + SOFTWARE, `--evil` modes wrong-txid/bad-cookie/trailing-garbage/unknown-required), `turn_relay` (allocations + opaque forwarding), `turn_client` (echo peer behind the relay; `--mode quic` hosts a node-pinned TunnelServer reachable through its relayed address). |
+| binaries | `src/bin/…` | **TEST SCAFFOLDING**: `stun_server` (Binding Request → XOR-MAPPED-ADDRESS + SOFTWARE, `--evil` modes wrong-txid/bad-cookie/trailing-garbage/unknown-required), `turn_relay` (allocations + opaque forwarding; `--auth user:secret` for the R4-006 authenticated dance), `turn_client` (echo peer behind the relay; `--mode quic` hosts a node-pinned TunnelServer reachable through its relayed address), `ice_peer` (R4-006: an ICE-LITE peer — RFC 7983-style STUN/data demux on ONE candidate socket — `--mode direct` or `--mode relay [--credential user:secret]`; prints `READY <candidate-addr> <node-id-hex>`, accepts one node-pinned tunnel, echoes frames, done-exchange). |
 
 ## Documented policies
 
@@ -81,13 +83,23 @@ opaquely; the relay surviving adversarial control frames.
 - No real external STUN/TURN server in evidence — the sandbox runs
   local real ones (the standard pattern of this repo's two-process
   evidence); real-network NAT shapes are R4-007/R10 scope.
-- No TURN authentication (long-term credentials etc.) — production
-  TURN relays are R4-006 scope; this crate's control framing is
-  TEST/LOCAL scope by design.
-- No full ICE agent (nomination, consent freshness, role conflicts) —
-  RFC 8445 candidate/pairing/check primitives only; the agent is
-  future scope above this crate.
+- The client-side local-relay fallback (agent phase 2) is only
+  UNIT-testable on loopback: a data plane that rides the agent's OWN
+  local allocation requires real client-side NAT shapes (R4-007/R10
+  evidence); on loopback the client's host base always reaches the
+  remote relayed address directly, so the phase-2 walk completes but
+  the QUIC socket uses the remote-relayed path. The auth refusal,
+  allocation, and replay rules ARE exercised end-to-end against the
+  real relay binary.
+- No RFC 8445 full agent: role negotiation/conflicts, consent
+  freshness (§11), triggered checks, peer-reflexive candidates,
+  multi-component streams (the agent is the controlling half against
+  ICE-lite responders — documented in `src/agent.rs`).
 - Relay permission model simplified (client-sends-first activation
   instead of RFC 8656 permissions/CHANNEL-BINDINGS).
+- The authenticated relay speaks the SN control framing with
+  HMAC-SHA-256 integrity — concept-faithful to RFC 8489 §9, not
+  wire-interoperable with production TURN servers (adapter work for
+  real relays is future scope, like the rest of the control framing).
 - `stun_server` silently drops non-Binding-Request datagrams instead
   of RFC 5389 §7.4 error responses (scaffolding simplification).

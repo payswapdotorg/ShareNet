@@ -1,0 +1,28 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Gradle / Android
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Kotlin
+.kotlin/
+
+# OS / editor
+.DS_Store
+
+# Secrets and local env — never commit
+.env
+*.pem
+*.key
+
+# Local identity stores created by tools/binaries during testing
+*.sharenet-identity

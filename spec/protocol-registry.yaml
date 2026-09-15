@@ -88,16 +88,33 @@ objects:
     maturity: planned
   - name: CircuitSetup
     class: wire
-    maturity: planned
+    maturity: in-implementation
+    implementation: reference/crates/sharenet-protocol (circuit.rs)
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: route_commitment (bstr: the RouteCommitment map bytes — fully verified at admission per R3-004), 3: setup_nonce (32-byte bstr, entropy supplied by the initiator — distinguishes otherwise identical setups so every replacement circuit is genuinely new), 4: initiator NodeIdentity map (MUST be the route proposal's proposer identity), 5: issued_at_unix (uint), 6: expires_at_unix (uint, > issued_at; window <= 3600s)}
+    signature_rule: detached Ed25519 signature by the initiator's key over the exact canonical setup bytes; carrying envelope = canonical CBOR {1: setup (bstr), 2: signature (64-byte bstr)}
+    derivation_rule: circuit_id = SHA-256("sharenet-circuit-id-v1" || route_id || setup_nonce) — commitment-derived through the verified route_id (L013 discipline), fresh per nonce; caller-selected circuit IDs forbidden; the (route_id, setup_nonce) pair is single-use — a replacement circuit for the same route MUST carry a fresh nonce (L014 fresh session identity and replay namespace)
+    admission_rule: admission = strict parse + FULL RouteCommitment verification (R3-004: proposal, every acceptance, exact position coverage, root + route_id re-derivation) + initiator signature over the setup bytes + initiator node_id == proposal proposer node_id (circuit authority binds to route authority) + freshness (issued_at <= now < expires_at, window <= 3600s) + (route_id, nonce) never used before; no caller-controlled trust booleans
   - name: CircuitSetupAck
     class: wire
-    maturity: planned
+    maturity: in-implementation
+    implementation: reference/crates/sharenet-protocol (circuit.rs)
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: circuit_id (32-byte bstr — the acknowledged circuit), 3: setup_digest (32-byte bstr — SHA-256 of the canonical setup bytes, binding this ack to the exact setup), 4: accepting NodeIdentity map (MUST be the identity whose node_id equals path[position] of the verified route), 5: position (uint — the hop index being accepted), 6: accepted_at_unix (uint), 7: expires_at_unix (uint, > accepted_at; and accepted_at_unix < the setup's expires_at_unix — acks cannot outlive their setup)}
+    signature_rule: detached Ed25519 signature by the accepting hop's key over the canonical ack bytes; carrying envelope {1: ack (bstr), 2: signature (64-byte bstr)}
+    admission_rule: strict parse + signature + the circuit is known and pending + setup_digest match + accepting node_id == path[position] + position not yet acked (exactly-once per position; a circuit is ESTABLISHED when every position 0..len-1 is acked — mirroring the R3-004 exact-coverage rule) + freshness (accepted_at <= now < expires_at)
   - name: CircuitFrame
     class: wire
-    maturity: planned
+    maturity: in-implementation
+    implementation: reference/crates/sharenet-protocol (circuit.rs)
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: circuit_id (32-byte bstr), 3: direction (uint: 1 = initiator_to_exit, 2 = exit_to_initiator), 4: seq (u64 — per-direction strictly monotonic starting at 0: the circuit's replay namespace), 5: payload (bstr, 1..=2097152 bytes — opaque end-to-end bytes)}
+    integrity_rule: NOT individually signed or MACed by design — hop-by-hop integrity comes from the carrying layers (R3-001 authenticated link AEAD frames / R4-001 node-pinned QUIC+TLS 1.3 tunnels), and end-to-end payload integrity is the content layer's job (R6 content addressing); architecture §9 (relay privacy) explicitly prefers standard transport security over custom per-frame cryptography — the frame itself carries only binding + ordering
+    admission_rule: the circuit is ESTABLISHED (full position coverage) + not destroyed + direction in {1,2} + seq == the direction's next expected sequence (strictly monotonic from 0; replays, gaps and regressions rejected) + payload bounds (non-empty, <= 2 MiB)
   - name: CircuitDestroy
     class: wire
-    maturity: planned
+    maturity: in-implementation
+    implementation: reference/crates/sharenet-protocol (circuit.rs)
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: circuit_id (32-byte bstr), 3: sender NodeIdentity map (MUST be a committed path member), 4: reason (text; frozen v1 set: link_failure, policy, completed, replaced), 5: destroyed_at_unix (uint)}
+    signature_rule: detached Ed25519 signature by the sender's key over the canonical destroy bytes; carrying envelope {1: destroy (bstr), 2: signature (64-byte bstr)}
+    terminality_rule: a destroyed circuit is terminal forever (§11: a failed circuit is never resurrected) — frames and acks on it are rejected, the (route_id, setup_nonce) stays consumed, and a replacement circuit MUST carry a fresh nonce producing a fresh circuit_id and fresh replay namespaces (L014); duplicate destroys of the same circuit are idempotent
   - name: ContributionReceipt
     class: wire
     maturity: planned

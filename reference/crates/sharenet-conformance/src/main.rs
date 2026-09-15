@@ -30,6 +30,9 @@ use std::process::ExitCode;
 use serde::Deserialize;
 
 use sharenet_protocol::cbor::{decode, encode, Value};
+use sharenet_protocol::advertisement::{
+    Advertisement, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement, TransportDescriptor,
+};
 use sharenet_protocol::capability::{admit, Capability, CapabilityStatement};
 use sharenet_protocol::identity::{derive_node_id, Identity};
 use sharenet_protocol::link::{LinkInitiator, LinkResponder, LinkSession};
@@ -331,6 +334,92 @@ fn main() -> ExitCode {
             f.seq,
             to_hex(&frame)
         );
+    }
+
+    // ---------------- advertisement vectors ----------------
+    #[derive(Deserialize)]
+    struct AdFile {
+        cases: Vec<AdCaseV>,
+        receive: Vec<AdReceiveV>,
+        parse_reject: Vec<AdRejectV>,
+    }
+    #[derive(Deserialize)]
+    struct AdCaseV {
+        seed_hex: String,
+        created_at_unix: u64,
+        capabilities_hex: Option<String>,
+        transports: Vec<AdTransportV>,
+        issued_at_unix: u64,
+        validity_secs: u64,
+        envelope_hex: String,
+    }
+    #[derive(Deserialize)]
+    struct AdTransportV {
+        kind: String,
+        endpoint: String,
+    }
+    #[derive(Deserialize)]
+    struct AdReceiveV {
+        case: usize,
+        now_unix: u64,
+        #[allow(dead_code)]
+        expect: String,
+    }
+    #[derive(Deserialize)]
+    struct AdRejectV {
+        hex: String,
+    }
+    let ad_file: AdFile = load_json(&vectors_dir.join("advertisement_vectors.json"));
+    for (i, c) in ad_file.cases.iter().enumerate() {
+        let seed: [u8; 32] = from_hex(&c.seed_hex).try_into().expect("seed");
+        let id = Identity::from_seed(seed, c.created_at_unix, None).expect("identity");
+        let capabilities = c.capabilities_hex.as_ref().map(|h| from_hex(h));
+        let tds: Vec<TransportDescriptor> = c
+            .transports
+            .iter()
+            .map(|t| TransportDescriptor {
+                kind: t.kind.clone(),
+                endpoint: t.endpoint.clone(),
+            })
+            .collect();
+        let ad = Advertisement::new(&id, capabilities, tds, c.issued_at_unix, c.validity_secs)
+            .expect("ad builds");
+        let signed = ad.sign(&id).expect("signs");
+        println!(
+            "AD {i} wire={} sig={} id={} env={}",
+            to_hex(signed.advertisement_bytes()),
+            to_hex(signed.signature()),
+            to_hex(&signed.advertisement_id()),
+            to_hex(&signed.to_envelope_bytes()),
+        );
+    }
+    {
+        let mut caches: std::collections::HashMap<usize, DiscoveryCache> =
+            std::collections::HashMap::new();
+        for (i, r) in ad_file.receive.iter().enumerate() {
+            let c = &ad_file.cases[r.case];
+            let signed =
+                SignedAdvertisement::from_envelope_bytes(&from_hex(&c.envelope_hex))
+                    .expect("envelope");
+            let cache = caches.entry(r.case).or_insert_with(DiscoveryCache::new);
+            let outcome = match cache.receive(&signed, r.now_unix) {
+                Ok(DiscoveryOutcome::Discovered) => "discovered".to_string(),
+                Ok(DiscoveryOutcome::Duplicate) => "duplicate".to_string(),
+                Ok(DiscoveryOutcome::Stale) => "stale".to_string(),
+                Err(e) => e.name(),
+            };
+            println!("AD_RECV {i} now={} {}", r.now_unix, outcome);
+        }
+    }
+    for (i, r) in ad_file.parse_reject.iter().enumerate() {
+        let bytes = from_hex(&r.hex);
+        match Advertisement::from_wire_bytes(&bytes) {
+            Err(e) => println!("AD_REJ {i} {}", e.name()),
+            Ok(_) => {
+                eprintln!("FAIL advertisement parse_reject {i}: unexpectedly parsed");
+                failures += 1;
+            }
+        }
     }
 
     // ---------------- NodeIdentity decode spot check ----------------

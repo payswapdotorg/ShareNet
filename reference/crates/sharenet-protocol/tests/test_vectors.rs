@@ -151,6 +151,54 @@ struct CapabilityReject {
 }
 
 #[derive(Serialize, Deserialize)]
+struct AdvertisementVectorsFile {
+    scheme: String,
+    description: String,
+    cases: Vec<AdCase>,
+    receive: Vec<AdReceiveCase>,
+    parse_reject: Vec<AdReject>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AdCase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    seed_hex: String,
+    created_at_unix: u64,
+    /// optional capability envelope bytes carried in the advertisement
+    capabilities_hex: Option<String>,
+    transports: Vec<AdTransport>,
+    issued_at_unix: u64,
+    validity_secs: u64,
+    advertisement_wire_hex: String,
+    signature_hex: String,
+    advertisement_id_hex: String,
+    envelope_hex: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AdTransport {
+    kind: String,
+    endpoint: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AdReceiveCase {
+    case: usize,
+    now_unix: u64,
+    /// "discovered" | "duplicate" | "stale" or the error name
+    expect: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AdReject {
+    hex: String,
+    error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct LinkVectorsFile {
     scheme: String,
     description: String,
@@ -657,6 +705,282 @@ session keys (frames pin key_i2r/key_r2i without exporting them). Scalars are \
 TEST-ONLY.".into(),
         cases,
         frames,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Advertisement vectors (R3-002)
+// ---------------------------------------------------------------------------
+
+fn advertisement_vectors() -> AdvertisementVectorsFile {
+    use sharenet_protocol::advertisement::{
+        Advertisement as Ad, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement,
+        TransportDescriptor as T,
+    };
+    let mk = |seed_hex: &str, created: u64| -> Identity {
+        let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
+        Identity::from_seed(seed, created, None).unwrap()
+    };
+    let cases_in: Vec<(&str, &str, u64, Option<Vec<(&str, i64)>>, Vec<(&str, &str)>, u64, u64)> = vec![
+        (
+            "single udp endpoint, no capabilities",
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            0,
+            None,
+            vec![("udp", "192.168.1.10:7000")],
+            1_700_000_000,
+            120,
+        ),
+        (
+            "multi-transport with capability envelope, scrambled input order",
+            "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+            1_700_000_000,
+            Some(vec![("max_backhaul_mbps", 50)]),
+            vec![
+                ("quic", "gw.example.net:443"),
+                ("udp", "10.1.2.3:7000"),
+                ("udp", "10.1.2.4:7000"),
+            ],
+            1_700_000_500,
+            300,
+        ),
+        (
+            "wifi_aware + nearby, max window",
+            "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            42,
+            None,
+            vec![("nearby", "cluster-alpha"), ("wifi_aware", "aware-1")],
+            1,
+            600,
+        ),
+    ];
+    let mut cases = Vec::new();
+    for (note, seed_hex, created, caps_limits, transports, issued, validity) in &cases_in {
+        let id = mk(seed_hex, *created);
+        let capabilities = caps_limits.as_ref().map(|limits| {
+            let mut m = std::collections::BTreeMap::new();
+            for (k, v) in limits {
+                m.insert(k.to_string(), *v);
+            }
+            let st = sharenet_protocol::capability::CapabilityStatement::new(
+                id.node_id(),
+                &[sharenet_protocol::capability::Capability::Gateway],
+                1_700_000_000,
+                1_700_086_400,
+                Some(m),
+            )
+            .unwrap();
+            st.sign(&id).unwrap().to_envelope_bytes()
+        });
+        let tds: Vec<T> = transports
+            .iter()
+            .map(|(k, e)| T {
+                kind: k.to_string(),
+                endpoint: e.to_string(),
+            })
+            .collect();
+        let ad = Ad::new(&id, capabilities.clone(), tds, *issued, *validity).unwrap();
+        let signed = ad.sign(&id).unwrap();
+        cases.push(AdCase {
+            note: Some(note.to_string()),
+            seed_hex: seed_hex.to_string(),
+            created_at_unix: *created,
+            capabilities_hex: capabilities.map(|c| common_hex(&c)),
+            transports: transports
+                .iter()
+                .map(|(k, e)| AdTransport {
+                    kind: k.to_string(),
+                    endpoint: e.to_string(),
+                })
+                .collect(),
+            issued_at_unix: *issued,
+            validity_secs: *validity,
+            advertisement_wire_hex: common_hex(signed.advertisement_bytes()),
+            signature_hex: common_hex(signed.signature()),
+            advertisement_id_hex: common_hex(&signed.advertisement_id()),
+            envelope_hex: common_hex(&signed.to_envelope_bytes()),
+        });
+    }
+    // receive outcomes (freshness + dedup)
+    let receive = vec![
+        AdReceiveCase {
+            case: 0,
+            now_unix: 1_700_000_060,
+            expect: "discovered".into(),
+        },
+        AdReceiveCase {
+            case: 0,
+            now_unix: 1_700_000_061,
+            expect: "duplicate".into(),
+        },
+        AdReceiveCase {
+            case: 0,
+            now_unix: 1_700_000_120,
+            expect: "expired".into(),
+        },
+        AdReceiveCase {
+            case: 0,
+            now_unix: 1_699_999_999,
+            expect: "not_yet_valid".into(),
+        },
+        AdReceiveCase {
+            case: 1,
+            now_unix: 1_700_000_600,
+            expect: "discovered".into(),
+        },
+        AdReceiveCase {
+            case: 2,
+            now_unix: 300,
+            expect: "discovered".into(),
+        },
+    ];
+    // typed parse rejections
+    let good_id_hex = {
+        let id = mk(
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            0,
+        );
+        common_hex(id.node_id().as_bytes())
+    };
+    let rej = |hex: String, error: &str, note: &str| AdReject {
+        hex,
+        error: error.to_string(),
+        note: Some(note.to_string()),
+    };
+    let mut parse_reject = Vec::new();
+    {
+        // unknown transport kind
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (
+                Value::Int(2),
+                mk("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0)
+                    .node_identity()
+                    .to_wire(),
+            ),
+            (
+                Value::Int(4),
+                Value::Array(vec![Value::Map(vec![
+                    (Value::Int(1), Value::Text("bluetooth".into())),
+                    (Value::Int(2), Value::Text("00:11:22:33:44:55".into())),
+                ])]),
+            ),
+            (Value::Int(5), Value::Int(1)),
+            (Value::Int(6), Value::Int(60)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "transport_kind_unknown",
+            "only the frozen v1 kind set is valid",
+        ));
+        // unsorted transports
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (
+                Value::Int(2),
+                mk("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0)
+                    .node_identity()
+                    .to_wire(),
+            ),
+            (
+                Value::Int(4),
+                Value::Array(vec![
+                    Value::Map(vec![
+                        (Value::Int(1), Value::Text("udp".into())),
+                        (Value::Int(2), Value::Text("10.0.0.2:1".into())),
+                    ]),
+                    Value::Map(vec![
+                        (Value::Int(1), Value::Text("udp".into())),
+                        (Value::Int(2), Value::Text("10.0.0.1:1".into())),
+                    ]),
+                ]),
+            ),
+            (Value::Int(5), Value::Int(1)),
+            (Value::Int(6), Value::Int(60)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "transports_not_sorted",
+            "canonical order is strictly ascending by (kind, endpoint)",
+        ));
+        // window too long
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (
+                Value::Int(2),
+                mk("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0)
+                    .node_identity()
+                    .to_wire(),
+            ),
+            (
+                Value::Int(4),
+                Value::Array(vec![Value::Map(vec![
+                    (Value::Int(1), Value::Text("udp".into())),
+                    (Value::Int(2), Value::Text("10.0.0.1:1".into())),
+                ])]),
+            ),
+            (Value::Int(5), Value::Int(1)),
+            (Value::Int(6), Value::Int(601 + 1)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "window_invalid",
+            "validity window must be <= 600s",
+        ));
+        // empty transports
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (
+                Value::Int(2),
+                mk("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0)
+                    .node_identity()
+                    .to_wire(),
+            ),
+            (Value::Int(4), Value::Array(vec![])),
+            (Value::Int(5), Value::Int(1)),
+            (Value::Int(6), Value::Int(60)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "transports_empty",
+            "an advertisement with no transports is meaningless",
+        ));
+        // missing expires_at
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (
+                Value::Int(2),
+                mk("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0)
+                    .node_identity()
+                    .to_wire(),
+            ),
+            (
+                Value::Int(4),
+                Value::Array(vec![Value::Map(vec![
+                    (Value::Int(1), Value::Text("udp".into())),
+                    (Value::Int(2), Value::Text("10.0.0.1:1".into())),
+                ])]),
+            ),
+            (Value::Int(5), Value::Int(1)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "missing_field",
+            "expires_at is required",
+        ));
+        let _ = good_id_hex;
+    }
+    AdvertisementVectorsFile {
+        scheme: "sharenet-advertisement-v1".into(),
+        description: "Advertisement/discovery vectors (R3-002). For every case the harness \
+MUST: rebuild the announcer identity from seed+created_at, rebuild the \
+advertisement (canonical transport order), re-derive the wire bytes and \
+signature byte-exactly, and re-derive advertisement_id = SHA-256(wire). \
+receive[] cases run the full receiver verification pipeline and expect the \
+named outcome. parse_reject[] bytes MUST fail with the named typed error.".into(),
+        cases,
+        receive,
+        parse_reject,
     }
 }
 
@@ -1291,6 +1615,66 @@ fn vectors_conformance() {
             f.seq
         );
     }
+
+    // ---- advertisement vectors ----
+    let ad_file: AdvertisementVectorsFile = serde_json::from_str(
+        &std::fs::read_to_string(vectors_path("advertisement_vectors.json"))
+            .expect("advertisement_vectors.json must exist"),
+    )
+    .expect("advertisement_vectors.json parses");
+    assert_eq!(ad_file.scheme, "sharenet-advertisement-v1");
+    use sharenet_protocol::advertisement::{
+        Advertisement as Ad, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement,
+        TransportDescriptor as T,
+    };
+    for (i, c) in ad_file.cases.iter().enumerate() {
+        let seed: [u8; SEED_LEN] = from_hex(&c.seed_hex).try_into().expect("seed len");
+        let id = Identity::from_seed(seed, c.created_at_unix, None).unwrap();
+        let capabilities = c.capabilities_hex.as_ref().map(|h| from_hex(h));
+        let tds: Vec<T> = c
+            .transports
+            .iter()
+            .map(|t| T {
+                kind: t.kind.clone(),
+                endpoint: t.endpoint.clone(),
+            })
+            .collect();
+        let ad = Ad::new(&id, capabilities, tds, c.issued_at_unix, c.validity_secs)
+            .unwrap_or_else(|e| panic!("case {i} must build: {e}"));
+        assert_eq!(
+            common_hex(&ad.to_wire_bytes()),
+            c.advertisement_wire_hex,
+            "wire mismatch in case {i}"
+        );
+        let signed = ad.sign(&id).unwrap();
+        assert_eq!(common_hex(signed.signature()), c.signature_hex, "case {i}");
+        assert_eq!(common_hex(&signed.advertisement_id()), c.advertisement_id_hex, "case {i}");
+        assert_eq!(common_hex(&signed.to_envelope_bytes()), c.envelope_hex, "case {i}");
+    }
+    // receive pipeline: one persistent cache per vector CASE (dedup
+    // expectations require state across receive entries of the same case)
+    let mut caches: std::collections::HashMap<usize, DiscoveryCache> =
+        std::collections::HashMap::new();
+    for (i, r) in ad_file.receive.iter().enumerate() {
+        let c = &ad_file.cases[r.case];
+        let signed = SignedAdvertisement::from_envelope_bytes(&from_hex(&c.envelope_hex)).unwrap();
+        let cache = caches.entry(r.case).or_insert_with(DiscoveryCache::new);
+        let outcome = match cache.receive(&signed, r.now_unix) {
+            Ok(DiscoveryOutcome::Discovered) => "discovered".to_string(),
+            Ok(DiscoveryOutcome::Duplicate) => "duplicate".to_string(),
+            Ok(DiscoveryOutcome::Stale) => "stale".to_string(),
+            Err(e) => e.name(),
+        };
+        assert_eq!(outcome, r.expect, "receive case {i} (case {})", r.case);
+    }
+    for r in &ad_file.parse_reject {
+        let bytes = from_hex(&r.hex);
+        let err = match Ad::from_wire_bytes(&bytes) {
+            Err(e) => e,
+            Ok(_) => panic!("advertisement parse_reject {} was accepted", r.hex),
+        };
+        assert_eq!(err.name(), r.error, "parse_reject {}", r.hex);
+    }
 }
 
 #[test]
@@ -1306,6 +1690,9 @@ fn regenerate_vectors() {
         .expect("write capability vectors");
     let link_json = serde_json::to_string_pretty(&link_vectors()).unwrap() + "\n";
     std::fs::write(vectors_path("link_vectors.json"), link_json).expect("write link vectors");
+    let ad_json = serde_json::to_string_pretty(&advertisement_vectors()).unwrap() + "\n";
+    std::fs::write(vectors_path("advertisement_vectors.json"), ad_json)
+        .expect("write advertisement vectors");
     eprintln!("vectors regenerated under {VECTORS_DIR}");
 }
 

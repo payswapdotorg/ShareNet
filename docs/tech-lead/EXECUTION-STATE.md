@@ -250,12 +250,44 @@ Architect decision — see Open Architect Decisions).
   signature/derivation/frame rules and vectors were pre-registered
   before the code; the implementation matches them byte-for-byte).
 
+### R3-002 — Advertisement/discovery — COMPLETE (Wave 4)
+
+- `reference/crates/sharenet-protocol/src/advertisement.rs`: the
+  Advertisement wire object per the registry schema (signed self-
+  certifying announcement: NodeIdentity, optional verified capability
+  envelope, canonically sorted transport descriptors from the frozen v1
+  kind set, freshness window bounded by 600s); content-derived
+  advertisement_id = SHA-256(canonical bytes); DiscoveryCache receiver
+  pipeline (strict parse → signature against the embedded identity →
+  freshness → capability admission → idempotent dedup with
+  stale-replay protection: an older ad can never evict a fresher one).
+- Production caller: `sharenet-discover` (listen/advertise; --link
+  establishes an authenticated link to a discovered endpoint) — the
+  same API the future daemon's discovery loop uses.
+- Verification achieved: unit + adversarial (tamper, expiry
+  boundaries, window bound, unknown kind, unsorted/duplicate/empty
+  transports, stale-replay, envelope roundtrip) + multiprocess (two
+  REAL processes over REAL UDP: mutual discovery via verified
+  advertisements, then a full R3-001 authenticated link to the
+  ADVERTISED endpoint with 3 echoed frames; tampered advertisements
+  rejected while the listener survives) + conformance
+  (advertisement_vectors.json: 3 cases + 6 receive outcomes + 5 typed
+  parse rejections — all three language legs byte-identical; the
+  cross-language harness now spans 150 lines).
+- Persistence: none (discovery is in-memory runtime state; durable
+  topology evidence is R3-003 scope).
+
+## Wave 4 integration record (2026-09-15)
+
+- Implemented directly by the Tech Lead on
+  `work/wave4-w1-advertisement-discovery`; registry pre-registration
+  commit ccc3569 preceded implementation.
+- Registry: Advertisement maturity → implemented.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 3 item R3-001 — COMPLETE (see record above).
-- R3-002 (advertisement/discovery) — READY once its remaining
-  predecessors land: needs R1-003 (COMPLETE), R3-001 (COMPLETE) and
-  R2-004 (COMPLETE) — ALL COMPLETE: R3-002 is READY.
+- R3-003 (authenticated topology evidence) — READY: predecessors
+  R3-001 (COMPLETE) and R3-002 (COMPLETE).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 - R2-002 (Wi-Fi Aware) remains unscheduled in the frozen registry waves

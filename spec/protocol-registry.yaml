@@ -1,0 +1,55 @@
+version: 1
+status: NORMATIVE-SCHEMA-SKELETON
+
+rules:
+  - every_normative_wire_object_must_be_registered
+  - state_machine_objects_are_registered_when_cross-process_or_durable
+  - internal_runtime_objects_do_not_get_vectors_automatically
+  - typescript_and_python_must_match_when_cross-language_vectors_are_defined
+
+objects:
+  - name: NodeIdentity
+    class: wire
+    maturity: foundation
+  - name: Advertisement
+    class: wire
+    maturity: foundation
+  - name: LinkAuthentication
+    class: wire
+    maturity: foundation
+  - name: RouteProposal
+    class: wire
+    maturity: foundation
+  - name: RouteAcceptance
+    class: wire
+    maturity: foundation
+  - name: RouteCommitment
+    class: wire
+    maturity: foundation
+  - name: ConnectivityIntentRef
+    class: integration
+    maturity: planned
+  - name: ConnectivityContractRef
+    class: integration
+    maturity: planned
+  - name: ConnectivityObservation
+    class: integration
+    maturity: planned
+  - name: CircuitSetup
+    class: wire
+    maturity: planned
+  - name: CircuitSetupAck
+    class: wire
+    maturity: planned
+  - name: CircuitFrame
+    class: wire
+    maturity: planned
+  - name: CircuitDestroy
+    class: wire
+    maturity: planned
+  - name: ContributionReceipt
+    class: wire
+    maturity: planned
+  - name: CivicPointLedgerEntry
+    class: durable-state
+    maturity: planned

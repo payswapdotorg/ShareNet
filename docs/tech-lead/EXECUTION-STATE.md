@@ -348,6 +348,59 @@ Architect decision — see Open Architect Decisions).
 - Persistence: none — commitments are computed/verified objects;
   durable circuit state is R4/R7 scope.
 
+### R4-001 — QUIC/TLS tunnel — COMPLETE (Wave 6)
+
+- `transport/quic` crate `sharenet-transport-quic`: the Internet-facing
+  tunnel per architecture §8 and L010 — QUIC + TLS 1.3 via quinn + rustls
+  (the standard Rust stack; no bespoke transport). Each endpoint
+  presents a self-signed Ed25519 certificate whose private key IS the
+  node identity key (R1-001 seed PKCS#8-wrapped into the TLS key);
+  ALPN "sharenet-tunnel-v1"; Ed25519-only signature schemes; TLS 1.2
+  refused at both verifiers.
+- Identity pinning model: the pinned node identity is derived from the
+  certificate's public key by the exact R1-001 rule (unit-verified
+  against the protocol core's own derivation); clients pin the
+  server's node id; servers may pin admitted client node ids
+  (unpinned clients are refused at the handshake — verified on tunnel
+  use because TLS 1.3 lets the client complete its handshake view
+  before the server has verified the client certificate). Documented
+  honestly: an unpinned server entry is an unauthenticated transport;
+  ShareNet-level authentication (R3-001 links, R4-002 circuits) rides
+  INSIDE the tunnel.
+- Framed sessions: length-prefixed frames (u32 BE, MAX_FRAME 2 MiB
+  mirrors the Wave 1 UDP bound) enforced on BOTH the send path
+  (pre-write) and the receive path (the length prefix) — a receiver
+  rejects a bogus 0xFFFFFFFF prefix with FrameTooLarge instead of
+  buffering 4 GiB. Close semantics documented: finish() is graceful;
+  dropping the last handle aborts (standard QUIC) — the test protocol
+  exchanges an application-level "done" frame before exit so process
+  teardown never races in-flight frames.
+- Runtime lifecycle: each endpoint owns a tokio runtime in an Arc
+  shared with every TunnelStream it produced — a stream keeps the
+  driver alive so in-flight frames still transmit after the endpoint
+  owner is dropped (the drop-race fix; teardown when the last
+  owner/stream goes away).
+- Production caller: the two-process verification below; R4-002
+  (circuit binding), R4-005 (ICE/TURN) and the future daemon/gateways
+  construct tunnels through this crate's API (named in the README
+  seams section).
+- Verification achieved: unit (6: node_id derivation equals the
+  protocol core's, certificate carries the identity key, client/server
+  node ids are their identities, oversized local send rejected,
+  in-process mutual-pinning roundtrip, unpinned client rejected) +
+  multiprocess (3: two REAL processes over real loopback QUIC/TLS 1.3
+  with the server node pinned and 3 echoed frames; a wrong pin rejected
+  at connect; adversarial oversized-frame-header rejected with the
+  connection surviving) — the required levels [unit, linux,
+  multiprocess] all green on this Linux host. Cross-checks: reference
+  workspace 132/0, transport/linux 51/0, wasm32 protocol check green,
+  architecture governance PASS.
+- Persistence: none (tunnels are runtime state; durable circuit state
+  is R4-002/R7 scope).
+- Known gaps (honest): relays/ICE/STUN/TURN traversal are R4-005
+  scope; gateway data-plane forwarding is R4-003; no non-loopback
+  network run in evidence (R4-007/R10 scope).
+
 ## Wave 6 integration record (2026-09-15, part 1: R3-004)
 
 - Implemented directly by the Tech Lead on
@@ -355,19 +408,27 @@ Architect decision — see Open Architect Decisions).
   preceded implementation.
 - Registry: RouteProposal/RouteAcceptance/RouteCommitment → implemented.
 
+## Wave 6 integration record (2026-09-15, part 2: R4-001)
+
+- Implemented directly by the Tech Lead on `work/wave6-w2-quic-tunnel`;
+  registry commits preceded: the QuicTunnelTransport binding entry was
+  registered (a5d0aae) and the stale RouteAcceptance/RouteCommitment
+  skeleton duplicates left over from the R3-004 pre-registration were
+  removed in the same governance cleanup.
+- Registry: QuicTunnelTransport (class transport) → implemented —
+  the "quic" advertisement transport kind now has a frozen meaning:
+  node-identity-pinned QUIC + TLS 1.3 with opaque length-framed
+  sessions.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- R4-001 (QUIC/TLS tunnel) — READY: predecessors R2-003 and R3-001
-  COMPLETE (the wave-6 partner of R3-004, now also COMPLETE).
-- R4-002 (route-to-circuit binding) — READY once R3-004 (COMPLETE) and
-  R4-001 land.
+- R4-002 (route-to-circuit binding) — READY: predecessors R3-004
+  COMPLETE and R4-001 COMPLETE.
+- R4-005 (ICE/TURN) — READY: predecessor R4-001 COMPLETE.
+- R5-001 (ConnectivityPort) — READY (no predecessors; wave-7 eligible
+  with R4-002/R4-005).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
-- R2-002 (Wi-Fi Aware) remains unscheduled in the frozen registry waves
-  (note under gate R2: may run as soon as the Android transport seam is
-  stable — the seam is now stable; scheduling is a Tech Lead decision
-  inside gate R2's remaining scope).
-- Worker 3: no W3-eligible items until wave 7 (R5-001).
 
 ## Open Architect Decisions
 

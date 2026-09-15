@@ -17,6 +17,7 @@ path = "src/bin/sharenet_transport_linux.rs"
 
 [dependencies]
 libc = "0.2"
+sharenet-transport-telemetry = { path = "../telemetry" }
 
 [dev-dependencies]
 # None needed: adversarial and multiprocess tests use std only.

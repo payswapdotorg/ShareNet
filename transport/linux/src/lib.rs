@@ -19,6 +19,10 @@
 //!    this host.
 //! 3. [`udp`]: a raw local [`UdpTransport`](udp::UdpTransport) with
 //!    length-framed datagrams, non-blocking support, and typed errors.
+//! 4. [`telemetry_bridge`]: the R2-004 quality-telemetry seam — implements
+//!    the telemetry crate's `FrameTransport` for [`UdpTransport`] and
+//!    offers [`udp_prober`](telemetry_bridge::udp_prober), the one-call
+//!    active RTT prober used by the `probe-rtt` subcommand.
 //!
 //! ## What this crate is NOT
 //!
@@ -41,10 +45,12 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod probe;
+pub mod telemetry_bridge;
 pub mod tun;
 pub mod udp;
 
 pub use probe::{probe_tun, TunAvailability};
+pub use telemetry_bridge::udp_prober;
 pub use tun::{MemoryTunDevice, MemoryTunPair, SystemTunDevice, TunDevice, TunError};
 pub use udp::{decode_frame, encode_frame_into, Frame, UdpError, UdpTransport};
 

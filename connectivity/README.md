@@ -84,9 +84,14 @@ core, applied to the boundary).
   deterministic vehicle it is developed and tested against first.
 - **R5-003 (contract projection)** IS this crate's `store` module — the
   durable local health projection. **R5-005 (gateway admission/backhaul
-  policy)** will consume `health()`/`freshness()` together with ShareNet's
-  own authenticated link/topology evidence — per adcos.md, gateway
-  eligibility needs BOTH.
+  policy)** is delivered as the sibling crate `../admission/`: the pure,
+  deterministic two-factor policy that consumes this crate's
+  `health()`/`freshness()` surface together with the protocol core's
+  verified `TopologyEvidence` and `SignedConnectivityObservation`s —
+  per adcos.md, gateway eligibility needs BOTH. It lives OUTSIDE this
+  crate (the zero-dependency law forbids importing protocol-core types
+  here); its integration suite drives this store end to end over the
+  verified path.
 - Honest status: the `ConnectivityPort` trait's production caller is R5-002
   (`connectivity-client/`, delivered); the store's first production caller
   is the daemon that wires `AdcosClient::get_assurance` observations into it

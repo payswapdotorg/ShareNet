@@ -1,0 +1,30 @@
+[package]
+name = "sharenet-admission"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet gateway admission/backhaul policy (R5-005): the pure, deterministic two-factor admission decision combining verified ShareNet link evidence (R3-003 TopologyEvidence) with the ADCOS-backed durable projection (R5-003/R5-004) into a typed GatewayAdmission. Policy composition layer - no wire objects, no wall clock, no I/O."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_admission"
+path = "src/lib.rs"
+
+# Two dependencies, both deliberate, both ShareNet:
+# - sharenet-protocol (the reference core): the ShareNet-side authenticated
+#   evidence this policy verifies itself (R3-003 SignedTopologyEvidence) and
+#   the ADCOS-side signed observations (R5-004 SignedConnectivityObservation +
+#   its shared frozen constants). "Security-critical facts must be derived
+#   from authenticated protocol state" (AGENTS.md) - so the policy verifies
+#   signatures and never takes a caller's word.
+# - sharenet-connectivity (the ADCOS boundary): the typed local projection
+#   this policy consumes (R5-003 ContractHealth + ProjectionFreshness,
+#   R5-001 ContractState/ObservationKind). The boundary itself stays
+#   zero-dependency (ADR-001) - this crate lives OUTSIDE it, the same
+#   composition position as connectivity-client/.
+#
+# Nothing else: no async runtime, no serde, no wall clock, no I/O.
+[dependencies]
+sharenet-connectivity = { path = "../connectivity" }
+sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }

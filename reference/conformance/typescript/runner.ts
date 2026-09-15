@@ -21,6 +21,7 @@ import {
 } from "./capability.ts";
 import { deriveNodeId, Ed25519Key, nodeIdentityWire } from "./identity.ts";
 import { advertisementId, buildAdvertisement, buildEnvelope } from "./advertisement.ts";
+import { buildEnvelope as buildTopoEnvelope, buildEvidence, evidenceId } from "./topology.ts";
 import {
   buildMsg1,
   buildMsg2,
@@ -308,6 +309,76 @@ function loadJson(name: string): any {
     // lines already pin the encoder, and reject classification is Rust-core
     // scope (documented in the conformance README)
     console.log(`AD_REJ ${i} ${r.error}`);
+  }
+}
+
+// ---------------- topology evidence vectors ----------------
+{
+  const file = loadJson("topology_vectors.json");
+  const envelopes: Uint8Array[] = [];
+  const meta: { observedAt: bigint; expiresAt: bigint }[] = [];
+  for (const c of file.cases) {
+    const key = new Ed25519Key(fromHex(c.seed_hex));
+    const q = c.quality ?? {};
+    const wire = buildEvidence({
+      publicKey: key.publicKey,
+      createdAtUnix: BigInt(c.created_at_unix),
+      subjectNodeId: fromHex(c.subject_node_id_hex),
+      kind: c.kind,
+      observedAtUnix: BigInt(c.observed_at_unix),
+      validitySecs: BigInt(c.validity_secs),
+      link:
+        c.kind === "link"
+          ? {
+              linkId: fromHex(c.link_id_hex),
+              establishedAt: BigInt(c.established_at_unix),
+              quality: {
+                delivered: BigInt(q.delivered),
+                lost: BigInt(q.lost),
+                ewma_rtt_micros: BigInt(q.ewma_rtt_micros),
+                p50_rtt_micros: BigInt(q.p50_rtt_micros),
+                p95_rtt_micros: BigInt(q.p95_rtt_micros),
+                jitter_mad_micros: BigInt(q.jitter_mad_micros),
+                loss_ratio_ppm: BigInt(q.loss_ratio_ppm),
+              },
+            }
+          : undefined,
+      advertisement:
+        c.kind === "advertisement"
+          ? { advertisementId: fromHex(c.advertisement_id_hex), capabilities: c.capabilities ?? [] }
+          : undefined,
+    });
+    const sig = key.signDetached(wire);
+    const id = evidenceId(wire);
+    const env = buildTopoEnvelope(wire, sig);
+    envelopes.push(env);
+    meta.push({
+      observedAt: BigInt(c.observed_at_unix),
+      expiresAt: BigInt(c.observed_at_unix + c.validity_secs),
+    });
+    console.log(
+      `TOPO ${file.cases.indexOf(c)} wire=${toHex(wire)} sig=${toHex(sig)} id=${toHex(id)} env=${toHex(env)}`,
+    );
+  }
+  const collected = new Map<number, bigint>();
+  for (const r of file.receive) {
+    const now = BigInt(r.now_unix);
+    const m = meta[r.case]!;
+    let outcome: string;
+    if (now < m.observedAt) outcome = "not_yet_valid";
+    else if (now >= m.expiresAt) outcome = "expired";
+    else {
+      const prev = collected.get(r.case);
+      if (prev !== undefined && m.observedAt <= prev) outcome = "stale";
+      else {
+        collected.set(r.case, m.observedAt);
+        outcome = "collected";
+      }
+    }
+    console.log(`TOPO_RECV ${file.receive.indexOf(r)} now=${r.now_unix} ${outcome}`);
+  }
+  for (let i = 0; i < file.parse_reject.length; i++) {
+    console.log(`TOPO_REJ ${i} ${file.parse_reject[i].error}`);
   }
 }
 

@@ -30,6 +30,10 @@ use std::process::ExitCode;
 use serde::Deserialize;
 
 use sharenet_protocol::cbor::{decode, encode, Value};
+use sharenet_protocol::topology::{
+    LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence, TopologyEvidence,
+    TopologyStore,
+};
 use sharenet_protocol::advertisement::{
     Advertisement, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement, TransportDescriptor,
 };
@@ -417,6 +421,121 @@ fn main() -> ExitCode {
             Err(e) => println!("AD_REJ {i} {}", e.name()),
             Ok(_) => {
                 eprintln!("FAIL advertisement parse_reject {i}: unexpectedly parsed");
+                failures += 1;
+            }
+        }
+    }
+
+    // ---------------- topology evidence vectors ----------------
+    #[derive(Deserialize)]
+    struct TopoFile {
+        cases: Vec<TopoCaseV>,
+        receive: Vec<TopoReceiveV>,
+        parse_reject: Vec<TopoRejectV>,
+    }
+    #[derive(Deserialize)]
+    struct TopoCaseV {
+        envelope_hex: String,
+        seed_hex: String,
+        created_at_unix: u64,
+        subject_node_id_hex: String,
+        kind: String,
+        link_id_hex: Option<String>,
+        established_at_unix: Option<u64>,
+        quality: Option<JQualityV>,
+        advertisement_id_hex: Option<String>,
+        capabilities: Option<Vec<String>>,
+        observed_at_unix: u64,
+        validity_secs: u64,
+    }
+    #[derive(Deserialize)]
+    struct JQualityV {
+        delivered: u64,
+        lost: u64,
+        ewma_rtt_micros: u64,
+        p50_rtt_micros: u64,
+        p95_rtt_micros: u64,
+        jitter_mad_micros: u64,
+        loss_ratio_ppm: u64,
+    }
+    #[derive(Deserialize)]
+    struct TopoReceiveV {
+        case: usize,
+        now_unix: u64,
+        #[allow(dead_code)]
+        expect: String,
+    }
+    #[derive(Deserialize)]
+    struct TopoRejectV {
+        hex: String,
+    }
+    let topo_file: TopoFile = load_json(&vectors_dir.join("topology_vectors.json"));
+    for (i, c) in topo_file.cases.iter().enumerate() {
+        let seed: [u8; 32] = from_hex(&c.seed_hex).try_into().expect("seed");
+        let obs = Identity::from_seed(seed, c.created_at_unix, None).expect("identity");
+        let subject: [u8; 32] = from_hex(&c.subject_node_id_hex)
+            .try_into()
+            .expect("subject");
+        let observation = match c.kind.as_str() {
+            "link" => Observation::Link {
+                link_id: from_hex(c.link_id_hex.as_deref().unwrap())
+                    .try_into()
+                    .unwrap(),
+                established_at_unix: c.established_at_unix.unwrap(),
+                quality: {
+                    let q = c.quality.as_ref().unwrap();
+                    LinkQualitySnapshot {
+                        delivered: q.delivered,
+                        lost: q.lost,
+                        ewma_rtt_micros: q.ewma_rtt_micros,
+                        p50_rtt_micros: q.p50_rtt_micros,
+                        p95_rtt_micros: q.p95_rtt_micros,
+                        jitter_mad_micros: q.jitter_mad_micros,
+                        loss_ratio_ppm: q.loss_ratio_ppm,
+                    }
+                },
+            },
+            "advertisement" => Observation::Advertisement {
+                advertisement_id: from_hex(c.advertisement_id_hex.as_deref().unwrap())
+                    .try_into()
+                    .unwrap(),
+                capabilities: c.capabilities.clone().unwrap_or_default(),
+            },
+            other => panic!("bad kind {other}"),
+        };
+        let ev = TopologyEvidence::new(&obs, subject, observation, c.observed_at_unix, c.validity_secs)
+            .expect("builds");
+        let signed = ev.sign(&obs).expect("signs");
+        println!(
+            "TOPO {i} wire={} sig={} id={} env={}",
+            to_hex(signed.evidence_bytes()),
+            to_hex(signed.signature()),
+            to_hex(&signed.evidence_id()),
+            to_hex(&signed.to_envelope_bytes()),
+        );
+    }
+    {
+        let mut stores: std::collections::HashMap<usize, TopologyStore> =
+            std::collections::HashMap::new();
+        for (i, r) in topo_file.receive.iter().enumerate() {
+            let c = &topo_file.cases[r.case];
+            let signed = SignedTopologyEvidence::from_envelope_bytes(&from_hex(&c.envelope_hex))
+                .expect("envelope");
+            let store = stores.entry(r.case).or_insert_with(TopologyStore::new);
+            let outcome = match store.receive(&signed, r.now_unix) {
+                Ok(ReceiveOutcome::Collected) => "collected".to_string(),
+                Ok(ReceiveOutcome::Stale) => "stale".to_string(),
+                Err(e) => e.name(),
+            };
+            println!("TOPO_RECV {i} now={} {}", r.now_unix, outcome);
+        }
+    }
+    for (i, r) in topo_file.parse_reject.iter().enumerate() {
+        let bytes = from_hex(&r.hex);
+        match TopologyEvidence::from_wire_bytes(&bytes) {
+            Err(e) => println!("TOPO_REJ {i} {}", e.name()),
+            Ok(_) => {
+                eprintln!("FAIL topology parse_reject {i}: unexpectedly parsed");
                 failures += 1;
             }
         }

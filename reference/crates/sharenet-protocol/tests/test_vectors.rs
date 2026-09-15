@@ -391,6 +391,51 @@ struct CircuitReject {
 }
 
 #[derive(Serialize, Deserialize)]
+struct ContentVectorsFile {
+    scheme: String,
+    description: String,
+    cases: Vec<ContentCaseV>,
+    reassembly: Vec<ContentReasmV>,
+    parse_reject: Vec<ContentRejectV>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ContentCaseV {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    content_hex: String,
+    chunk_size: u64,
+    content_type: String,
+    /// JSON object values map: string -> text value, integer -> int value.
+    #[serde(default)]
+    metadata: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    created_at_unix: u64,
+    manifest_wire_hex: String,
+    content_id_hex: String,
+    chunk_hashes_hex: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ContentReasmV {
+    case: usize,
+    /// None = the unmutated stream; else the mutation vocabulary
+    /// (swap_first_two, corrupt_slot, drop_last, drop_middle, extra_last,
+    /// short_last, short_first, replace_slot_with_prev).
+    mutation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    slot: Option<usize>,
+    expect: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ContentRejectV {
+    hex: String,
+    error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct CborVectorsFile {
     profile: String,
     description: String,
@@ -1971,6 +2016,398 @@ that MUST fail at the named step with the named typed error.".into(),
 }
 
 // ---------------------------------------------------------------------------
+// Content manifest vectors (R6-001)
+// ---------------------------------------------------------------------------
+
+/// JSON metadata value -> the manifest's MetadataValue (string = text,
+/// integer = int; anything else is a generator bug).
+fn content_metadata(
+    j: Option<&std::collections::BTreeMap<String, serde_json::Value>>,
+) -> Option<std::collections::BTreeMap<String, sharenet_protocol::content::MetadataValue>> {
+    use sharenet_protocol::content::MetadataValue;
+    j.map(|m| {
+        m.iter()
+            .map(|(k, v)| {
+                let value = match v {
+                    serde_json::Value::String(s) => MetadataValue::Text(s.clone()),
+                    serde_json::Value::Number(n) => MetadataValue::Int(
+                        n.as_i64().expect("vector metadata ints are integers"),
+                    ),
+                    other => panic!("bad vector metadata value {other:?}"),
+                };
+                (k.clone(), value)
+            })
+            .collect()
+    })
+}
+
+/// Apply one reassembly mutation (the frozen vocabulary shared by all
+/// three conformance legs).
+fn content_apply_mutation(
+    chunks: &mut Vec<Vec<u8>>,
+    mutation: &str,
+    slot: Option<usize>,
+) {
+    let slot = slot.unwrap_or(0);
+    match mutation {
+        "swap_first_two" => chunks.swap(0, 1),
+        "corrupt_slot" => chunks[slot][0] ^= 0x80,
+        "drop_last" => {
+            chunks.pop();
+        }
+        "drop_middle" => {
+            chunks.remove(slot);
+        }
+        "extra_last" => {
+            let last = chunks.last().expect("non-empty").clone();
+            chunks.push(last);
+        }
+        "short_last" => {
+            chunks.last_mut().expect("non-empty").pop();
+        }
+        "short_first" => {
+            chunks[0].pop();
+        }
+        "replace_slot_with_prev" => {
+            let prev = chunks[slot - 1].clone();
+            chunks[slot] = prev;
+        }
+        other => panic!("unknown content mutation {other:?}"),
+    }
+}
+
+/// Format a reassembly outcome as the harness line suffix (the shared
+/// slot-carrying vocabulary).
+fn content_reassembly_outcome(
+    manifest: &sharenet_protocol::content::ContentManifest,
+    chunks: &[Vec<u8>],
+) -> String {
+    use sharenet_protocol::content::ContentError;
+    match manifest.reassemble(chunks) {
+        Ok(_) => "ok".to_string(),
+        Err(ContentError::ChunkHashMismatch { slot }) => format!("chunk_hash_mismatch slot={slot}"),
+        Err(ContentError::ChunkLengthWrong { slot, .. }) => {
+            format!("chunk_length_wrong slot={slot}")
+        }
+        Err(ContentError::MissingChunk { slot }) => format!("missing_chunk slot={slot}"),
+        Err(ContentError::ExtraChunk { slot }) => format!("extra_chunk slot={slot}"),
+        Err(e) => e.name(),
+    }
+}
+
+fn content_vectors() -> ContentVectorsFile {
+    use sharenet_protocol::content::ContentManifest;
+
+    let case_inputs: Vec<(&str, &[u8], u64, &str, Option<std::collections::BTreeMap<String, serde_json::Value>>, u64)> = vec![
+        (
+            "multi-chunk (5 chunks, short last)",
+            b"ShareNet content addressing vector zero",
+            8,
+            "application/octet-stream",
+            None,
+            1_700_000_000,
+        ),
+        (
+            "single chunk shorter than chunk_size",
+            b"ShareNet",
+            64,
+            "text/plain",
+            None,
+            1_700_000_001,
+        ),
+        (
+            "exact chunk boundary (2 full chunks)",
+            b"0123456789abcdef0123456789abcdef",
+            16,
+            "application/octet-stream",
+            None,
+            1_700_000_002,
+        ),
+        (
+            "metadata-carrying (text + int values)",
+            b"dtn custody payload!",
+            6,
+            "image/png",
+            Some(
+                [
+                    ("title".to_string(), serde_json::Value::String("mission photo".into())),
+                    ("priority".to_string(), serde_json::Value::Number(2u32.into())),
+                    ("ttl_secs".to_string(), serde_json::Value::Number(3600u32.into())),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            1_700_000_003,
+        ),
+    ];
+
+    let mut cases: Vec<ContentCaseV> = Vec::new();
+    let mut built: Vec<(ContentManifest, Vec<Vec<u8>>)> = Vec::new();
+    for (note, content, chunk_size, content_type, metadata, created_at) in case_inputs {
+        let (manifest, chunks) =
+            ContentManifest::chunk(content, chunk_size, content_type, content_metadata(metadata.as_ref()), created_at)
+                .unwrap_or_else(|e| panic!("content case must build: {e}"));
+        cases.push(ContentCaseV {
+            note: Some(note.to_string()),
+            content_hex: common_hex(content),
+            chunk_size,
+            content_type: content_type.to_string(),
+            metadata: metadata.clone(),
+            created_at_unix: created_at,
+            manifest_wire_hex: common_hex(&manifest.to_wire_bytes()),
+            content_id_hex: common_hex(&manifest.content_id()),
+            chunk_hashes_hex: manifest
+                .chunk_hashes()
+                .iter()
+                .map(|h| common_hex(h))
+                .collect(),
+        });
+        built.push((manifest, chunks));
+    }
+
+    // reassembly outcomes: (case index, mutation, slot, expected)
+    let reassembly_inputs: Vec<(usize, Option<&str>, Option<usize>, &str)> = vec![
+        (0, None, None, "ok"),
+        (0, Some("swap_first_two"), None, "chunk_hash_mismatch slot=0"),
+        (0, Some("corrupt_slot"), Some(1), "chunk_hash_mismatch slot=1"),
+        (0, Some("drop_last"), None, "missing_chunk slot=4"),
+        (0, Some("drop_middle"), Some(2), "chunk_hash_mismatch slot=2"),
+        (0, Some("extra_last"), None, "extra_chunk slot=5"),
+        (0, Some("short_last"), None, "chunk_length_wrong slot=4"),
+        (0, Some("short_first"), None, "chunk_length_wrong slot=0"),
+        (1, Some("corrupt_slot"), Some(0), "chunk_hash_mismatch slot=0"),
+        (2, None, None, "ok"),
+        (3, None, None, "ok"),
+        (3, Some("replace_slot_with_prev"), Some(2), "chunk_hash_mismatch slot=2"),
+    ];
+    let mut reassembly: Vec<ContentReasmV> = Vec::new();
+    for (case, mutation, slot, expect) in reassembly_inputs {
+        let (manifest, chunks) = &built[case];
+        let mut stream = chunks.clone();
+        if let Some(m) = mutation {
+            content_apply_mutation(&mut stream, m, slot);
+        }
+        let outcome = content_reassembly_outcome(manifest, &stream);
+        assert_eq!(
+            outcome, expect,
+            "reassembly vector ({case}, {mutation:?}) must hold at generation time"
+        );
+        reassembly.push(ContentReasmV {
+            case,
+            mutation: mutation.map(|m| m.to_string()),
+            slot,
+            expect: expect.to_string(),
+        });
+    }
+
+    // parse rejects: patched copies of case 0's manifest wire
+    let (base, _) = &built[0];
+    let base_wire = base.to_wire_bytes();
+    // replace-or-insert a field value (the encoder re-canonicalizes the
+    // map, so insertion order never matters)
+    let patch = |field: i64, value: Value| -> Vec<u8> {
+        let mut v = decode(&base_wire).unwrap();
+        let Value::Map(entries) = &mut v else { unreachable!() };
+        let mut replaced = false;
+        for (k, val) in entries.iter_mut() {
+            if let Value::Int(kn) = k {
+                if *kn == field {
+                    *val = value.clone();
+                    replaced = true;
+                }
+            }
+        }
+        if !replaced {
+            entries.push((Value::Int(field), value));
+        }
+        encode(&v).unwrap()
+    };
+    let rej = |hex: String, error: &str, note: &str| ContentRejectV {
+        hex,
+        error: error.to_string(),
+        note: Some(note.to_string()),
+    };
+
+    let mut parse_reject: Vec<ContentRejectV> = Vec::new();
+
+    // count mismatches (drop one hash / add one hash / empty the list)
+    {
+        let mut v = decode(&base_wire).unwrap();
+        let Value::Map(entries) = &mut v else { unreachable!() };
+        for (k, val) in entries.iter_mut() {
+            if let (Value::Int(4), Value::Array(items)) = (k, val) {
+                items.pop();
+            }
+        }
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "chunk_hash_count_mismatch",
+            "one chunk hash dropped: found 4, ceil(39/8) = 5",
+        ));
+    }
+    {
+        let mut v = decode(&base_wire).unwrap();
+        let Value::Map(entries) = &mut v else { unreachable!() };
+        for (k, val) in entries.iter_mut() {
+            if let (Value::Int(4), Value::Array(items)) = (k, val) {
+                items.push(Value::Bytes(vec![0u8; 32]));
+            }
+        }
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "chunk_hash_count_mismatch",
+            "one chunk hash appended: found 6, ceil(39/8) = 5",
+        ));
+    }
+    parse_reject.push(rej(
+        common_hex(&patch(4, Value::Array(vec![]))),
+        "chunk_hash_count_mismatch",
+        "empty chunk_hashes: count exactness forbids it (ceil >= 1)",
+    ));
+    // geometry lie: total inflated past the hash count
+    parse_reject.push(rej(
+        common_hex(&patch(3, Value::Int(41))),
+        "chunk_hash_count_mismatch",
+        "total_length inflated: ceil(41/8) = 6 != 5 hashes",
+    ));
+    parse_reject.push(rej(
+        common_hex(&patch(2, Value::Int(0))),
+        "chunk_size_out_of_range",
+        "chunk_size 0",
+    ));
+    parse_reject.push(rej(
+        common_hex(&patch(2, Value::Int(2_097_153))),
+        "chunk_size_out_of_range",
+        "chunk_size above the 2 MiB cap",
+    ));
+    parse_reject.push(rej(
+        common_hex(&patch(3, Value::Int(0))),
+        "total_length_below_minimum",
+        "total_length 0 (no empty named objects)",
+    ));
+    {
+        let mut v = decode(&base_wire).unwrap();
+        let Value::Map(entries) = &mut v else { unreachable!() };
+        for (k, val) in entries.iter_mut() {
+            if let (Value::Int(4), Value::Array(items)) = (k, val) {
+                items[1] = Value::Bytes(vec![0u8; 31]);
+            }
+        }
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "chunk_hash_wrong_length",
+            "a 31-byte hash at slot 1",
+        ));
+    }
+    parse_reject.push(rej(
+        common_hex(&patch(5, Value::Text(String::new()))),
+        "content_type_invalid",
+        "empty content_type",
+    ));
+    parse_reject.push(rej(
+        common_hex(&patch(5, Value::Text("x".repeat(65)))),
+        "content_type_invalid",
+        "65-byte content_type",
+    ));
+    // metadata bounds through the wire
+    {
+        let seventeen: Vec<(Value, Value)> = (0..17)
+            .map(|i| (Value::Text(format!("k{i:02}")), Value::Int(i as i64)))
+            .collect();
+        parse_reject.push(rej(
+            common_hex(&patch(6, Value::Map(seventeen))),
+            "metadata_too_many_entries",
+            "17 metadata entries",
+        ));
+    }
+    {
+        let hostile = Value::Map(vec![(
+            Value::Text("k".repeat(65)),
+            Value::Int(1),
+        )]);
+        parse_reject.push(rej(
+            common_hex(&patch(6, hostile)),
+            "metadata_key_invalid",
+            "65-byte metadata key",
+        ));
+    }
+    {
+        let hostile = Value::Map(vec![(
+            Value::Text("k".to_string()),
+            Value::Text("v".repeat(257)),
+        )]);
+        parse_reject.push(rej(
+            common_hex(&patch(6, hostile)),
+            "metadata_value_invalid",
+            "257-byte metadata text value",
+        ));
+    }
+    {
+        let hostile = Value::Map(vec![(Value::Text("k".to_string()), Value::Bool(true))]);
+        parse_reject.push(rej(
+            common_hex(&patch(6, hostile)),
+            "metadata_entry_malformed",
+            "bool metadata value (text|int only)",
+        ));
+    }
+    parse_reject.push(rej(
+        common_hex(&patch(1, Value::Int(2))),
+        "scheme_version_unsupported",
+        "scheme_version 2",
+    ));
+    {
+        let mut v = decode(&base_wire).unwrap();
+        let Value::Map(entries) = &mut v else { unreachable!() };
+        entries.push((Value::Int(8), Value::Null));
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "unknown_field",
+            "unknown field 8",
+        ));
+    }
+    {
+        let mut v = decode(&base_wire).unwrap();
+        let Value::Map(entries) = &mut v else { unreachable!() };
+        entries.retain(|(k, _)| !matches!(k, Value::Int(5)));
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "missing_field",
+            "content_type absent",
+        ));
+    }
+    parse_reject.push(rej(
+        common_hex(&patch(7, Value::Int(-1))),
+        "timestamp_negative",
+        "negative created_at",
+    ));
+    // non-canonical: scheme_version as a non-minimal integer
+    {
+        let mut bad = Vec::with_capacity(base_wire.len() + 1);
+        bad.extend_from_slice(&base_wire[..2]);
+        bad.extend_from_slice(&[0x18, 0x01]);
+        bad.extend_from_slice(&base_wire[3..]);
+        parse_reject.push(rej(
+            common_hex(&bad),
+            "cbor:NonMinimalInteger",
+            "non-canonical integer rejected by the CBOR profile before parse",
+        ));
+    }
+
+    ContentVectorsFile {
+        scheme: "sharenet-content-manifest-v1".into(),
+        description: "ContentManifest conformance vectors (R6-001): content-addressed \
+chunked objects per the protocol registry entry — multi-chunk, single-chunk, exact-boundary \
+and metadata-carrying builds; reassembly outcomes over the shared mutation vocabulary \
+(valid, swap, corrupt, drop, extra, short, duplicate); strict parse rejections (geometry \
+exactness, bounds, non-canonical). Every hex is re-derived by all three legs; the \
+committed values are the pinned expectations.".into(),
+        cases,
+        reassembly,
+        parse_reject,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2985,6 +3422,67 @@ fn vectors_conformance() {
             };
         assert_eq!(err.name(), r.error, "circuit reject {}", r.hex);
     }
+
+    // ---- content manifest vectors (R6-001) ----
+    let content_file: ContentVectorsFile = serde_json::from_str(
+        &std::fs::read_to_string(vectors_path("content_vectors.json"))
+            .expect("content_vectors.json must exist"),
+    )
+    .expect("content_vectors.json parses");
+    assert_eq!(content_file.scheme, "sharenet-content-manifest-v1");
+    use sharenet_protocol::content::ContentManifest;
+    let mut rebuilt: Vec<(ContentManifest, Vec<Vec<u8>>)> = Vec::new();
+    for (i, c) in content_file.cases.iter().enumerate() {
+        let content = from_hex(&c.content_hex);
+        let (manifest, chunks) = ContentManifest::chunk(
+            &content,
+            c.chunk_size,
+            &c.content_type,
+            content_metadata(c.metadata.as_ref()),
+            c.created_at_unix,
+        )
+        .unwrap_or_else(|e| panic!("content case {i} must build: {e}"));
+        // re-derivation: the committed expectations are never trusted
+        assert_eq!(
+            common_hex(&manifest.to_wire_bytes()),
+            c.manifest_wire_hex,
+            "wire mismatch in content case {i}"
+        );
+        assert_eq!(common_hex(&manifest.content_id()), c.content_id_hex, "content case {i}");
+        let hashes: Vec<String> = manifest
+            .chunk_hashes()
+            .iter()
+            .map(|h| common_hex(h))
+            .collect();
+        assert_eq!(hashes, c.chunk_hashes_hex, "chunk hashes in content case {i}");
+        assert_eq!(
+            manifest.chunk_count() as u64,
+            (c.content_hex.len() / 2).div_ceil(c.chunk_size as usize) as u64,
+            "count exactness in content case {i}"
+        );
+        // the committed wire parses back to the same manifest
+        let parsed = ContentManifest::from_wire_bytes(&from_hex(&c.manifest_wire_hex))
+            .unwrap_or_else(|e| panic!("committed wire must parse in content case {i}: {e}"));
+        assert_eq!(parsed, manifest, "round-trip in content case {i}");
+        rebuilt.push((manifest, chunks));
+    }
+    for (i, r) in content_file.reassembly.iter().enumerate() {
+        let (manifest, chunks) = &rebuilt[r.case];
+        let mut stream = chunks.clone();
+        if let Some(m) = &r.mutation {
+            content_apply_mutation(&mut stream, m, r.slot);
+        }
+        let outcome = content_reassembly_outcome(manifest, &stream);
+        assert_eq!(outcome, r.expect, "content reassembly {i} (case {})", r.case);
+    }
+    for r in &content_file.parse_reject {
+        let bytes = from_hex(&r.hex);
+        let err = match ContentManifest::from_wire_bytes(&bytes) {
+            Err(e) => e,
+            Ok(_) => panic!("content parse_reject {} was accepted", r.hex),
+        };
+        assert_eq!(err.name(), r.error, "content parse_reject {}", r.hex);
+    }
 }
 
 /// Object-level reject check by kind: setups/acks/destroys arrive as
@@ -3057,6 +3555,9 @@ fn regenerate_vectors() {
     let circuit_json = serde_json::to_string_pretty(&circuit_vectors()).unwrap() + "\n";
     std::fs::write(vectors_path("circuit_vectors.json"), circuit_json)
         .expect("write circuit vectors");
+    let content_json = serde_json::to_string_pretty(&content_vectors()).unwrap() + "\n";
+    std::fs::write(vectors_path("content_vectors.json"), content_json)
+        .expect("write content vectors");
     eprintln!("vectors regenerated under {VECTORS_DIR}");
 }
 

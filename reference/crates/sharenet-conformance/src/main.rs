@@ -42,6 +42,7 @@ use sharenet_protocol::connectivity_evidence::{
     AdmissionOutcome, ConnectivityObservationStatement, EvidenceKind, ObservationAdmission,
     SignedConnectivityObservation,
 };
+use sharenet_protocol::content::{ContentError, ContentManifest, MetadataValue};
 use sharenet_protocol::advertisement::{
     Advertisement, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement, TransportDescriptor,
 };
@@ -1046,6 +1047,119 @@ fn main() -> ExitCode {
         }
     }
 
+    // ---------------- content manifest vectors (R6-001) ----------------
+    #[derive(Deserialize)]
+    struct ContentFile {
+        cases: Vec<ContentCaseV>,
+        reassembly: Vec<ContentReasmV>,
+        parse_reject: Vec<ContentRejectV>,
+    }
+    #[derive(Deserialize)]
+    struct ContentCaseV {
+        #[allow(dead_code)]
+        note: Option<String>,
+        content_hex: String,
+        chunk_size: u64,
+        content_type: String,
+        metadata: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+        created_at_unix: u64,
+        manifest_wire_hex: String,
+        content_id_hex: String,
+        chunk_hashes_hex: Vec<String>,
+    }
+    #[derive(Deserialize)]
+    struct ContentReasmV {
+        case: usize,
+        mutation: Option<String>,
+        slot: Option<usize>,
+        expect: String,
+    }
+    #[derive(Deserialize)]
+    struct ContentRejectV {
+        hex: String,
+        error: String,
+        #[allow(dead_code)]
+        note: Option<String>,
+    }
+    let content_file: ContentFile = load_json(&vectors_dir.join("content_vectors.json"));
+    let content_metadata = |m: Option<&std::collections::BTreeMap<String, serde_json::Value>>| {
+        m.map(|map| {
+            map.iter()
+                .map(|(k, v)| {
+                    let value = match v {
+                        serde_json::Value::String(s) => MetadataValue::Text(s.clone()),
+                        serde_json::Value::Number(n) => {
+                            MetadataValue::Int(n.as_i64().expect("integer"))
+                        }
+                        other => panic!("bad vector metadata value {other:?}"),
+                    };
+                    (k.clone(), value)
+                })
+                .collect::<std::collections::BTreeMap<String, MetadataValue>>()
+        })
+    };
+    let build_case = |c: &ContentCaseV| {
+        let content = from_hex(&c.content_hex);
+        ContentManifest::chunk(
+            &content,
+            c.chunk_size,
+            &c.content_type,
+            content_metadata(c.metadata.as_ref()),
+            c.created_at_unix,
+        )
+        .expect("content case builds")
+    };
+    for (i, c) in content_file.cases.iter().enumerate() {
+        // re-derive the wire image + content_id + chunk hashes from the
+        // INPUTS through the real protocol API; pin against the committed hex
+        let (manifest, _) = build_case(c);
+        let wire = to_hex(&manifest.to_wire_bytes());
+        let id = to_hex(&manifest.content_id());
+        let hashes: Vec<String> = manifest.chunk_hashes().iter().map(|h| to_hex(h)).collect();
+        if wire != c.manifest_wire_hex || id != c.content_id_hex || hashes != c.chunk_hashes_hex {
+            eprintln!(
+                "FAIL content {i}: re-derived image differs from the committed vector"
+            );
+            failures += 1;
+        }
+        println!("CONTENT {i} wire={wire} id={id} chunks={}", hashes.join(","));
+    }
+    for (i, r) in content_file.reassembly.iter().enumerate() {
+        let (manifest, mut stream) = build_case(&content_file.cases[r.case]);
+        if let Some(m) = &r.mutation {
+            apply_content_mutation(&mut stream, m, r.slot);
+        }
+        let outcome = content_reassembly_outcome(&manifest, &stream);
+        if outcome != r.expect {
+            eprintln!(
+                "FAIL content reassembly {i}: {outcome} != expected {}",
+                r.expect
+            );
+            failures += 1;
+        }
+        println!("CONTENT_REASM {i} {outcome}");
+    }
+    for (i, r) in content_file.parse_reject.iter().enumerate() {
+        let bytes = from_hex(&r.hex);
+        match ContentManifest::from_wire_bytes(&bytes) {
+            Err(e) => {
+                let name = e.name();
+                if name != r.error {
+                    eprintln!(
+                        "FAIL content parse_reject {i}: {} != expected {}",
+                        name, r.error
+                    );
+                    failures += 1;
+                }
+                println!("CONTENT_REJ {i} {name}");
+            }
+            Ok(_) => {
+                eprintln!("FAIL content parse_reject {i}: unexpectedly parsed");
+                failures += 1;
+            }
+        }
+    }
+
     // ---------------- NodeIdentity decode spot check ----------------
     // The IDENT wire lines must decode back to the identity (guards the
     // encoder/decoder pair through the same public API).
@@ -1089,6 +1203,55 @@ fn reseal_at(
         let _ = session.seal(b"").expect("seal filler");
     }
     session.seal(payload).expect("seal requested")
+}
+
+/// Apply one content reassembly mutation (the frozen vocabulary shared by
+/// all three conformance legs).
+fn apply_content_mutation(chunks: &mut Vec<Vec<u8>>, mutation: &str, slot: Option<usize>) {
+    let slot = slot.unwrap_or(0);
+    match mutation {
+        "swap_first_two" => chunks.swap(0, 1),
+        "corrupt_slot" => chunks[slot][0] ^= 0x80,
+        "drop_last" => {
+            chunks.pop();
+        }
+        "drop_middle" => {
+            chunks.remove(slot);
+        }
+        "extra_last" => {
+            let last = chunks.last().expect("non-empty").clone();
+            chunks.push(last);
+        }
+        "short_last" => {
+            chunks.last_mut().expect("non-empty").pop();
+        }
+        "short_first" => {
+            chunks[0].pop();
+        }
+        "replace_slot_with_prev" => {
+            let prev = chunks[slot - 1].clone();
+            chunks[slot] = prev;
+        }
+        other => panic!("unknown content mutation {other:?}"),
+    }
+}
+
+/// Format a content reassembly outcome as the harness line suffix (the
+/// shared slot-carrying vocabulary).
+fn content_reassembly_outcome(
+    manifest: &ContentManifest,
+    chunks: &[Vec<u8>],
+) -> String {
+    match manifest.reassemble(chunks) {
+        Ok(_) => "ok".to_string(),
+        Err(ContentError::ChunkHashMismatch { slot }) => format!("chunk_hash_mismatch slot={slot}"),
+        Err(ContentError::ChunkLengthWrong { slot, .. }) => {
+            format!("chunk_length_wrong slot={slot}")
+        }
+        Err(ContentError::MissingChunk { slot }) => format!("missing_chunk slot={slot}"),
+        Err(ContentError::ExtraChunk { slot }) => format!("extra_chunk slot={slot}"),
+        Err(e) => e.name(),
+    }
 }
 
 fn load_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> T {

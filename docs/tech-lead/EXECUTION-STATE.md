@@ -284,10 +284,45 @@ Architect decision — see Open Architect Decisions).
   commit ccc3569 preceded implementation.
 - Registry: Advertisement maturity → implemented.
 
+### R3-003 — Authenticated topology evidence — COMPLETE (Wave 5)
+
+- `reference/crates/sharenet-protocol/src/topology.rs`: the
+  TopologyEvidence wire object per the registry schema — signed
+  one-directional attestations (observer identity inside the signed
+  bytes; subject node_id; link observations with caller-mapped R2-004
+  quality snapshots including the parts-per-million loss ratio because
+  the canonical CBOR profile forbids floats; advertisement observations
+  with the observed capability set); content-derived evidence_id;
+  parse-time enforcement of every invariant (subject != observer,
+  p95 >= p50, loss ratio <= 1e6, established <= observed, bounded
+  window).
+- TopologyStore: the collector — signature + freshness verification,
+  stale-replay protection, and the BILATERAL-LINK rule (a link counts
+  only when both endpoints attest the same link_id within their
+  windows — the bilateral-acknowledgement anti-gaming requirement).
+- Production callers: R3-004 (route commitment) and R5-005 (gateway
+  admission) consume the store; the discovery flow's evidence hook is
+  the runtime path (verified in the R3-002 multiprocess suite).
+- Verification achieved: unit + adversarial (self-attestation, tamper,
+  expiry boundaries, quality invariants, stale records, bilateral
+  matching incl. expiry intersection) + conformance
+  (topology_vectors.json: 3 cases + 4 receive outcomes + 5 typed parse
+  rejections; all three language legs byte-identical — the harness now
+  spans 162 lines).
+- Persistence: none — runtime evidence; durable receipts are R8-001.
+
+## Wave 5 integration record (2026-09-15)
+
+- Implemented directly by the Tech Lead on
+  `work/wave5-w1-topology-evidence`; registry pre-registration commit
+  a83609a preceded implementation.
+- Registry: TopologyEvidence maturity → implemented.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- R3-003 (authenticated topology evidence) — READY: predecessors
-  R3-001 (COMPLETE) and R3-002 (COMPLETE).
+- R3-004 (route commitment) — READY: predecessor R3-003 COMPLETE.
+- R4-001 (QUIC/TLS tunnel) — READY: predecessors R2-003 and R3-001
+  COMPLETE (wave 6 pairs it with R3-004).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 - R2-002 (Wi-Fi Aware) remains unscheduled in the frozen registry waves

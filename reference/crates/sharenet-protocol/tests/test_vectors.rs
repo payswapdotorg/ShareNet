@@ -237,6 +237,63 @@ struct LinkFrameCase {
 }
 
 #[derive(Serialize, Deserialize)]
+struct TopologyVectorsFile {
+    scheme: String,
+    description: String,
+    cases: Vec<TopoCase>,
+    receive: Vec<TopoReceive>,
+    parse_reject: Vec<TopoReject>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TopoCase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    seed_hex: String,
+    created_at_unix: u64,
+    subject_node_id_hex: String,
+    /// "link" or "advertisement"
+    kind: String,
+    /// link fields (kind = link)
+    link_id_hex: Option<String>,
+    established_at_unix: Option<u64>,
+    quality: Option<JQuality>,
+    /// advertisement fields (kind = advertisement)
+    advertisement_id_hex: Option<String>,
+    capabilities: Option<Vec<String>>,
+    observed_at_unix: u64,
+    validity_secs: u64,
+    evidence_wire_hex: String,
+    signature_hex: String,
+    evidence_id_hex: String,
+    envelope_hex: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct JQuality {
+    delivered: u64,
+    lost: u64,
+    ewma_rtt_micros: u64,
+    p50_rtt_micros: u64,
+    p95_rtt_micros: u64,
+    jitter_mad_micros: u64,
+    loss_ratio_ppm: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TopoReceive {
+    case: usize,
+    now_unix: u64,
+    expect: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TopoReject {
+    hex: String,
+    error: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct CborVectorsFile {
     profile: String,
     description: String,
@@ -985,6 +1042,307 @@ named outcome. parse_reject[] bytes MUST fail with the named typed error.".into(
 }
 
 // ---------------------------------------------------------------------------
+// Topology vectors (R3-003)
+// ---------------------------------------------------------------------------
+
+fn topology_vectors() -> TopologyVectorsFile {
+    use sharenet_protocol::topology::{
+        LinkQualitySnapshot, Observation, TopologyEvidence as TE,
+    };
+    let mk = |seed_hex: &str, created: u64| -> Identity {
+        let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
+        Identity::from_seed(seed, created, None).unwrap()
+    };
+    let quality = JQuality {
+        delivered: 200,
+        lost: 3,
+        ewma_rtt_micros: 1_500,
+        p50_rtt_micros: 1_400,
+        p95_rtt_micros: 2_100,
+        jitter_mad_micros: 120,
+        loss_ratio_ppm: 15_000,
+    };
+    let observer_seeds: [(&str, u64); 2] = [
+        ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0),
+        ("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb", 1_700_000_000),
+    ];
+    let subject = mk("c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573", 42);
+    let subject_hex = common_hex(subject.node_id().as_bytes());
+    let mut cases = Vec::new();
+    // case 0: link evidence
+    {
+        let (seed_hex, created) = observer_seeds[0];
+        let obs = mk(seed_hex, created);
+        let ev = TE::new(
+            &obs,
+            *subject.node_id().as_bytes(),
+            Observation::Link {
+                link_id: [0xAB; 32],
+                established_at_unix: 999,
+                quality: LinkQualitySnapshot {
+                    delivered: quality.delivered,
+                    lost: quality.lost,
+                    ewma_rtt_micros: quality.ewma_rtt_micros,
+                    p50_rtt_micros: quality.p50_rtt_micros,
+                    p95_rtt_micros: quality.p95_rtt_micros,
+                    jitter_mad_micros: quality.jitter_mad_micros,
+                    loss_ratio_ppm: quality.loss_ratio_ppm,
+                },
+            },
+            1_000,
+            300,
+        )
+        .unwrap();
+        let signed = ev.sign(&obs).unwrap();
+        cases.push(TopoCase {
+            note: Some("link evidence with quality snapshot".into()),
+            seed_hex: seed_hex.to_string(),
+            created_at_unix: created,
+            subject_node_id_hex: subject_hex.clone(),
+            kind: "link".into(),
+            link_id_hex: Some(common_hex(&[0xAB; 32])),
+            established_at_unix: Some(999),
+            quality: Some(quality.clone()),
+            advertisement_id_hex: None,
+            capabilities: None,
+            observed_at_unix: 1_000,
+            validity_secs: 300,
+            evidence_wire_hex: common_hex(signed.evidence_bytes()),
+            signature_hex: common_hex(signed.signature()),
+            evidence_id_hex: common_hex(&signed.evidence_id()),
+            envelope_hex: common_hex(&signed.to_envelope_bytes()),
+        });
+    }
+    // case 1: advertisement evidence (empty capability set)
+    {
+        let (seed_hex, created) = observer_seeds[1];
+        let obs = mk(seed_hex, created);
+        let ev = TE::new(
+            &obs,
+            *subject.node_id().as_bytes(),
+            Observation::Advertisement {
+                advertisement_id: [0xCD; 32],
+                capabilities: vec![],
+            },
+            2_000,
+            120,
+        )
+        .unwrap();
+        let signed = ev.sign(&obs).unwrap();
+        cases.push(TopoCase {
+            note: Some("advertisement evidence, no capabilities observed".into()),
+            seed_hex: seed_hex.to_string(),
+            created_at_unix: created,
+            subject_node_id_hex: subject_hex.clone(),
+            kind: "advertisement".into(),
+            link_id_hex: None,
+            established_at_unix: None,
+            quality: None,
+            advertisement_id_hex: Some(common_hex(&[0xCD; 32])),
+            capabilities: Some(vec![]),
+            observed_at_unix: 2_000,
+            validity_secs: 120,
+            evidence_wire_hex: common_hex(signed.evidence_bytes()),
+            signature_hex: common_hex(signed.signature()),
+            evidence_id_hex: common_hex(&signed.evidence_id()),
+            envelope_hex: common_hex(&signed.to_envelope_bytes()),
+        });
+    }
+    // case 2: advertisement evidence with observed capabilities (sorted)
+    {
+        let (seed_hex, created) = observer_seeds[0];
+        let obs = mk(seed_hex, created);
+        let ev = TE::new(
+            &obs,
+            *subject.node_id().as_bytes(),
+            Observation::Advertisement {
+                advertisement_id: [0xEF; 32],
+                capabilities: vec!["dtn_custodian".into(), "gateway".into()],
+            },
+            3_000,
+            60,
+        )
+        .unwrap();
+        let signed = ev.sign(&obs).unwrap();
+        cases.push(TopoCase {
+            note: Some("advertisement evidence with sorted capabilities".into()),
+            seed_hex: seed_hex.to_string(),
+            created_at_unix: created,
+            subject_node_id_hex: subject_hex.clone(),
+            kind: "advertisement".into(),
+            link_id_hex: None,
+            established_at_unix: None,
+            quality: None,
+            advertisement_id_hex: Some(common_hex(&[0xEF; 32])),
+            capabilities: Some(vec!["dtn_custodian".into(), "gateway".into()]),
+            observed_at_unix: 3_000,
+            validity_secs: 60,
+            evidence_wire_hex: common_hex(signed.evidence_bytes()),
+            signature_hex: common_hex(signed.signature()),
+            evidence_id_hex: common_hex(&signed.evidence_id()),
+            envelope_hex: common_hex(&signed.to_envelope_bytes()),
+        });
+    }
+    let receive = vec![
+        TopoReceive {
+            case: 0,
+            now_unix: 1_100,
+            expect: "collected".into(),
+        },
+        TopoReceive {
+            case: 0,
+            now_unix: 1_301,
+            expect: "expired".into(),
+        },
+        TopoReceive {
+            case: 1,
+            now_unix: 2_050,
+            expect: "collected".into(),
+        },
+        TopoReceive {
+            case: 2,
+            now_unix: 2_999,
+            expect: "not_yet_valid".into(),
+        },
+    ];
+    // parse rejects
+    let mut parse_reject = Vec::new();
+    {
+        let subj = mk(
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            0,
+        );
+        let subj_wire = subj.node_identity().to_wire();
+        // self-attestation (subject == observer)
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), subj_wire.clone()),
+            (Value::Int(3), Value::Bytes(subj.node_id().as_bytes().to_vec())),
+            (Value::Int(4), Value::Text("link".into())),
+            (Value::Int(5), Value::Int(1_000)),
+            (Value::Int(6), Value::Int(1_060)),
+            (
+                Value::Int(7),
+                Value::Map(vec![
+                    (Value::Int(1), Value::Bytes(vec![1u8; 32])),
+                    (Value::Int(2), Value::Int(990)),
+                    (Value::Int(3), Value::Int(1)),
+                    (Value::Int(4), Value::Int(0)),
+                    (Value::Int(5), Value::Int(1)),
+                    (Value::Int(6), Value::Int(1)),
+                    (Value::Int(7), Value::Int(1)),
+                    (Value::Int(8), Value::Int(1)),
+                    (Value::Int(9), Value::Int(0)),
+                ]),
+            ),
+        ]);
+        parse_reject.push(TopoReject {
+            hex: common_hex(&encode(&v).unwrap()),
+            error: "subject_is_observer".into(),
+        });
+        // unknown kind
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), subj_wire.clone()),
+            (Value::Int(3), Value::Bytes(vec![9u8; 32])),
+            (Value::Int(4), Value::Text("gossip".into())),
+            (Value::Int(5), Value::Int(1_000)),
+            (Value::Int(6), Value::Int(1_060)),
+            (Value::Int(7), Value::Map(vec![])),
+        ]);
+        parse_reject.push(TopoReject {
+            hex: common_hex(&encode(&v).unwrap()),
+            error: "kind_unknown".into(),
+        });
+        // window too long
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), subj_wire.clone()),
+            (Value::Int(3), Value::Bytes(vec![9u8; 32])),
+            (Value::Int(4), Value::Text("advertisement".into())),
+            (Value::Int(5), Value::Int(1_000)),
+            (Value::Int(6), Value::Int(1_000 + 3601)),
+            (
+                Value::Int(7),
+                Value::Map(vec![
+                    (Value::Int(1), Value::Bytes(vec![2u8; 32])),
+                    (Value::Int(2), Value::Array(vec![])),
+                ]),
+            ),
+        ]);
+        parse_reject.push(TopoReject {
+            hex: common_hex(&encode(&v).unwrap()),
+            error: "window_invalid".into(),
+        });
+        // p95 < p50
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), subj_wire.clone()),
+            (Value::Int(3), Value::Bytes(vec![9u8; 32])),
+            (Value::Int(4), Value::Text("link".into())),
+            (Value::Int(5), Value::Int(1_000)),
+            (Value::Int(6), Value::Int(1_060)),
+            (
+                Value::Int(7),
+                Value::Map(vec![
+                    (Value::Int(1), Value::Bytes(vec![1u8; 32])),
+                    (Value::Int(2), Value::Int(990)),
+                    (Value::Int(3), Value::Int(1)),
+                    (Value::Int(4), Value::Int(0)),
+                    (Value::Int(5), Value::Int(1)),
+                    (Value::Int(6), Value::Int(200)),
+                    (Value::Int(7), Value::Int(100)),
+                    (Value::Int(8), Value::Int(1)),
+                    (Value::Int(9), Value::Int(0)),
+                ]),
+            ),
+        ]);
+        parse_reject.push(TopoReject {
+            hex: common_hex(&encode(&v).unwrap()),
+            error: "percentiles_unordered".into(),
+        });
+        // unsorted capabilities
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), subj_wire),
+            (Value::Int(3), Value::Bytes(vec![9u8; 32])),
+            (Value::Int(4), Value::Text("advertisement".into())),
+            (Value::Int(5), Value::Int(1_000)),
+            (Value::Int(6), Value::Int(1_060)),
+            (
+                Value::Int(7),
+                Value::Map(vec![
+                    (Value::Int(1), Value::Bytes(vec![2u8; 32])),
+                    (
+                        Value::Int(2),
+                        Value::Array(vec![
+                            Value::Text("gateway".into()),
+                            Value::Text("dtn_custodian".into()),
+                        ]),
+                    ),
+                ]),
+            ),
+        ]);
+        parse_reject.push(TopoReject {
+            hex: common_hex(&encode(&v).unwrap()),
+            error: "capabilities_not_sorted".into(),
+        });
+    }
+    TopologyVectorsFile {
+        scheme: "sharenet-topology-evidence-v1".into(),
+        description: "Topology evidence vectors (R3-003). For every case the harness MUST: \
+rebuild the observer identity from seed+created_at, rebuild the evidence \
+record from the fields, re-derive wire bytes + signature + evidence_id \
+byte-exactly. receive[] cases run the full collector pipeline and expect \
+the named outcome. parse_reject[] bytes MUST fail with the named typed \
+error.".into(),
+        cases,
+        receive,
+        parse_reject,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1675,6 +2033,85 @@ fn vectors_conformance() {
         };
         assert_eq!(err.name(), r.error, "parse_reject {}", r.hex);
     }
+
+    // ---- topology evidence vectors ----
+    let topo_file: TopologyVectorsFile = serde_json::from_str(
+        &std::fs::read_to_string(vectors_path("topology_vectors.json"))
+            .expect("topology_vectors.json must exist"),
+    )
+    .expect("topology_vectors.json parses");
+    assert_eq!(topo_file.scheme, "sharenet-topology-evidence-v1");
+    use sharenet_protocol::topology::{
+        LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence,
+        TopologyEvidence as TE, TopologyStore,
+    };
+    for (i, c) in topo_file.cases.iter().enumerate() {
+        let seed: [u8; SEED_LEN] = from_hex(&c.seed_hex).try_into().expect("seed len");
+        let obs = Identity::from_seed(seed, c.created_at_unix, None).unwrap();
+        let subject: [u8; 32] = from_hex(&c.subject_node_id_hex)
+            .try_into()
+            .expect("subject len");
+        let observation = match c.kind.as_str() {
+            "link" => Observation::Link {
+                link_id: from_hex(c.link_id_hex.as_deref().unwrap()).try_into().unwrap(),
+                established_at_unix: c.established_at_unix.unwrap(),
+                quality: {
+                    let q = c.quality.as_ref().unwrap();
+                    LinkQualitySnapshot {
+                        delivered: q.delivered,
+                        lost: q.lost,
+                        ewma_rtt_micros: q.ewma_rtt_micros,
+                        p50_rtt_micros: q.p50_rtt_micros,
+                        p95_rtt_micros: q.p95_rtt_micros,
+                        jitter_mad_micros: q.jitter_mad_micros,
+                        loss_ratio_ppm: q.loss_ratio_ppm,
+                    }
+                },
+            },
+            "advertisement" => Observation::Advertisement {
+                advertisement_id: from_hex(c.advertisement_id_hex.as_deref().unwrap())
+                    .try_into()
+                    .unwrap(),
+                capabilities: c.capabilities.clone().unwrap_or_default(),
+            },
+            other => panic!("bad kind {other}"),
+        };
+        let ev = TE::new(&obs, subject, observation, c.observed_at_unix, c.validity_secs)
+            .unwrap_or_else(|e| panic!("topo case {i} must build: {e}"));
+        assert_eq!(
+            common_hex(&ev.to_wire_bytes()),
+            c.evidence_wire_hex,
+            "wire mismatch in topo case {i}"
+        );
+        let signed = ev.sign(&obs).unwrap();
+        assert_eq!(common_hex(signed.signature()), c.signature_hex, "topo {i}");
+        assert_eq!(common_hex(&signed.evidence_id()), c.evidence_id_hex, "topo {i}");
+        assert_eq!(common_hex(&signed.to_envelope_bytes()), c.envelope_hex, "topo {i}");
+    }
+    {
+        let mut stores: std::collections::HashMap<usize, TopologyStore> =
+            std::collections::HashMap::new();
+        for (i, r) in topo_file.receive.iter().enumerate() {
+            let c = &topo_file.cases[r.case];
+            let signed =
+                SignedTopologyEvidence::from_envelope_bytes(&from_hex(&c.envelope_hex)).unwrap();
+            let store = stores.entry(r.case).or_insert_with(TopologyStore::new);
+            let outcome = match store.receive(&signed, r.now_unix) {
+                Ok(ReceiveOutcome::Collected) => "collected".to_string(),
+                Ok(ReceiveOutcome::Stale) => "stale".to_string(),
+                Err(e) => e.name(),
+            };
+            assert_eq!(outcome, r.expect, "topo receive {i}");
+        }
+    }
+    for r in &topo_file.parse_reject {
+        let bytes = from_hex(&r.hex);
+        let err = match TE::from_wire_bytes(&bytes) {
+            Err(e) => e,
+            Ok(_) => panic!("topo parse_reject {} was accepted", r.hex),
+        };
+        assert_eq!(err.name(), r.error, "topo parse_reject {}", r.hex);
+    }
 }
 
 #[test]
@@ -1693,6 +2130,9 @@ fn regenerate_vectors() {
     let ad_json = serde_json::to_string_pretty(&advertisement_vectors()).unwrap() + "\n";
     std::fs::write(vectors_path("advertisement_vectors.json"), ad_json)
         .expect("write advertisement vectors");
+    let topo_json = serde_json::to_string_pretty(&topology_vectors()).unwrap() + "\n";
+    std::fs::write(vectors_path("topology_vectors.json"), topo_json)
+        .expect("write topology vectors");
     eprintln!("vectors regenerated under {VECTORS_DIR}");
 }
 

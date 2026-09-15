@@ -1,0 +1,115 @@
+{
+  "scheme": "sharenet-topology-evidence-v1",
+  "description": "Topology evidence vectors (R3-003). For every case the harness MUST: rebuild the observer identity from seed+created_at, rebuild the evidence record from the fields, re-derive wire bytes + signature + evidence_id byte-exactly. receive[] cases run the full collector pipeline and expect the named outcome. parse_reject[] bytes MUST fail with the named typed error.",
+  "cases": [
+    {
+      "note": "link evidence with quality snapshot",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "created_at_unix": 0,
+      "subject_node_id_hex": "a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b",
+      "kind": "link",
+      "link_id_hex": "abababababababababababababababababababababababababababababababab",
+      "established_at_unix": 999,
+      "quality": {
+        "delivered": 200,
+        "lost": 3,
+        "ewma_rtt_micros": 1500,
+        "p50_rtt_micros": 1400,
+        "p95_rtt_micros": 2100,
+        "jitter_mad_micros": 120,
+        "loss_ratio_ppm": 15000
+      },
+      "advertisement_id_hex": null,
+      "capabilities": null,
+      "observed_at_unix": 1000,
+      "validity_secs": 300,
+      "evidence_wire_hex": "a7010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300035820a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b04646c696e6b051903e80619051407a9015820abababababababababababababababababababababababababababababababab021903e70318c80403051905dc061905780719083408187809193a98",
+      "signature_hex": "268eec3b492f053da6c97c04b2e278db091e82c74637f6d2264306b6b50013ba60be4cb34b34dbc09a35b71a72d707d14cd7da98c1c822bb7fe016bb3778ad0b",
+      "evidence_id_hex": "b8e7a1a10ae0899145d49b638fa58da5e17a0a68683987a55d4fc7e7121cdd8e",
+      "envelope_hex": "a201589ea7010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300035820a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b04646c696e6b051903e80619051407a9015820abababababababababababababababababababababababababababababababab021903e70318c80403051905dc061905780719083408187809193a98025840268eec3b492f053da6c97c04b2e278db091e82c74637f6d2264306b6b50013ba60be4cb34b34dbc09a35b71a72d707d14cd7da98c1c822bb7fe016bb3778ad0b"
+    },
+    {
+      "note": "advertisement evidence, no capabilities observed",
+      "seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "created_at_unix": 1700000000,
+      "subject_node_id_hex": "a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b",
+      "kind": "advertisement",
+      "link_id_hex": null,
+      "established_at_unix": null,
+      "quality": null,
+      "advertisement_id_hex": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "capabilities": [],
+      "observed_at_unix": 2000,
+      "validity_secs": 120,
+      "evidence_wire_hex": "a7010102a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c031a6553f100035820a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b046d6164766572746973656d656e74051907d00619084807a2015820cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd0280",
+      "signature_hex": "cafa787c74618c1c8efa0097df43992d3486b2a6088752e1a896d1f4c1764c1e57d495b2b3e8cf3d75bfbb9fe3e92afbfce52ba2bb18f845a0fd33999853bf08",
+      "evidence_id_hex": "3c45949f9094e26b210250768ee02a9eacf9e68abae262fd2e0da686f629bbe6",
+      "envelope_hex": "a2015891a7010102a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c031a6553f100035820a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b046d6164766572746973656d656e74051907d00619084807a2015820cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd0280025840cafa787c74618c1c8efa0097df43992d3486b2a6088752e1a896d1f4c1764c1e57d495b2b3e8cf3d75bfbb9fe3e92afbfce52ba2bb18f845a0fd33999853bf08"
+    },
+    {
+      "note": "advertisement evidence with sorted capabilities",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "created_at_unix": 0,
+      "subject_node_id_hex": "a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b",
+      "kind": "advertisement",
+      "link_id_hex": null,
+      "established_at_unix": null,
+      "quality": null,
+      "advertisement_id_hex": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+      "capabilities": [
+        "dtn_custodian",
+        "gateway"
+      ],
+      "observed_at_unix": 3000,
+      "validity_secs": 60,
+      "evidence_wire_hex": "a7010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300035820a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b046d6164766572746973656d656e7405190bb806190bf407a2015820efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef02826d64746e5f637573746f6469616e6767617465776179",
+      "signature_hex": "b0d5aeb2689bdaa70ef0968c0b6765cc1d00d148e8cbd75cd80a0946cdde75e5afd9bd473db7552378d72bb737e4a29bae309ad5c4b729a9c0c86fe9d50dd203",
+      "evidence_id_hex": "57c8e59b2f003b4541dfaa2b00ea57f4cd2dbd773645bfdc5d413c8aab9d3709",
+      "envelope_hex": "a20158a3a7010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300035820a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b046d6164766572746973656d656e7405190bb806190bf407a2015820efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef02826d64746e5f637573746f6469616e6767617465776179025840b0d5aeb2689bdaa70ef0968c0b6765cc1d00d148e8cbd75cd80a0946cdde75e5afd9bd473db7552378d72bb737e4a29bae309ad5c4b729a9c0c86fe9d50dd203"
+    }
+  ],
+  "receive": [
+    {
+      "case": 0,
+      "now_unix": 1100,
+      "expect": "collected"
+    },
+    {
+      "case": 0,
+      "now_unix": 1301,
+      "expect": "expired"
+    },
+    {
+      "case": 1,
+      "now_unix": 2050,
+      "expect": "collected"
+    },
+    {
+      "case": 2,
+      "now_unix": 2999,
+      "expect": "not_yet_valid"
+    }
+  ],
+  "parse_reject": [
+    {
+      "hex": "a7010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300035820a72f5df313a965faf0138ebeebd698c5bb3eac07278e925fff8f69bb0f5d118804646c696e6b051903e80619042407a90158200101010101010101010101010101010101010101010101010101010101010101021903de0301040005010601070108010900",
+      "error": "subject_is_observer"
+    },
+    {
+      "hex": "a7010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a030003582009090909090909090909090909090909090909090909090909090909090909090466676f73736970051903e80619042407a0",
+      "error": "kind_unknown"
+    },
+    {
+      "hex": "a7010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a03000358200909090909090909090909090909090909090909090909090909090909090909046d6164766572746973656d656e74051903e8061911f907a201582002020202020202020202020202020202020202020202020202020202020202020280",
+      "error": "window_invalid"
+    },
+    {
+      "hex": "a7010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300035820090909090909090909090909090909090909090909090909090909090909090904646c696e6b051903e80619042407a90158200101010101010101010101010101010101010101010101010101010101010101021903de0301040005010618c807186408010900",
+      "error": "percentiles_unordered"
+    },
+    {
+      "hex": "a7010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a03000358200909090909090909090909090909090909090909090909090909090909090909046d6164766572746973656d656e74051903e80619042407a20158200202020202020202020202020202020202020202020202020202020202020202028267676174657761796d64746e5f637573746f6469616e",
+      "error": "capabilities_not_sorted"
+    }
+  ]
+}

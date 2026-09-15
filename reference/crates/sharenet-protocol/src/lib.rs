@@ -37,6 +37,7 @@ pub mod capability;
 pub mod identity;
 pub mod link;
 pub mod store;
+pub mod topology;
 
 pub use advertisement::{
     Advertisement, AdvertisementError, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement,
@@ -47,6 +48,11 @@ pub use cbor::{decode, encode, DecodeError, EncodeError, Value};
 pub use capability::{
     admit, Admitted, AdmissionError, Capability, CapabilityError, CapabilityStatement,
     SignedCapabilityStatement, CAP_SCHEME_VERSION, MAX_LIMITS_ENTRIES, MAX_LIMIT_KEY_BYTES,
+};
+pub use topology::{
+    BilateralLink, LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence,
+    TopologyError, TopologyEvidence, TopologyStore, EVIDENCE_MAX_WINDOW,
+    EVIDENCE_SCHEME_VERSION, LOSS_RATIO_PPM_MAX,
 };
 pub use link::{
     LinkConfirm, LinkError, LinkInitiate, LinkInitiator, LinkRespond, LinkResponder,

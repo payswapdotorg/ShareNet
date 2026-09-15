@@ -15,6 +15,7 @@ import os
 import sys
 
 from . import advertisement as admod
+from . import topology as topomod
 from . import ed25519
 from . import link as linkmod
 from .capability import admit, build_statement, CapabilityError  # noqa: F401
@@ -298,6 +299,64 @@ def run(vectors_dir: str) -> int:
             fail(f"advertisement receive {i}: {e}")
     for i, r in enumerate(ad_file["parse_reject"]):
         print(f"AD_REJ {i} {r['error']}")
+
+    # ---------------- topology evidence vectors ----------------
+    topo_file = load_json(vectors_dir, "topology_vectors.json")
+    envelopes = []
+    meta = []
+    for i, c in enumerate(topo_file["cases"]):
+        try:
+            seed = bytes.fromhex(c["seed_hex"])
+            link = None
+            advertisement = None
+            if c["kind"] == "link":
+                q = c["quality"]
+                link = {
+                    "link_id": bytes.fromhex(c["link_id_hex"]),
+                    "established_at": c["established_at_unix"],
+                    "quality": q,
+                }
+            else:
+                advertisement = {
+                    "advertisement_id": bytes.fromhex(c["advertisement_id_hex"]),
+                    "capabilities": c.get("capabilities") or [],
+                }
+            wire = topomod.build_evidence(
+                seed,
+                c["created_at_unix"],
+                bytes.fromhex(c["subject_node_id_hex"]),
+                c["kind"],
+                c["observed_at_unix"],
+                c["validity_secs"],
+                link,
+                advertisement,
+            )
+            sig = ed25519.sign(seed, wire)
+            ev_id = topomod.evidence_id(wire)
+            env = topomod.build_envelope(wire, sig)
+            envelopes.append(env)
+            meta.append((c["observed_at_unix"], c["observed_at_unix"] + c["validity_secs"]))
+            print(f"TOPO {i} wire={wire.hex()} sig={sig.hex()} id={ev_id.hex()} env={env.hex()}")
+        except Exception as e:  # noqa: BLE001
+            fail(f"topology {i}: {e}")
+    collected: dict[int, int] = {}
+    for i, r in enumerate(topo_file["receive"]):
+        now = r["now_unix"]
+        observed, expires = meta[r["case"]]
+        if now < observed:
+            outcome = "not_yet_valid"
+        elif now >= expires:
+            outcome = "expired"
+        else:
+            prev = collected.get(r["case"])
+            if prev is not None and observed <= prev:
+                outcome = "stale"
+            else:
+                collected[r["case"]] = observed
+                outcome = "collected"
+        print(f"TOPO_RECV {i} now={now} {outcome}")
+    for i, r in enumerate(topo_file["parse_reject"]):
+        print(f"TOPO_REJ {i} {r['error']}")
 
     return 0 if failures == 0 else 1
 

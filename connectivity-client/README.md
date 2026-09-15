@@ -1,0 +1,82 @@
+# sharenet-connectivity-client — R5-002 (ADCOS client)
+
+ShareNet's ADCOS wire client: the boundary adapter that implements the
+[`sharenet-connectivity`] crate's `ConnectivityPort` trait against the
+ADCOS developer API. Per `spec/integrations/adcos.md` ("Only the ADCOS
+adapter may know the ADCOS developer API transport format"), this crate
+— its `wire.rs`, `http.rs` and `transport.rs` — is the ONLY place in
+ShareNet that knows what an ADCOS request or response looks like.
+
+## What it provides
+
+| Piece | Where | What |
+|---|---|---|
+| `AdcosClient` | `src/client.rs` | The `ConnectivityPort` implementation: every trait call maps onto the endpoint table below, with typed error mapping, an `ObservationCache` (the parent's caller-side caching policy) for the adcos.md failure semantics, and a richer INHERENT method surface (`AdcosError`) alongside the trait surface (`PortError`) for diagnosis. |
+| HTTP/1.1 subset | `src/http.rs` | A minimal, strict request/response codec: request line + headers + Content-Length bodies, `Connection: close` (one request per connection — no keep-alive, no chunked). Hand-computed byte vectors in the unit tests. |
+| Transport | `src/transport.rs` | std-TCP exchange with connect/read timeouts and a deliberate retry policy: transport failures (connect) retry; a request whose bytes were SENT is never blindly retried (a dropped POST may have been applied server-side — the safe choice); status errors surface to the caller instead of being retried semantically. |
+| Wire shapes | `src/wire.rs` | The endpoint table + DTOs + the error envelope: `{"error":{"code":"<PortError machine name>", ...typed fields}}` — the parent crate's stable machine names ARE the wire error vocabulary. Code↔status pairing is enforced (a mismatch is typed `CodeStatusMismatch`). |
+| `adcos_test_server` | `src/bin/…` | **TEST SCAFFOLDING**: a real HTTP server speaking exactly this wire shape, backed by a deterministic in-memory store, with injectable fault modes (`503:N`, `drop:N`, `garbage:N`). |
+
+## Endpoint table (the adapter's documented mapping)
+
+| Trait method | HTTP | Path | Success body |
+|---|---|---|---|
+| `create_intent` | POST | `/intents` | `{"intent_ref":WireRef}` |
+| `discover_offers` | GET | `/intents/{id}/offers` | `[WireRef]` |
+| `accept_offer` | POST | `/intents/{id}/offers/{offer}/accept` | `{"contract_ref":WireRef}` |
+| `get_contract` | GET | `/contracts/{id}` | projection fields |
+| `get_assurance` | GET | `/contracts/{id}/assurance` | `[observation fields]` |
+| `get_execution` | GET | `/contracts/{id}/execution` | execution fields |
+| `terminate` | POST | `/contracts/{id}/terminate` | `{}` |
+
+`{id}` segments are 64 lowercase hex chars; a `WireRef` is
+`{"kind":"intent|offer|contract","id":"<hex>"}` (wrong-kind refs are
+typed `RefKindMismatch`, never silently re-typed).
+
+## Boundary laws enforced
+
+- **Never fabricate contract state during an outage**: transport,
+  protocol and malformed failures all degrade to
+  `PortError::ProviderUnavailable` carrying the cached-observation
+  freshness bound (`ObservationCache`, the parent's policy type).
+- **New acquisition blocked when unauthorized**: `AcquisitionUnauthorized`
+  passes through typed.
+- **Observations stay read-only**: no API mutates authoritative
+  ShareNet state; the projections enforce their invariants at
+  construction (an inverted validity window from the provider is a
+  typed `ValidityWindowInvalid`, never a fabricated projection).
+- **No protocol-core dependency**: this adapter depends only on
+  `sharenet-connectivity` (+ serde for the JSON). It compiles for
+  `wasm32-unknown-unknown` (the pure-data modules; the TCP transport
+  is unix-side runtime state).
+
+## Persistence
+
+**None.** The client is runtime state; the ADCOS server holds the
+contract truth (ADR-001: ShareNet holds only references + projections).
+
+## Build and test
+
+```bash
+cd connectivity-client
+cargo test    # 33 unit (codec bytes, wire shapes, error tables) + 7 integration
+cargo check --target wasm32-unknown-unknown
+```
+
+The integration tests run the REAL `AdcosClient` against the REAL
+`adcos_test_server` process over real loopback TCP: full lifecycle,
+the 503-with-cached-freshness semantics, dropped connections (typed
+failure, never fabrication), garbage bodies (typed malformed on the
+inherent surface), parallel clients, unknown-ref typing, and the
+terminate idempotence.
+
+## Known limits (honest)
+
+- The wire shape is THIS repo's documented mapping of the ADCOS
+  developer API; a real ADCOS deployment may differ — the adapter is
+  the only place that would change (ADR-001's whole point).
+- No TLS yet (future hardening; the sandbox evidence is loopback).
+- No webhook/event push — polling only, as designed for R5-002.
+- No DNS: the endpoint is a socket address (documented).
+- One request per connection (Connection: close) — keep-alive is a
+  future optimization, not a correctness need.

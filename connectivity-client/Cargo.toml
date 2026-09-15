@@ -1,0 +1,28 @@
+[package]
+name = "sharenet-connectivity-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet ADCOS wire client (R5-002): a minimal JSON-over-HTTP/1.1 client implementing the connectivity crate's ConnectivityPort trait against the ADCOS developer API, plus the adcos_test_server test scaffolding. Boundary adapter - depends only on sharenet-connectivity; no protocol core, no async runtime (std TCP)."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_connectivity_client"
+path = "src/lib.rs"
+
+# Only three dependencies, all deliberate:
+# - sharenet-connectivity (the boundary this client implements - the whole
+#   point of R5-002). No protocol-core dependency (ADR-001).
+# - serde/serde_json for the JSON bodies of the ADCOS developer API mapping.
+#   This is the boundary ADAPTER, not the protocol core: the parent crate
+#   stays zero-dependency, and the wire-format knowledge lives here and only
+#   here ("Only the ADCOS adapter may know the ADCOS developer API transport
+#   format" - spec/integrations/adcos.md).
+#
+# The TCP transport is std-only: a minimal hand-rolled HTTP/1.1
+# writer/reader, no HTTP framework, no async runtime.
+[dependencies]
+sharenet-connectivity = { path = "../connectivity" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,0 +1,25 @@
+[package]
+name = "sharenet-transport-linux"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet Linux transport foundation: TUN abstraction, capability probe, and raw local UDP transport (platform adapter layer, no protocol semantics)."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_transport_linux"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sharenet_transport_linux"
+path = "src/bin/sharenet_transport_linux.rs"
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+# None needed: adversarial and multiprocess tests use std only.
+
+[profile.release]
+debug = true

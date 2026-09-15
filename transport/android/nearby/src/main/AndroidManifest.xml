@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Nearby Connections transport permissions (R2-001).
+
+      Google Nearby Connections scans/advertises over Bluetooth (LE), Wi-Fi
+      (Direct/Aware) and the local network depending on the Strategy. The set
+      below follows the current Nearby Connections guidance for a range of
+      targetSdk levels:
+
+      * Android 12+ (API 31+): BLUETOOTH_SCAN / BLUETOOTH_ADVERTISE /
+        BLUETOOTH_CONNECT replace the legacy Bluetooth pair. The
+        neverForLocation flag keeps discovery usable without location.
+      * Android 13+ (API 33+): NEARBY_WIFI_DEVICES replaces the fine-location
+        requirement for nearby Wi-Fi discovery, again without location.
+      * Android 11 and below: legacy BLUETOOTH / BLUETOOTH_ADMIN plus
+        ACCESS_FINE_LOCATION (runtime permission granted by the embedding
+        app), and Wi-Fi state access.
+    -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+
+    <application>
+        <!--
+          Production caller skeleton: the future ShareNet Android app embeds
+          this service (started via Context.startService with the ACTION_*
+          intents). exported=false: only the host app may start it.
+        -->
+        <service
+            android:name="org.sharenet.transport.nearby.ShareNetTransportService"
+            android:exported="false" />
+    </application>
+
+</manifest>

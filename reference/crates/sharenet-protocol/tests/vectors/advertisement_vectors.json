@@ -1,0 +1,131 @@
+{
+  "scheme": "sharenet-advertisement-v1",
+  "description": "Advertisement/discovery vectors (R3-002). For every case the harness MUST: rebuild the announcer identity from seed+created_at, rebuild the advertisement (canonical transport order), re-derive the wire bytes and signature byte-exactly, and re-derive advertisement_id = SHA-256(wire). receive[] cases run the full receiver verification pipeline and expect the named outcome. parse_reject[] bytes MUST fail with the named typed error.",
+  "cases": [
+    {
+      "note": "single udp endpoint, no capabilities",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "created_at_unix": 0,
+      "capabilities_hex": null,
+      "transports": [
+        {
+          "kind": "udp",
+          "endpoint": "192.168.1.10:7000"
+        }
+      ],
+      "issued_at_unix": 1700000000,
+      "validity_secs": 120,
+      "advertisement_wire_hex": "a5010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a03000481a2016375647002713139322e3136382e312e31303a37303030051a6553f100061a6553f178",
+      "signature_hex": "202b506671e6d41339d3716fd6db5bafb78c8ac71810b430878b5ec4c3eafa00854afc19a468c462eee80d4ee9c9138fecdf2be253933578a1e5d1347d971904",
+      "advertisement_id_hex": "225e2fb6bb0bc3931b12b366be7383b88cc420c21906ad07c3bd044ffa15c81d",
+      "envelope_hex": "a2015853a5010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a03000481a2016375647002713139322e3136382e312e31303a37303030051a6553f100061a6553f178025840202b506671e6d41339d3716fd6db5bafb78c8ac71810b430878b5ec4c3eafa00854afc19a468c462eee80d4ee9c9138fecdf2be253933578a1e5d1347d971904"
+    },
+    {
+      "note": "multi-transport with capability envelope, scrambled input order",
+      "seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "created_at_unix": 1700000000,
+      "capabilities_hex": "a2015852a60101025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f9630232603816767617465776179041a6553f100051a6555428006a1716d61785f6261636b6861756c5f6d62707318320258400b17a5259eca2912d1d97166c91d625ceca8f7e82b29c117bffea208f77d475a5c92784f41c61742f7eaf14926091256cece9353613dfb06475be75abbee630e",
+      "transports": [
+        {
+          "kind": "quic",
+          "endpoint": "gw.example.net:443"
+        },
+        {
+          "kind": "udp",
+          "endpoint": "10.1.2.3:7000"
+        },
+        {
+          "kind": "udp",
+          "endpoint": "10.1.2.4:7000"
+        }
+      ],
+      "issued_at_unix": 1700000500,
+      "validity_secs": 300,
+      "advertisement_wire_hex": "a6010102a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c031a6553f100035899a2015852a60101025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f9630232603816767617465776179041a6553f100051a6555428006a1716d61785f6261636b6861756c5f6d62707318320258400b17a5259eca2912d1d97166c91d625ceca8f7e82b29c117bffea208f77d475a5c92784f41c61742f7eaf14926091256cece9353613dfb06475be75abbee630e0483a2016471756963027267772e6578616d706c652e6e65743a343433a20163756470026d31302e312e322e333a37303030a20163756470026d31302e312e322e343a37303030051a6553f2f4061a6553f420",
+      "signature_hex": "477d8614585ae37c8928dc87108a4cd297e6f6190cff08c0d4b3a9b326ef68045d7624716cf7f780ea7b90f69bd4046ef5f773fad3c52b824335f3e838332301",
+      "advertisement_id_hex": "49fda091d5fa4d106f72a329db35d11fe044dbbd8a4dc91c41497bbe984fa02a",
+      "envelope_hex": "a20159011fa6010102a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c031a6553f100035899a2015852a60101025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f9630232603816767617465776179041a6553f100051a6555428006a1716d61785f6261636b6861756c5f6d62707318320258400b17a5259eca2912d1d97166c91d625ceca8f7e82b29c117bffea208f77d475a5c92784f41c61742f7eaf14926091256cece9353613dfb06475be75abbee630e0483a2016471756963027267772e6578616d706c652e6e65743a343433a20163756470026d31302e312e322e333a37303030a20163756470026d31302e312e322e343a37303030051a6553f2f4061a6553f420025840477d8614585ae37c8928dc87108a4cd297e6f6190cff08c0d4b3a9b326ef68045d7624716cf7f780ea7b90f69bd4046ef5f773fad3c52b824335f3e838332301"
+    },
+    {
+      "note": "wifi_aware + nearby, max window",
+      "seed_hex": "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+      "created_at_unix": 42,
+      "capabilities_hex": null,
+      "transports": [
+        {
+          "kind": "nearby",
+          "endpoint": "cluster-alpha"
+        },
+        {
+          "kind": "wifi_aware",
+          "endpoint": "aware-1"
+        }
+      ],
+      "issued_at_unix": 1,
+      "validity_secs": 600,
+      "advertisement_wire_hex": "a5010102a30101025820e7b441bfa3cdaf05a07fbd04dd8d3a83bf1d545d82436d04ac68f32a0bd09c6003182a0482a201666e6561726279026d636c75737465722d616c706861a2016a776966695f6177617265026761776172652d31050106190259",
+      "signature_hex": "b3663768de7d56666b406abf141d484866358081ea698cb4a3621a4b5027ae31a4932ddf5b83e217778a4ab42ae9f47e9f1f46d058965a2da6676c7f69075804",
+      "advertisement_id_hex": "df6e1d7c97573c861823afb9c3a8d0f47bc67b7b851647985e2b39e27be87021",
+      "envelope_hex": "a2015863a5010102a30101025820e7b441bfa3cdaf05a07fbd04dd8d3a83bf1d545d82436d04ac68f32a0bd09c6003182a0482a201666e6561726279026d636c75737465722d616c706861a2016a776966695f6177617265026761776172652d31050106190259025840b3663768de7d56666b406abf141d484866358081ea698cb4a3621a4b5027ae31a4932ddf5b83e217778a4ab42ae9f47e9f1f46d058965a2da6676c7f69075804"
+    }
+  ],
+  "receive": [
+    {
+      "case": 0,
+      "now_unix": 1700000060,
+      "expect": "discovered"
+    },
+    {
+      "case": 0,
+      "now_unix": 1700000061,
+      "expect": "duplicate"
+    },
+    {
+      "case": 0,
+      "now_unix": 1700000120,
+      "expect": "expired"
+    },
+    {
+      "case": 0,
+      "now_unix": 1699999999,
+      "expect": "not_yet_valid"
+    },
+    {
+      "case": 1,
+      "now_unix": 1700000600,
+      "expect": "discovered"
+    },
+    {
+      "case": 2,
+      "now_unix": 300,
+      "expect": "discovered"
+    }
+  ],
+  "parse_reject": [
+    {
+      "hex": "a5010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a03000481a20169626c7565746f6f7468027130303a31313a32323a33333a34343a3535050106183c",
+      "error": "transport_kind_unknown",
+      "note": "only the frozen v1 kind set is valid"
+    },
+    {
+      "hex": "a5010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a03000482a20163756470026a31302e302e302e323a31a20163756470026a31302e302e302e313a31050106183c",
+      "error": "transports_not_sorted",
+      "note": "canonical order is strictly ascending by (kind, endpoint)"
+    },
+    {
+      "hex": "a5010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a03000481a20163756470026a31302e302e302e313a3105010619025a",
+      "error": "window_invalid",
+      "note": "validity window must be <= 600s"
+    },
+    {
+      "hex": "a5010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a03000480050106183c",
+      "error": "transports_empty",
+      "note": "an advertisement with no transports is meaningless"
+    },
+    {
+      "hex": "a4010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a03000481a20163756470026a31302e302e302e313a310501",
+      "error": "missing_field",
+      "note": "expires_at is required"
+    }
+  ]
+}

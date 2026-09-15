@@ -14,11 +14,13 @@ import json
 import os
 import sys
 
+from . import advertisement as admod
 from . import ed25519
 from . import link as linkmod
 from .capability import admit, build_statement, CapabilityError  # noqa: F401
 from .cbor import decode, encode, value_eq, value_from_json
 from .identity import derive_node_id, node_identity_wire, public_key, verify_detached
+from .identity import public_key as pk_from_seed
 from .x25519 import public_from_scalar, shared
 
 DEFAULT_VECTORS = os.path.join(
@@ -232,6 +234,70 @@ def run(vectors_dir: str) -> int:
             print(f"LINK_FRAME {f['case']} dir={f['direction']} seq={f['seq']} frame={frame.hex()}")
         except Exception as e:  # noqa: BLE001
             fail(f"link frame: {e}")
+
+    # ---------------- advertisement vectors ----------------
+    ad_file = load_json(vectors_dir, "advertisement_vectors.json")
+    envelopes = []
+    ads_meta = []
+    for i, c in enumerate(ad_file["cases"]):
+        try:
+            seed = bytes.fromhex(c["seed_hex"])
+            caps = bytes.fromhex(c["capabilities_hex"]) if c.get("capabilities_hex") else None
+            wire = admod.build_advertisement(
+                seed,
+                c["created_at_unix"],
+                caps,
+                c["transports"],
+                c["issued_at_unix"],
+                c["validity_secs"],
+            )
+            sig = ed25519.sign(seed, wire)
+            ad_id = admod.advertisement_id(wire)
+            env = admod.build_envelope(wire, sig)
+            envelopes.append(env)
+            ads_meta.append((c["issued_at_unix"], c["issued_at_unix"] + c["validity_secs"]))
+            print(
+                f"AD {i} wire={wire.hex()} sig={sig.hex()} id={ad_id.hex()} env={env.hex()}"
+            )
+        except Exception as e:  # noqa: BLE001
+            fail(f"advertisement {i}: {e}")
+    caches: dict[int, list] = {}
+    for i, r in enumerate(ad_file["receive"]):
+        try:
+            c = ad_file["cases"][r["case"]]
+            seed = bytes.fromhex(c["seed_hex"])
+            env = envelopes[r["case"]]
+            # decode the envelope back into (ad bytes, signature)
+            from .cbor import decode as cbor_decode
+
+            env_value = cbor_decode(env)
+            ad_bytes = env_value[0][1]
+            sig = env_value[1][1]
+            outcome = "discovered"
+            if not ed25519.verify(pk_from_seed(seed), ad_bytes, sig):
+                outcome = "signature_invalid"
+            else:
+                now = r["now_unix"]
+                issued, expires = ads_meta[r["case"]]
+                if now < issued:
+                    outcome = "not_yet_valid"
+                elif now >= expires:
+                    outcome = "expired"
+                else:
+                    seen = caches.setdefault(r["case"], [])
+                    ad_id = admod.advertisement_id(ad_bytes).hex()
+                    cached = seen[-1] if seen else None
+                    if cached and cached[1] == ad_id:
+                        outcome = "duplicate"
+                    elif cached and issued <= cached[0]:
+                        outcome = "stale"
+                    else:
+                        seen.append((issued, ad_id))
+            print(f"AD_RECV {i} now={r['now_unix']} {outcome}")
+        except Exception as e:  # noqa: BLE001
+            fail(f"advertisement receive {i}: {e}")
+    for i, r in enumerate(ad_file["parse_reject"]):
+        print(f"AD_REJ {i} {r['error']}")
 
     return 0 if failures == 0 else 1
 

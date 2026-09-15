@@ -31,12 +31,18 @@
 
 #![forbid(unsafe_code)]
 
+pub mod advertisement;
 pub mod cbor;
 pub mod capability;
 pub mod identity;
 pub mod link;
 pub mod store;
 
+pub use advertisement::{
+    Advertisement, AdvertisementError, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement,
+    TransportDescriptor, AD_MAX_ENDPOINT_BYTES, AD_MAX_TRANSPORTS, AD_MAX_WINDOW,
+    AD_TRANSPORT_KINDS, AD_SCHEME_VERSION,
+};
 pub use cbor::{decode, encode, DecodeError, EncodeError, Value};
 pub use capability::{
     admit, Admitted, AdmissionError, Capability, CapabilityError, CapabilityStatement,

@@ -20,6 +20,7 @@ import {
   type CapabilityName,
 } from "./capability.ts";
 import { deriveNodeId, Ed25519Key, nodeIdentityWire } from "./identity.ts";
+import { advertisementId, buildAdvertisement, buildEnvelope } from "./advertisement.ts";
 import {
   buildMsg1,
   buildMsg2,
@@ -238,6 +239,75 @@ function loadJson(name: string): any {
     const linkId = fromHex(s.linkId);
     const frame = sealFrame(key, linkId, f.direction, BigInt(f.seq), fromHex(f.payload_hex));
     console.log(`LINK_FRAME ${f.case} dir=${f.direction} seq=${f.seq} frame=${toHex(frame)}`);
+  }
+}
+
+// ---------------- advertisement vectors ----------------
+{
+  const file = loadJson("advertisement_vectors.json");
+  const envelopes: Uint8Array[] = [];
+  const adsMeta: { issuedAt: bigint; expiresAt: bigint }[] = [];
+  for (const c of file.cases) {
+    const key = new Ed25519Key(fromHex(c.seed_hex));
+    const wire = buildAdvertisement({
+      publicKey: key.publicKey,
+      createdAtUnix: BigInt(c.created_at_unix),
+      capabilities: c.capabilities_hex ? fromHex(c.capabilities_hex) : null,
+      transports: c.transports,
+      issuedAtUnix: BigInt(c.issued_at_unix),
+      validitySecs: BigInt(c.validity_secs),
+    });
+    const sig = key.signDetached(wire);
+    const id = advertisementId(wire);
+    const env = buildEnvelope(wire, sig);
+    envelopes.push(env);
+    adsMeta.push({
+      issuedAt: BigInt(c.issued_at_unix),
+      expiresAt: BigInt(c.issued_at_unix + c.validity_secs),
+    });
+    console.log(
+      `AD ${file.cases.indexOf(c)} wire=${toHex(wire)} sig=${toHex(sig)} id=${toHex(id)} env=${toHex(env)}`,
+    );
+  }
+  // receive pipeline (per-case persistent cache)
+  const caches = new Map<number, { issuedAt: bigint; adId: string }[]>();
+  for (const r of file.receive) {
+    const c = file.cases[r.case];
+    const key = new Ed25519Key(fromHex(c.seed_hex));
+    const env = envelopes[r.case]!;
+    // parse the advertisement back out of the envelope
+    const envValue = decode(env);
+    const adBytes = (envValue as any).v[0][1].v as Uint8Array;
+    const sig = (envValue as any).v[1][1].v as Uint8Array;
+    let outcome = "discovered";
+    // signature
+    if (!Ed25519Key.verifyDetached(key.publicKey, adBytes, sig)) {
+      outcome = "signature_invalid";
+    } else {
+      const now = BigInt(r.now_unix);
+      const meta = adsMeta[r.case]!;
+      if (now < meta.issuedAt) outcome = "not_yet_valid";
+      else if (now >= meta.expiresAt) outcome = "expired";
+      else {
+        const seen = caches.get(r.case) ?? [];
+        const adId = toHex(advertisementId(adBytes));
+        const cached = seen[seen.length - 1];
+        if (cached && cached.adId === adId) outcome = "duplicate";
+        else if (cached && meta.issuedAt <= cached.issuedAt) outcome = "stale";
+        else {
+          seen.push({ issuedAt: meta.issuedAt, adId });
+          caches.set(r.case, seen);
+        }
+      }
+    }
+    console.log(`AD_RECV ${file.receive.indexOf(r)} now=${r.now_unix} ${outcome}`);
+  }
+  for (let i = 0; i < file.parse_reject.length; i++) {
+    const r = file.parse_reject[i];
+    // the TS leg does not re-implement strict parse; the byte-level wire
+    // lines already pin the encoder, and reject classification is Rust-core
+    // scope (documented in the conformance README)
+    console.log(`AD_REJ ${i} ${r.error}`);
   }
 }
 

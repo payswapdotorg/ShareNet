@@ -76,7 +76,7 @@ fn main() -> ExitCode {
     println!("READY {local}");
 
     // ---- responder side of the handshake ----
-    let (peer, mut buf) = match recv_from(&socket) {
+    let (peer, buf) = match recv_from(&socket) {
         Some(x) => x,
         None => {
             eprintln!("error: no msg1 received");
@@ -112,7 +112,7 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
 
-    let (peer2, mut buf) = match recv_from(&socket) {
+    let (peer2, buf) = match recv_from(&socket) {
         Some(x) => x,
         None => {
             eprintln!("error: no msg3 received");

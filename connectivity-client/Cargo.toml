@@ -3,7 +3,7 @@ name = "sharenet-connectivity-client"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
-description = "ShareNet ADCOS wire client (R5-002): a minimal JSON-over-HTTP/1.1 client implementing the connectivity crate's ConnectivityPort trait against the ADCOS developer API, plus the adcos_test_server test scaffolding. Boundary adapter - depends only on sharenet-connectivity; no protocol core, no async runtime (std TCP)."
+description = "ShareNet ADCOS wire client (R5-002): a minimal JSON-over-HTTP/1.1 client implementing the connectivity crate's ConnectivityPort trait against the ADCOS developer API, plus the adcos_test_server test scaffolding. Boundary adapter - R5-004 hardens get_assurance with SignedConnectivityObservation verification via the protocol core before anything reaches the connectivity layer."
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -11,9 +11,16 @@ publish = false
 name = "sharenet_connectivity_client"
 path = "src/lib.rs"
 
-# Only three dependencies, all deliberate:
+# Four dependencies, all deliberate:
 # - sharenet-connectivity (the boundary this client implements - the whole
-#   point of R5-002). No protocol-core dependency (ADR-001).
+#   point of R5-002). The DOMAIN crate stays zero-dependency (ADR-001);
+#   this ADAPTER is allowed the protocol core.
+# - sharenet-protocol (R5-004): SignedConnectivityObservation verification
+#   happens HERE, in the adapter, BEFORE any observation is mapped into the
+#   connectivity domain - "UNSIGNED observations never enter durable ShareNet
+#   state" (protocol-registry, SignedConnectivityObservation admission rule).
+#   Only this adapter knows both the ADCOS wire shape and the protocol core;
+#   the domain imports nothing from either direction (ADR-001 intact).
 # - serde/serde_json for the JSON bodies of the ADCOS developer API mapping.
 #   This is the boundary ADAPTER, not the protocol core: the parent crate
 #   stays zero-dependency, and the wire-format knowledge lives here and only
@@ -24,5 +31,6 @@ path = "src/lib.rs"
 # writer/reader, no HTTP framework, no async runtime.
 [dependencies]
 sharenet-connectivity = { path = "../connectivity" }
+sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

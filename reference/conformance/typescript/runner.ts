@@ -51,6 +51,7 @@ import {
   x25519Public,
   x25519Shared,
 } from "./link.ts";
+import { buildObservation as connObsBuild } from "./connectivity_evidence.ts";
 
 const vectorsDir =
   process.argv[2] ??
@@ -593,6 +594,103 @@ function loadJson(name: string): any {
   }
   for (let i = 0; i < file.rejects.length; i++) {
     console.log(`CIRCUIT_REJ ${i} ${file.rejects[i].error}`);
+  }
+}
+
+// ---------------- signed connectivity observation vectors (R5-004) ----------------
+{
+  const file = loadJson("connectivity_evidence_vectors.json");
+  const foreignKey = new Ed25519Key(new Uint8Array(0xee).slice(0, 32).fill(0xee));
+  for (const c of file.cases) {
+    const key = new Ed25519Key(fromHex(c.seed_hex));
+    const execution =
+      c.execution === null || c.execution === undefined
+        ? null
+        : new Map(Object.entries(c.execution).map(([k, v]) => [k, BigInt(v as number)]));
+    const wire = connObsBuild({
+      publicKey: key.publicKey,
+      createdAtUnix: BigInt(c.created_at_unix),
+      contractRef: fromHex(c.contract_ref_hex),
+      kind: c.kind,
+      observedAtUnix: BigInt(c.observed_at_unix),
+      sequence: BigInt(c.sequence),
+      execution,
+    });
+    const sig = key.signDetached(wire);
+    const env = buildTopoEnvelope(wire, sig);
+    if (toHex(wire) !== c.wire_hex || toHex(sig) !== c.sig_hex || toHex(env) !== c.env_hex) {
+      fail(`connectivity evidence ${file.cases.indexOf(c)}: re-derived image differs`);
+    }
+    console.log(
+      `CONN_OBS ${file.cases.indexOf(c)} wire=${toHex(wire)} sig=${toHex(sig)} env=${toHex(env)}`,
+    );
+  }
+  // ONE shared admission (the accepting node): the sequence namespace
+  // (provider node_id, contract_ref) is global across entries, so the
+  // vector order is itself the test.
+  const highest = new Map<string, bigint>();
+  const known = new Set<string>();
+  const foreignSeed = new Uint8Array(32).fill(0xee);
+  for (const r of file.receive) {
+    const c = file.cases[r.case];
+    const key = new Ed25519Key(fromHex(c.seed_hex));
+    const execution =
+      c.execution === null || c.execution === undefined
+        ? null
+        : new Map(Object.entries(c.execution).map(([k, v]) => [k, BigInt(v as number)]));
+    const wire = connObsBuild({
+      publicKey: key.publicKey,
+      createdAtUnix: BigInt(c.created_at_unix),
+      contractRef: fromHex(c.contract_ref_hex),
+      kind: c.kind,
+      observedAtUnix: BigInt(c.observed_at_unix),
+      sequence: BigInt(c.sequence),
+      execution,
+    });
+    let sig = key.signDetached(wire);
+    if (r.mutation === "tamper_signature") {
+      sig = Uint8Array.from(sig);
+      sig[0]! ^= 0x01;
+    } else if (r.mutation === "foreign_signer") {
+      const foreign = new Ed25519Key(foreignSeed);
+      sig = foreign.signDetached(wire);
+    }
+    const providerNodeId = toHex(deriveNodeId(key.publicKey));
+    const contractHex = c.contract_ref_hex;
+    if (r.contract_known) known.add(contractHex);
+    let outcome: string;
+    if (!Ed25519Key.verifyDetached(key.publicKey, wire, sig)) {
+      outcome = "signature_invalid";
+    } else if (!known.has(contractHex)) {
+      outcome = "contract_unknown";
+    } else {
+      const k = `${providerNodeId}:${contractHex}`;
+      const sequence = BigInt(c.sequence);
+      if (highest.has(k) && sequence <= highest.get(k)!) {
+        outcome = "sequence_stale";
+      } else {
+        const now = BigInt(r.now_unix);
+        const observedAt = BigInt(c.observed_at_unix);
+        if (now < observedAt) outcome = "not_yet_valid";
+        else if (now >= observedAt + BigInt(r.window_secs)) outcome = "expired";
+        else {
+          highest.set(k, sequence);
+          outcome = "admitted";
+        }
+      }
+    }
+    if (outcome !== r.expect) {
+      fail(`connectivity evidence receive ${file.receive.indexOf(r)}: ${outcome} != expected ${r.expect}`);
+    }
+    console.log(`CONN_OBS_RECV ${file.receive.indexOf(r)} now=${r.now_unix} ${outcome}`);
+  }
+  // strict statement parse is Rust-core scope (documented in the conformance
+  // README); the wire lines above pin the encoder, these pin the taxonomy
+  for (let i = 0; i < file.parse_reject.length; i++) {
+    console.log(`CONN_OBS_REJ ${i} ${file.parse_reject[i].error}`);
+  }
+  for (let i = 0; i < file.envelope_reject.length; i++) {
+    console.log(`CONN_OBS_ENV_REJ ${i} ${file.envelope_reject[i].error}`);
   }
 }
 

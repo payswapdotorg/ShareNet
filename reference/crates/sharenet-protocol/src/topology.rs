@@ -816,9 +816,14 @@ impl TopologyStore {
             let (a, b) = (&sides[0], &sides[1]);
             // bilateral: each side's subject is the other side's observer
             if a.1 == b.0 && b.1 == a.0 {
+                // canonical endpoint order: the pair is sorted so the output
+                // is deterministic (HashMap iteration order must not leak
+                // into the API — found by the Wave 10 flaky-test audit)
+                let mut endpoints = [a.0, b.0];
+                endpoints.sort();
                 out.push(BilateralLink {
                     link_id,
-                    endpoints: [a.0, b.0],
+                    endpoints,
                     expires_at_unix: a.2.min(b.2),
                 });
             }
@@ -931,7 +936,13 @@ mod tests {
         let links = store.bilateral_links(1_031);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].link_id, [1u8; 32]);
-        assert_eq!(links[0].endpoints[1], *identity(2).node_id().as_bytes());
+        // endpoints are canonically sorted (deterministic output)
+        let mut expected = [
+            *identity(1).node_id().as_bytes(),
+            *identity(2).node_id().as_bytes(),
+        ];
+        expected.sort();
+        assert_eq!(links[0].endpoints, expected);
         // expires after both windows
         assert!(store.bilateral_links(1_061).is_empty());
     }

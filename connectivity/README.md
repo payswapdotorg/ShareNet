@@ -92,7 +92,43 @@ core, applied to the boundary).
   is the daemon that wires `AdcosClient::get_assurance` observations into it
   (verified end-to-end against the real client + real test server in
   `connectivity-client/tests/durable_restart.rs`); R5-004 (signed
-  observations) will harden acceptance, R5-005 consumes the health.
+  observations, delivered) hardens what may ENTER the store — see
+  [The trust boundary below](#the-observation-trust-boundary-r5-004) —
+  and R5-005 consumes the health.
+
+## The observation trust boundary (R5-004)
+
+**What changed with R5-004 — and what deliberately did NOT change here.**
+The protocol registry's `SignedConnectivityObservation` entry states the
+law: *"UNSIGNED observations never enter durable ShareNet state — the
+R5-003 store's trust boundary is exactly this object's verification."*
+
+- The WIRE OBJECT (`SignedConnectivityObservation`: statement + Ed25519
+  detached signature + carrying envelope + admission rule) lives in the
+  protocol core (`reference/crates/sharenet-protocol`), per the registry
+  entry — NOT here.
+- The VERIFICATION lives in the ADCOS adapter
+  (`connectivity-client`): its `get_assurance` verifies every observation
+  (signature against the embedded provider identity, known-contract
+  rule, per-(provider node_id, contract_ref) sequence gate, freshness
+  window) through the protocol core BEFORE mapping anything into this
+  crate's `ConnectivityObservation`. Only verified observations cross
+  into the domain — verified end-to-end, including across restarts, in
+  `connectivity-client/tests/signed_observations.rs`.
+- THIS crate stays zero-dependency and untouched by R5-004 (ADR-001: the
+  connectivity domain imports nothing from the protocol core). Its
+  observations remain plain provider-asserted data BY DESIGN — the
+  domain cannot even see signatures; what it CAN rely on is that the
+  only way observations reach its store in a real deployment is through
+  the adapter's verification. The store's own defenses (strict binary
+  format, re-derivation cross-checks, sequence gates, fail-closed
+  corruption handling) remain the durable second line.
+
+In short: pre-R5-004, `ConnectivityObservation` was provider-asserted
+  data with no local proof of authenticity; post-R5-004 the ADCOS
+  adapter's verified feed is the ONLY production path into the store,
+  and the store's persisted log is therefore a log of verified
+  observations.
 
 ## Persistence
 
@@ -163,9 +199,17 @@ cargo check --target wasm32-unknown-unknown  # platform-independence proof (L007
   deterministic test vehicle plus the durable projection store.
 - **No provider federation** — provider-side concerns (offer ranking,
   federation, eligibility policy) stay ADCOS-side by design.
-- **Observations are provider-asserted data** — no signature/authenticity
-  verification exists yet (R5-004 "Signed observations"); the store only
-  orders, bounds and persists them.
+- **Observations are provider-asserted data at the DOMAIN level, by
+  design** — this crate has no signature verification and cannot (the
+  zero-dependency law); authenticity is verified in the ADCOS adapter
+  (R5-004, delivered — see the trust boundary above), which is the only
+  production path observations take into the durable store. A direct
+  programmatic caller of this crate's `accept` bypasses that verification
+  — such a caller owns that decision explicitly.
+- The signature binds the provider's ShareNet identity; it does NOT
+  attest ShareNet packet delivery and does NOT attest provider
+  fulfillment (adcos.md) — even verified observations are the provider's
+  own claims about its contract lifecycle.
 - The fake's single-use offers, permissive event-mapping transitions,
   fixed clock step and offer-set policies are the FAKE's documented
   policies, not claims about real ADCOS semantics — mapping real semantics

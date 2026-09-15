@@ -35,6 +35,24 @@ pub fn decode_lower_hex_32(text: &str) -> Result<[u8; 32], MalformedReason> {
     Ok(out)
 }
 
+/// Decode a lowercase-hex byte string of any (even) length — the variable
+///-length form the R5-004 signed-observation envelope rides as. Strict in
+/// the same way: `0-9a-f` only, no odd lengths. The error is undecorated
+/// (`()`) so each caller maps it to its own typed reason.
+pub fn decode_lower_hex(text: &str) -> Result<Vec<u8>, ()> {
+    let bytes = text.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return Err(());
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks(2) {
+        let hi = hex_digit(pair[0]).ok_or(())?;
+        let lo = hex_digit(pair[1]).ok_or(())?;
+        out.push((hi << 4) | lo);
+    }
+    Ok(out)
+}
+
 /// Lowercase hex digit only (`0-9a-f`).
 fn hex_digit(byte: u8) -> Option<u8> {
     match byte {
@@ -92,5 +110,19 @@ mod tests {
         );
         // 64 lowercase hex characters pass.
         assert!(decode_lower_hex_32(&"f".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn variable_length_hex_is_strict() {
+        assert_eq!(decode_lower_hex(""), Ok(Vec::new()));
+        assert_eq!(decode_lower_hex("00ff10"), Ok(vec![0x00, 0xff, 0x10]));
+        // odd length, uppercase, non-hex — all refused
+        assert_eq!(decode_lower_hex("0"), Err(()));
+        assert_eq!(decode_lower_hex("0F"), Err(()));
+        assert_eq!(decode_lower_hex("0g"), Err(()));
+        // round-trips with encode_lower_hex
+        let bytes: Vec<u8> = (0..=77u8).collect();
+        let text = encode_lower_hex(&bytes);
+        assert_eq!(decode_lower_hex(&text), Ok(bytes));
     }
 }

@@ -4,6 +4,9 @@ import org.sharenet.transport.contract.ConnectionTracker
 import org.sharenet.transport.contract.DisconnectReason
 import org.sharenet.transport.contract.EndpointId
 import org.sharenet.transport.contract.NearbyTransport
+import org.sharenet.transport.contract.QualityReporter
+import org.sharenet.transport.contract.QualitySample
+import org.sharenet.transport.contract.QualitySampleKind
 import org.sharenet.transport.contract.TransportError
 import org.sharenet.transport.contract.TransportEvent
 import org.sharenet.transport.contract.TransportFrame
@@ -13,32 +16,54 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The Nearby Connections adapter (R2-001) — architecture lock L009: a
- * platform ADAPTER, not protocol semantics. It implements the
- * [NearbyTransport] contract on top of the [NearbyApi] facade and holds no
- * ShareNet protocol logic whatsoever.
+ * The Nearby Connections adapter (R2-001 + R2-004 quality events) —
+ * architecture lock L009: a platform ADAPTER, not protocol semantics. It
+ * implements the [NearbyTransport] contract on top of the [NearbyApi]
+ * facade and holds no ShareNet protocol logic whatsoever.
  *
  * Construction: inject any [NearbyApi]. Production wiring is
  * `GmsNearbyApi(Nearby.getConnectionsClient(context), serviceId)` (see
  * [ShareNetTransportService]); unit tests inject the scripted
  * `FakeNearbyApi` that fakes the EXTERNAL GMS boundary.
  *
+ * ## Quality events (R2-004, honest surface)
+ *
+ * The adapter emits [QualitySample]s through the injected
+ * [qualityReporter] (default [QualityReporter.NOOP]; the embedding app
+ * wires the real sink, e.g. a `QualityRecorder`). It reports ONLY timing
+ * deltas the platform actually provides:
+ *  * [QualitySampleKind.CONNECT_SETUP] — `onConnectionInitiated` →
+ *    `onConnectionAccepted` (setup latency, `System.nanoTime` delta);
+ *  * [QualitySampleKind.DISCONNECT] — connected → endpoint gone
+ *    (connection lifetime).
+ *
+ * There is deliberately NO RTT sample: Nearby Connections exposes no raw
+ * RTT, and fabricating one is forbidden (assignment honesty rule). Local
+ * `stop()` clears timing state WITHOUT emitting samples, mirroring the
+ * event stream (stop() dispatches no per-endpoint Disconnected events
+ * either). A reporter that throws must not break the transport: failures
+ * are counted in [qualityReportFailures] and swallowed.
+ *
  * Threading: contract methods may be called from any thread EXCEPT the
  * Android main thread (the production [GmsNearbyApi] blocks). Listener
  * callbacks arrive on the platform thread and are forwarded synchronously;
  * the adapter never invokes listeners while holding its lock, so listeners
- * may safely call back into the adapter.
+ * may safely call back into the adapter. Quality samples are reported
+ * BEFORE the corresponding [TransportEvent] is dispatched, without the
+ * lock held.
  *
  * Robustness policy (adversarial §5): platform-originated events that would
  * be illegal for the [ConnectionTracker] (e.g. a connection request arriving
  * after stop()) are DROPPED, never propagated as crashes. Caller-originated
  * mistakes surface as typed [TransportError.IllegalState].
  *
- * Persistence: none — session state only (tracker + receive buffers).
+ * Persistence: none — session state only (tracker + receive buffers +
+ * quality timing state).
  */
 class NearbyConnectionsAdapter(
     private val api: NearbyApi,
     private val strategy: NearbyStrategyKind = NearbyStrategyKind.P2P_CLUSTER,
+    private val qualityReporter: QualityReporter = QualityReporter.NOOP,
 ) : NearbyTransport, NearbyApiListener {
 
     private val lock = Any()
@@ -50,11 +75,29 @@ class NearbyConnectionsAdapter(
     /** Receive-side STREAM reassembly: endpoint → payloadId → accumulated bytes. */
     private val pendingStreams = HashMap<EndpointId, HashMap<Long, ByteArrayOutputStream>>()
 
-    /** Malformed wire payloads dropped (observability; telemetry is R2-004). */
+    /** Quality timing state per endpoint (R2-004), guarded by [lock]. */
+    private val qualityTimings = HashMap<EndpointId, EndpointTiming>()
+
+    /** Monotonic quality-sample sequence (1-based, adapter instance scope). */
+    private val qualitySeq = AtomicLong(0)
+
+    /** Malformed wire payloads dropped (observability). */
     private val malformedDropped = AtomicLong(0)
+
+    /** Times an app-provided quality reporter threw (transport stays alive). */
+    private val qualityFailures = AtomicLong(0)
 
     /** Diagnostics counter for dropped malformed payloads. */
     val malformedFramesDropped: Long get() = malformedDropped.get()
+
+    /** Diagnostics counter for swallowed quality-reporter failures. */
+    val qualityReportFailures: Long get() = qualityFailures.get()
+
+    /** Per-endpoint quality timing (guarded by [lock]). */
+    private data class EndpointTiming(
+        val initiatedAtNanos: Long,
+        val connectedAtNanos: Long?,
+    )
 
     // ------------------------------------------------------------------
     // NearbyTransport (the contract seam)
@@ -93,6 +136,9 @@ class NearbyConnectionsAdapter(
         synchronized(lock) {
             tracker.stopAll()
             pendingStreams.clear()
+            // Documented: no DISCONNECT samples on local stop() — it
+            // dispatches no per-endpoint Disconnected events either.
+            qualityTimings.clear()
         }
         // Best-effort at the facade level; never throws.
         api.stopAll()
@@ -154,6 +200,9 @@ class NearbyConnectionsAdapter(
             // Duplicate/weird platform event: drop instead of crashing.
             return
         }
+        synchronized(lock) {
+            qualityTimings[endpointId] = EndpointTiming(initiatedAtNanos = System.nanoTime(), connectedAtNanos = null)
+        }
         dispatch(TransportEvent.ConnectionRequested(endpointId, name, authenticationToken))
     }
 
@@ -162,6 +211,22 @@ class NearbyConnectionsAdapter(
             tracker.onConnectionAccepted(endpointId)
         } catch (expected: TransportError.IllegalState) {
             return // duplicate confirmation: drop
+        }
+        // Quality (R2-004): setup latency = initiation → confirmation. Only
+        // measurable when we observed the initiation; computed under the
+        // lock, emitted outside it, before the Connected event.
+        val setupMicros: Long? = synchronized(lock) {
+            val timing = qualityTimings[endpointId]
+            if (timing != null) {
+                val now = System.nanoTime()
+                qualityTimings[endpointId] = timing.copy(connectedAtNanos = now)
+                (now - timing.initiatedAtNanos) / 1_000
+            } else {
+                null
+            }
+        }
+        if (setupMicros != null) {
+            reportQuality(QualitySampleKind.CONNECT_SETUP, setupMicros)
         }
         dispatch(TransportEvent.Connected(endpointId))
     }
@@ -173,6 +238,18 @@ class NearbyConnectionsAdapter(
             }
         } catch (expected: TransportError.IllegalState) {
             // Unknown to the tracker already: still surface the event below.
+        }
+        // Pending (never connected): no lifetime to measure — drop the
+        // timing state. Pathological rejection of a CONNECTED endpoint: the
+        // lifetime WAS measurable, so emit it (honest over convenient).
+        val lifetimeMicros: Long? = synchronized(lock) {
+            val timing = qualityTimings.remove(endpointId)
+            timing?.connectedAtNanos?.let { connected ->
+                (System.nanoTime() - connected) / 1_000
+            }
+        }
+        if (lifetimeMicros != null) {
+            reportQuality(QualitySampleKind.DISCONNECT, lifetimeMicros)
         }
         dispatch(TransportEvent.Disconnected(endpointId, DisconnectReason.REJECTED))
     }
@@ -246,8 +323,40 @@ class NearbyConnectionsAdapter(
         } catch (expected: TransportError.IllegalState) {
             tracker.abandonConnection(endpointId)
         }
+        // Quality (R2-004): a CONNECTED endpoint's lifetime is measurable —
+        // emit DISCONNECT with the connection duration. Pending (never
+        // connected) endpoints have no lifetime: state is just dropped.
+        val lifetimeMicros: Long? = synchronized(lock) {
+            val timing = qualityTimings.remove(endpointId)
+            timing?.connectedAtNanos?.let { connected ->
+                (System.nanoTime() - connected) / 1_000
+            }
+        }
+        if (lifetimeMicros != null) {
+            reportQuality(QualitySampleKind.DISCONNECT, lifetimeMicros)
+        }
         synchronized(lock) {
             pendingStreams.remove(endpointId)
+        }
+    }
+
+    /**
+     * Report one quality sample. NEVER called with [lock] held; a throwing
+     * app-provided reporter is counted and swallowed (the transport must
+     * survive hostile sinks).
+     */
+    private fun reportQuality(kind: QualitySampleKind, durationMicros: Long) {
+        val sample = QualitySample(
+            channelId = 0, // transport-level event (not a frame channel)
+            seq = qualitySeq.incrementAndGet(),
+            kind = kind,
+            durationMicros = durationMicros,
+            atUnixMillis = System.currentTimeMillis(),
+        )
+        try {
+            qualityReporter.report(sample)
+        } catch (expected: Throwable) {
+            qualityFailures.incrementAndGet()
         }
     }
 

@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import org.sharenet.transport.contract.NearbyTransport
+import org.sharenet.transport.contract.QualityRecorder
 import org.sharenet.transport.contract.TransportError
 import org.sharenet.transport.contract.TransportEvent
 import org.sharenet.transport.contract.TransportFrame
@@ -65,6 +66,14 @@ class ShareNetTransportService : Service() {
     /** The transport this service hosts; created in onCreate, stopped in onDestroy. */
     private var transport: NearbyTransport? = null
 
+    /**
+     * Quality evidence sink (R2-004): connect/disconnect timing samples the
+     * adapter measures honestly. In-memory only (see QualityRecorder docs);
+     * the embedding app reads it (e.g. for the future R3-003 topology
+     * evidence layer) — this skeleton exposes it for the app to poll.
+     */
+    private lateinit var qualityRecorder: QualityRecorder
+
     override fun onCreate() {
         super.onCreate()
         workerThread = HandlerThread("ShareNetTransport").also { it.start() }
@@ -74,7 +83,8 @@ class ShareNetTransportService : Service() {
         // app process (via its factory, so no GMS import appears here).
         // Everything below this line is contract vocabulary.
         val api = GmsNearbyApi.fromContext(this, SERVICE_ID)
-        transport = NearbyConnectionsAdapter(api, NearbyStrategyKind.P2P_CLUSTER).also { adapter ->
+        qualityRecorder = QualityRecorder()
+        transport = NearbyConnectionsAdapter(api, NearbyStrategyKind.P2P_CLUSTER, qualityRecorder).also { adapter ->
             // Skeleton-level logging listener. The real app registers its
             // transport consumer here (the future link layer, R3-001).
             adapter.addListener(LoggingListener)

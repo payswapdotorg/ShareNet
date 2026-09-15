@@ -1,0 +1,31 @@
+[package]
+name = "sharenet-transport-telemetry"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet transport quality telemetry: LinkQuality samples, sliding-window statistics, and the active RTT prober (measurement layer only — no routing, no policy, no admission)."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_transport_telemetry"
+path = "src/lib.rs"
+
+# Tiny in-crate echo responder for the two-process integration tests
+# (TEST SCAFFOLDING — clearly marked in its module docs; std-only, speaks
+# the documented Wave 1 frame format; see tests/telemetry_integration.rs).
+[[bin]]
+name = "telemetry_echo_child"
+path = "src/bin/telemetry_echo_child.rs"
+
+[dependencies]
+# Intentionally std-only: the measurement layer must not grow protocol or
+# platform dependencies (architecture lock L009 — adapters, not semantics).
+
+[dev-dependencies]
+# Real-socket test vehicles: the prober is exercised over the REAL Wave 1
+# UdpTransport. This is a dev-dependency cycle (linux -> telemetry is a
+# regular dependency; telemetry -> linux is dev-only, the same shape as
+# serde/serde_json) and is cargo-sanctioned: it exists ONLY so tests can
+# drive the concrete transport. See README "Dependency direction".
+sharenet-transport-linux = { path = "../linux" }

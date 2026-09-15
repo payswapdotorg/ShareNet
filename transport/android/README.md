@@ -1,4 +1,4 @@
-# sharenet-transport-android — R2-001
+# sharenet-transport-android — R2-001 + R2-004 (quality seam)
 
 Android Nearby Connections transport adapter for ShareNet. **Platform adapter,
 not protocol semantics** (`spec/architecture-lock.md` L009, `spec/adrs/002`):
@@ -39,6 +39,36 @@ transport/android/
    exactly one file (`GmsNearbyApi.kt`); everything else speaks
    contract vocabulary. Verified by grep in CI-style checks
    (see "Architecture compliance" below).
+3. **Quality seam (R2-004)**: `QualitySample` / `QualityReporter` /
+   `QualityRecorder` in the `contract` module (pure Kotlin, zero Android
+   deps). The Nearby adapter reports honest connect/disconnect timing
+   through it; every future transport reports the same way.
+
+## Quality reporting (R2-004 — honest surface)
+
+The adapter's constructor takes a `QualityReporter` (default
+`QualityReporter.NOOP`; `ShareNetTransportService` wires a real
+`QualityRecorder`). It reports ONLY what the platform actually provides:
+
+- `QualitySampleKind.CONNECT_SETUP` — initiation → platform confirmation
+  (setup latency, `System.nanoTime` delta);
+- `QualitySampleKind.DISCONNECT` — connected → endpoint gone (connection
+  lifetime).
+
+There is deliberately **NO RTT sample**: Google Nearby Connections exposes
+no raw RTT, and fabricating one is forbidden. When a future app layer pings
+over `TransportFrame`s, real RTT samples can be added (the Linux side
+already measures RTT actively via the `sharenet-transport-telemetry`
+prober). `stop()` clears timing state without emitting samples (it
+dispatches no per-endpoint Disconnected events either). A throwing
+reporter is counted (`adapter.qualityReportFailures`) and swallowed — a
+hostile sink never breaks the transport.
+
+`QualityRecorder` (pure JVM, unit-tested): bounded ring buffer
+(**drop-oldest**, default capacity 256), **window-scoped duplicate
+suppression** on `(channelId, seq)`, per-kind **EWMA** (α = 0.2, same
+constant as the Rust `DEFAULT_EWMA_ALPHA`). Persistence: **none** —
+in-memory streaming state (durable evidence capture is R8-001's concern).
 
 ## Production caller
 

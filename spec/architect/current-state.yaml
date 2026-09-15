@@ -1,0 +1,25 @@
+version: 1
+program: ShareNet
+architecture: Mission-First 1.0
+status: ARCHITECTURE_FROZEN_IMPLEMENTATION_NOT_STARTED
+source_of_truth:
+  architecture: spec/architecture.md
+  locks: spec/architecture-lock.md
+  adrs: spec/adrs/
+  registry: spec/protocol-registry.yaml
+  work_items: spec/work-items.yaml
+  roadmap: spec/roadmap.yaml
+  dependency_graph: spec/dependency-graph.md
+  orchestrator: docs/tech-lead/SHARENET-ORCHESTRATOR-HANDOFF.md
+legacy_reference_only:
+  - pectoraux/sharenet-2.0
+active_gate: R1
+completed_gates: [R0]
+verification_rule: no completion claim without production caller + required verification level + fresh pushed-head audit
+worker_limit: 3
+forbidden_scope_expansion:
+  - generic mesh/chat product
+  - provider-native connectivity control inside ShareNet
+  - protocol-core platform/database dependencies
+  - Civic Points before measured useful-work evidence
+  - downstream platform expansion before R4 mission proof

@@ -1,115 +1,371 @@
-//! Node identity binding (R1-001).
+//! Cryptographic node identity binding (work item R1-001).
 //!
-//! A ShareNet node identity is an Ed25519 (RFC 8032) key pair plus a small
-//! canonical wire object:
-//!
-//! ```text
-//! NodeIdentity = {1: scheme_version (uint, =1),
-//!                 2: public_key (32-byte bstr),
-//!                 3: created_at_unix (uint),
-//!                 4: display_name (optional text, <= 64 bytes)}
-//! ```
-//!
-//! The `node_id` is DERIVED, never caller-chosen (architecture lock L013
-//! applies the same principle to route identity):
+//! A ShareNet node's identity is an Ed25519 (RFC 8032) key pair. The wire object is the
+//! [`NodeIdentity`] map; the `node_id` is DERIVED, never caller-chosen:
 //!
 //! ```text
 //! node_id = SHA-256(canonical_cbor({1: scheme_version, 2: public_key}))
 //! ```
 //!
-//! `display_name` and `created_at_unix` are mutable metadata and are NOT part
-//! of the derivation: the identity is self-certifying — knowing the node_id
-//! binds you to the key material and the scheme, while the name/timestamp can
-//! change without changing the node_id.
+//! The identity is therefore self-certifying: knowing `node_id` binds you to the exact key
+//! material and scheme version. `display_name` and `created_at_unix` are mutable metadata
+//! and are deliberately NOT part of the derivation (see the adversarial tests).
 //!
-//! Signatures are detached Ed25519 signatures over arbitrary byte payloads,
-//! verified strictly (malleable and non-canonical signatures are rejected).
+//! # Wire object (canonical CBOR map)
+//!
+//! ```text
+//! {1: scheme_version (uint, =1),
+//!  2: public_key (32-byte bstr),
+//!  3: created_at_unix (uint, seconds since UNIX epoch),
+//!  4: display_name (optional text, at most 64 bytes of UTF-8)}
+//! ```
+//!
+//! # Signatures
+//!
+//! Detached signatures over arbitrary byte payloads use the node key, take and return
+//! raw bytes, and are verified STRICTLY (malleable signatures with a non-canonical `S`
+//! component are rejected).
+//!
+//! # Zeroization
+//!
+//! Secret key material lives only in zeroize-on-drop types:
+//!
+//! - the seed copy held by [`Identity`] is a `Zeroizing<[u8; 32]>`;
+//! - the expanded signing key (`ed25519_dalek::SigningKey`) zeroizes on drop via the
+//!   `ed25519-dalek` `zeroize` feature enabled in this crate's manifest;
+//! - seed transit buffers used by the store are wrapped in `Zeroizing` and scrubbed.
+//!
+//! No public API hands out raw secret bytes; only the store (same crate) can request the
+//! seed, and it exists solely to write the 0600 identity file.
 
-use crate::cbor::{self, MapBuilder, Value};
-use crate::hex;
-use ed25519_dalek::{Signature, Signer, SigningKey as DalekSigningKey, VerifyingKey};
+use core::fmt;
+
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
-use std::fmt;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use zeroize::Zeroizing;
 
-/// The only supported identity scheme version (wire key 1).
-pub const SCHEME_VERSION: u64 = 1;
+use crate::cbor::{self, Value};
 
-/// Ed25519 public key length in bytes.
-pub const PUBLIC_KEY_LEN: usize = 32;
+/// The only identity scheme version defined by this wave (`= 1`).
+pub const SCHEME_VERSION: i64 = 1;
 
-/// Ed25519 seed length in bytes.
-pub const SEED_LEN: usize = 32;
-
-/// Ed25519 detached signature length in bytes.
-pub const SIGNATURE_LEN: usize = 64;
-
-/// Maximum byte length of the optional display name.
+/// Maximum byte length of `display_name` (UTF-8 bytes, not characters).
 pub const MAX_DISPLAY_NAME_BYTES: usize = 64;
 
-/// A ShareNet node identity (public wire object).
+/// Ed25519 seed length.
+pub const SEED_LEN: usize = 32;
+
+/// Ed25519 public key (compressed point) length.
+pub const PUBLIC_KEY_LEN: usize = 32;
+
+/// Ed25519 detached signature length.
+pub const SIGNATURE_LEN: usize = 64;
+
+/// Length of a derived node identifier (SHA-256 output).
+pub const NODE_ID_LEN: usize = 32;
+
+/// A derived node identifier: `SHA-256(canonical_cbor({1: scheme_version, 2: public_key}))`.
 ///
-/// Construct via [`NodeIdentity::new`], [`NodeSigningKey::node_identity`] or
-/// parse from the wire with [`NodeIdentity::from_wire`].
-#[derive(Clone, PartialEq, Eq)]
+/// Public information (it only binds the scheme version and the public key); safe to
+/// print, log and share.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId([u8; NODE_ID_LEN]);
+
+impl NodeId {
+    /// The raw 32 bytes.
+    pub fn as_bytes(&self) -> &[u8; NODE_ID_LEN] {
+        &self.0
+    }
+
+    /// Lowercase hex.
+    pub fn to_hex(&self) -> String {
+        to_hex(&self.0)
+    }
+}
+
+impl fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "NodeId({})", self.to_hex())
+    }
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+/// Lowercase hex encoding for public data (keys, ids, signatures). No dependency.
+pub fn to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    s
+}
+
+/// RFC 8032 canonical-encoding check for a compressed Edwards point: the y coordinate
+/// (low 255 bits, little-endian) must be strictly below the field prime
+/// p = 2^255 - 19. Encodings with y >= p are non-canonical and MUST be rejected so
+/// that a node_id (a hash over the exact bytes) always binds to one unique key
+/// encoding. (`ed25519-dalek`'s decompression alone does not enforce this.)
+fn is_canonical_ed25519_point_encoding(b: &[u8; PUBLIC_KEY_LEN]) -> bool {
+    let mut y = *b;
+    y[31] &= 0x7f; // strip the sign bit
+                   // p in little-endian bytes: 0xed, then 0xff × 30, then 0x7f
+                   // (p = 2^255 - 19 = 0x7fff..ffed, so the top byte is 0x7f).
+    const P: [u8; PUBLIC_KEY_LEN] = [
+        0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0x7f,
+    ];
+    // y < p, comparing from the most significant byte (index 31) downwards.
+    for i in (0..PUBLIC_KEY_LEN).rev() {
+        if y[i] > P[i] {
+            return false;
+        }
+        if y[i] < P[i] {
+            return true;
+        }
+    }
+    false // y == p is also non-canonical
+}
+
+/// Derive a node identifier from the identity-binding inputs.
+///
+/// `node_id = SHA-256(canonical_cbor({1: scheme_version, 2: public_key}))`.
+///
+/// This is the single derivation point for node identity: the identifier is always
+/// computed from protocol state, never accepted from a caller (architecture law:
+/// never accept caller-controlled security facts when derivation is possible).
+/// Exposed publicly so the conformance vectors and the future cross-language harness
+/// (R1-003) can recompute it.
+pub fn derive_node_id(scheme_version: i64, public_key: &[u8; PUBLIC_KEY_LEN]) -> NodeId {
+    let wire = Value::Map(vec![
+        (Value::Int(1), Value::Int(scheme_version)),
+        (Value::Int(2), Value::Bytes(public_key.to_vec())),
+    ]);
+    // Fixed two-entry map with distinct int keys: encoding cannot fail.
+    let bytes = cbor::encode(&wire).expect("fixed-shape identity map always encodes");
+    NodeId(Sha256::digest(&bytes).into())
+}
+
+/// The public, self-certifying node identity wire object.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeIdentity {
-    scheme_version: u64,
-    public_key: [u8; PUBLIC_KEY_LEN],
+    public_key: VerifyingKey,
     created_at_unix: u64,
     display_name: Option<String>,
 }
 
 impl NodeIdentity {
-    /// Creates and validates a node identity object from public data.
-    pub fn new(
-        public_key: [u8; PUBLIC_KEY_LEN],
-        created_at_unix: u64,
-        display_name: Option<&str>,
-    ) -> Result<Self, IdentityError> {
-        let id = Self {
-            scheme_version: SCHEME_VERSION,
-            public_key,
-            created_at_unix,
-            display_name: display_name.map(|s| s.to_string()),
+    /// Parse and validate a [`NodeIdentity`] from a decoded CBOR value.
+    ///
+    /// Strict: exactly the keys 1..=3 plus optional 4, `scheme_version == 1`, a
+    /// 32-byte valid Ed25519 public key, a non-negative `created_at_unix`, and a
+    /// `display_name` of at most [`MAX_DISPLAY_NAME_BYTES`] bytes.
+    pub fn from_wire(v: &Value) -> Result<Self, IdentityError> {
+        let Value::Map(entries) = v else {
+            return Err(IdentityError::NotAMap);
         };
-        id.validate()?;
-        Ok(id)
+        let mut scheme: Option<i64> = None;
+        let mut public_key: Option<VerifyingKey> = None;
+        let mut created_at: Option<u64> = None;
+        let mut display_name: Option<String> = None;
+        for (k, val) in entries {
+            let Value::Int(key) = k else {
+                return Err(IdentityError::KeyNotAnInteger);
+            };
+            match key {
+                1 => {
+                    if scheme.is_some() {
+                        return Err(IdentityError::DuplicateField { key: 1 });
+                    }
+                    let Value::Int(s) = val else {
+                        return Err(IdentityError::FieldNotExpectedType { key: 1 });
+                    };
+                    let s = *s;
+                    if s != SCHEME_VERSION {
+                        return Err(IdentityError::SchemeVersionUnsupported { found: s });
+                    }
+                    scheme = Some(s);
+                }
+                2 => {
+                    if public_key.is_some() {
+                        return Err(IdentityError::DuplicateField { key: 2 });
+                    }
+                    let Value::Bytes(b) = val else {
+                        return Err(IdentityError::FieldNotExpectedType { key: 2 });
+                    };
+                    if b.len() != PUBLIC_KEY_LEN {
+                        return Err(IdentityError::PublicKeyWrongLength { len: b.len() });
+                    }
+                    let arr: [u8; PUBLIC_KEY_LEN] =
+                        b.as_slice().try_into().expect("checked length");
+                    if !is_canonical_ed25519_point_encoding(&arr) {
+                        return Err(IdentityError::PublicKeyInvalid);
+                    }
+                    let vk = VerifyingKey::from_bytes(&arr)
+                        .map_err(|_| IdentityError::PublicKeyInvalid)?;
+                    public_key = Some(vk);
+                }
+                3 => {
+                    if created_at.is_some() {
+                        return Err(IdentityError::DuplicateField { key: 3 });
+                    }
+                    let Value::Int(t) = val else {
+                        return Err(IdentityError::FieldNotExpectedType { key: 3 });
+                    };
+                    let t = *t;
+                    if t < 0 {
+                        return Err(IdentityError::CreatedAtOutOfRange { found: t as i128 });
+                    }
+                    created_at = Some(t as u64);
+                }
+                4 => {
+                    if display_name.is_some() {
+                        return Err(IdentityError::DuplicateField { key: 4 });
+                    }
+                    let Value::Text(s) = val else {
+                        return Err(IdentityError::FieldNotExpectedType { key: 4 });
+                    };
+                    if s.len() > MAX_DISPLAY_NAME_BYTES {
+                        return Err(IdentityError::DisplayNameTooLong {
+                            bytes: s.len(),
+                            max: MAX_DISPLAY_NAME_BYTES,
+                        });
+                    }
+                    display_name = Some(s.clone());
+                }
+                other => return Err(IdentityError::UnknownField { key: *other }),
+            }
+        }
+        let public_key = public_key.ok_or(IdentityError::MissingField { key: 2 })?;
+        let created_at = created_at.ok_or(IdentityError::MissingField { key: 3 })?;
+        if scheme.is_none() {
+            return Err(IdentityError::MissingField { key: 1 });
+        }
+        Ok(NodeIdentity {
+            public_key,
+            created_at_unix: created_at,
+            display_name,
+        })
     }
 
-    /// Scheme version (always [`SCHEME_VERSION`] after validation).
-    pub fn scheme_version(&self) -> u64 {
-        self.scheme_version
+    /// The canonical CBOR wire form of this identity.
+    pub fn to_wire(&self) -> Value {
+        let mut entries = vec![
+            (Value::Int(1), Value::Int(SCHEME_VERSION)),
+            (
+                Value::Int(2),
+                Value::Bytes(self.public_key_bytes().to_vec()),
+            ),
+            (Value::Int(3), Value::Int(self.created_at_unix as i64)),
+        ];
+        if let Some(name) = &self.display_name {
+            entries.push((Value::Int(4), Value::Text(name.clone())));
+        }
+        Value::Map(entries)
     }
 
-    /// The Ed25519 public key bytes.
-    pub fn public_key(&self) -> &[u8; PUBLIC_KEY_LEN] {
+    /// The Ed25519 verifying key.
+    pub fn public_key(&self) -> &VerifyingKey {
         &self.public_key
     }
 
-    /// The Ed25519 public key as lowercase hex.
-    pub fn public_key_hex(&self) -> String {
-        hex::encode(&self.public_key)
+    /// The 32-byte compressed public key.
+    pub fn public_key_bytes(&self) -> [u8; PUBLIC_KEY_LEN] {
+        self.public_key.to_bytes()
     }
 
-    /// Creation time in seconds since the Unix epoch.
+    /// Seconds since the UNIX epoch, as set when the identity was created.
     pub fn created_at_unix(&self) -> u64 {
         self.created_at_unix
     }
 
-    /// The optional display name (mutable metadata; not part of `node_id`).
+    /// The optional display name (mutable metadata, not part of `node_id`).
     pub fn display_name(&self) -> Option<&str> {
         self.display_name.as_deref()
     }
 
-    /// Validates all invariants (scheme, name length, timestamp range).
-    pub fn validate(&self) -> Result<(), IdentityError> {
-        if self.scheme_version != SCHEME_VERSION {
-            return Err(IdentityError::UnsupportedSchemeVersion {
-                found: self.scheme_version as i64,
+    /// The derived node identifier (recomputed, never stored).
+    pub fn node_id(&self) -> NodeId {
+        derive_node_id(SCHEME_VERSION, &self.public_key_bytes())
+    }
+
+    /// Strictly verify a detached Ed25519 signature over `payload`.
+    pub fn verify_detached(&self, payload: &[u8], signature: &[u8]) -> Result<(), VerifyError> {
+        verify_detached_with(&self.public_key, payload, signature)
+    }
+}
+
+/// Strict detached verification with an explicit verifying key.
+fn verify_detached_with(
+    vk: &VerifyingKey,
+    payload: &[u8],
+    signature: &[u8],
+) -> Result<(), VerifyError> {
+    let sig =
+        Signature::from_slice(signature).map_err(|_| VerifyError::SignatureEncodingInvalid {
+            len: signature.len(),
+        })?;
+    // verify_strict rejects malleable signatures (non-canonical S component) in
+    // addition to performing ordinary RFC 8032 verification.
+    vk.verify_strict(payload, &sig)
+        .map_err(|_| VerifyError::VerificationFailed)
+}
+
+/// A node identity: the signing key plus its public [`NodeIdentity`].
+///
+/// The secret seed lives in a `Zeroizing` buffer; `Debug` is redacted; there is no
+/// public accessor for the raw secret bytes (only the same-crate store can request it
+/// to persist the 0600 identity file).
+#[derive(Clone)]
+pub struct Identity {
+    seed: Zeroizing<[u8; SEED_LEN]>,
+    signing: SigningKey,
+    node: NodeIdentity,
+}
+
+impl PartialEq for Identity {
+    fn eq(&self, other: &Self) -> bool {
+        // The seed determines the signing key and the public object's key, so
+        // comparing seeds plus the public metadata is complete.
+        *self.seed == *other.seed
+            && self.node.created_at_unix == other.node.created_at_unix
+            && self.node.display_name == other.node.display_name
+            && self.node.public_key_bytes() == other.node.public_key_bytes()
+    }
+}
+
+impl fmt::Debug for Identity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Identity")
+            .field("node_id", &self.node_id().to_hex())
+            .field("seed", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Identity {
+    /// Build an identity from an explicit 32-byte Ed25519 seed.
+    ///
+    /// `created_at_unix` must fit the i64 wire range (any realistic epoch-second value
+    /// does); `display_name`, if present, must be at most [`MAX_DISPLAY_NAME_BYTES`]
+    /// bytes of UTF-8.
+    pub fn from_seed(
+        seed: [u8; SEED_LEN],
+        created_at_unix: u64,
+        display_name: Option<String>,
+    ) -> Result<Self, IdentityError> {
+        if created_at_unix > i64::MAX as u64 {
+            return Err(IdentityError::CreatedAtOutOfRange {
+                found: created_at_unix as i128,
             });
         }
-        if let Some(name) = &self.display_name {
+        if let Some(name) = &display_name {
             if name.len() > MAX_DISPLAY_NAME_BYTES {
                 return Err(IdentityError::DisplayNameTooLong {
                     bytes: name.len(),
@@ -117,306 +373,194 @@ impl NodeIdentity {
                 });
             }
         }
-        if self.created_at_unix > i64::MAX as u64 {
-            return Err(IdentityError::TimestampOutOfRange {
-                found: self.created_at_unix as i128,
-            });
-        }
-        Ok(())
+        let signing = SigningKey::from_bytes(&seed);
+        let public_key = signing.verifying_key();
+        Ok(Identity {
+            seed: Zeroizing::new(seed),
+            signing,
+            node: NodeIdentity {
+                public_key,
+                created_at_unix,
+                display_name,
+            },
+        })
     }
 
-    /// Serializes to the canonical CBOR wire value.
-    pub fn to_wire(&self) -> Value {
-        let mut builder = MapBuilder::new()
-            .insert_int(1, Value::Int(SCHEME_VERSION as i64))
-            .insert_int(2, Value::Bytes(self.public_key.to_vec()))
-            .insert_int(3, Value::Int(self.created_at_unix as i64));
-        if let Some(name) = &self.display_name {
-            builder = builder.insert_int(4, Value::Text(name.clone()));
-        }
-        // Keys 1..=4 are distinct integers; encoding cannot fail.
-        builder
-            .build()
-            .expect("NodeIdentity wire map has unique keys")
-    }
-
-    /// Serializes to canonical CBOR bytes.
-    pub fn to_wire_bytes(&self) -> Vec<u8> {
-        cbor::encode(&self.to_wire()).expect("canonical encode of NodeIdentity cannot fail")
-    }
-
-    /// Parses and strictly validates a NodeIdentity from a CBOR wire value.
+    /// Generate a fresh identity using OS entropy.
     ///
-    /// Unknown keys, wrong types, a scheme version other than 1, a wrong-size
-    /// public key, or an over-long display name are all rejected (fail
-    /// closed).
-    pub fn from_wire(v: &Value) -> Result<Self, IdentityError> {
-        let entries = v.as_map().ok_or(IdentityError::NotAMap)?;
-        for (k, _) in entries {
-            if !matches!(k.as_int(), Some(1..=4)) {
-                return Err(IdentityError::UnknownWireKey);
-            }
-        }
-        let scheme = required_int(v, 1)?;
-        if scheme < 0 || scheme as u64 != SCHEME_VERSION {
-            return Err(IdentityError::UnsupportedSchemeVersion { found: scheme });
-        }
-        let pk_bytes = v
-            .get_by_int(2)
-            .ok_or(IdentityError::MissingKey(2))?
-            .as_bytes()
-            .ok_or(IdentityError::WrongType {
-                key: 2,
-                expected: "32-byte byte string",
-            })?;
-        if pk_bytes.len() != PUBLIC_KEY_LEN {
-            return Err(IdentityError::InvalidPublicKeyLength {
-                found: pk_bytes.len(),
-            });
-        }
-        let mut public_key = [0u8; PUBLIC_KEY_LEN];
-        public_key.copy_from_slice(pk_bytes);
-
-        let created = required_int(v, 3)?;
-        if created < 0 {
-            return Err(IdentityError::TimestampOutOfRange {
-                found: created as i128,
-            });
-        }
-
-        let display_name = match v.get_by_int(4) {
-            None => None,
-            Some(t) => Some(
-                t.as_text()
-                    .ok_or(IdentityError::WrongType {
-                        key: 4,
-                        expected: "text string",
-                    })?
-                    .to_string(),
-            ),
-        };
-
-        let id = Self {
-            scheme_version: SCHEME_VERSION,
-            public_key,
-            created_at_unix: created as u64,
-            display_name,
-        };
-        id.validate()?;
-        Ok(id)
-    }
-
-    /// DERIVED node identifier: SHA-256 over the canonical CBOR of
-    /// `{1: scheme_version, 2: public_key}`.
-    ///
-    /// This is never caller-chosen and never includes mutable metadata.
-    pub fn node_id(&self) -> [u8; 32] {
-        let id_material = MapBuilder::new()
-            .insert_int(1, Value::Int(self.scheme_version as i64))
-            .insert_int(2, Value::Bytes(self.public_key.to_vec()))
-            .build()
-            .expect("id material map has unique keys");
-        let bytes = cbor::encode(&id_material).expect("canonical encode cannot fail");
-        let digest = Sha256::digest(&bytes);
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&digest);
-        out
-    }
-
-    /// The derived node id as lowercase hex (64 characters).
-    pub fn node_id_hex(&self) -> String {
-        hex::encode(&self.node_id())
-    }
-}
-
-fn required_int(v: &Value, key: i64) -> Result<i64, IdentityError> {
-    let value = v.get_by_int(key).ok_or(IdentityError::MissingKey(key))?;
-    value.as_int().ok_or(IdentityError::WrongType {
-        key,
-        expected: "integer",
-    })
-}
-
-impl fmt::Debug for NodeIdentity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // NodeIdentity contains only public data; a full Debug is safe and
-        // useful for diagnostics.
-        f.debug_struct("NodeIdentity")
-            .field("scheme_version", &self.scheme_version)
-            .field("public_key", &self.public_key_hex())
-            .field("node_id", &self.node_id_hex())
-            .field("created_at_unix", &self.created_at_unix)
-            .field("display_name", &self.display_name)
-            .finish()
-    }
-}
-
-/// The node's Ed25519 signing key. Secret material is zeroized on drop.
-///
-/// There is deliberately NO public accessor for the seed bytes: only
-/// [`crate::store::IdentityStore`] (inside this crate) ever materializes the
-/// seed, and only to persist the identity file with 0600 permissions.
-pub struct NodeSigningKey {
-    inner: DalekSigningKey,
-}
-
-impl NodeSigningKey {
-    /// Generates a fresh key from the operating system CSPRNG.
-    ///
-    /// Not available on `wasm32-unknown-unknown` (no OS entropy source on
-    /// bare wasm); on that target, construct keys from a host-provided seed
-    /// with [`NodeSigningKey::from_seed`].
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    pub fn generate() -> Self {
-        Self {
-            inner: DalekSigningKey::generate(&mut rand::rngs::OsRng),
-        }
-    }
-
-    /// Reconstructs a signing key from a 32-byte seed.
-    ///
-    /// Accepting seed bytes as *input* is required to load persisted
-    /// identities; the inverse (extracting the seed) is crate-private.
-    pub fn from_seed(seed: &[u8; SEED_LEN]) -> Self {
-        Self {
-            inner: DalekSigningKey::from_bytes(seed),
-        }
-    }
-
-    /// The public key of this signing key.
-    pub fn public_key(&self) -> [u8; PUBLIC_KEY_LEN] {
-        *self.inner.verifying_key().as_bytes()
-    }
-
-    /// Produces a detached Ed25519 signature over an arbitrary payload.
-    pub fn sign(&self, payload: &[u8]) -> [u8; SIGNATURE_LEN] {
-        self.inner.sign(payload).to_bytes()
-    }
-
-    /// Builds the public [`NodeIdentity`] for this key.
-    pub fn node_identity(
-        &self,
-        display_name: Option<&str>,
+    /// On unix hosts the seed comes from `/dev/urandom`. On platforms without a
+    /// supported entropy source this fails with [`IdentityError::EntropyUnavailable`];
+    /// callers there must provide a seed via [`Identity::from_seed`].
+    pub fn generate(
         created_at_unix: u64,
-    ) -> Result<NodeIdentity, IdentityError> {
-        NodeIdentity::new(self.public_key(), created_at_unix, display_name)
+        display_name: Option<String>,
+    ) -> Result<Self, IdentityError> {
+        let seed = os_entropy_32()?;
+        Identity::from_seed(seed, created_at_unix, display_name)
     }
 
-    /// Seed bytes, for the store's exclusive use (never public).
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    /// The public identity object.
+    pub fn node_identity(&self) -> &NodeIdentity {
+        &self.node
+    }
+
+    /// The derived node identifier.
+    pub fn node_id(&self) -> NodeId {
+        self.node.node_id()
+    }
+
+    /// Detached-sign `payload` with the node key (RFC 8032 deterministic signing).
+    pub fn sign_detached(&self, payload: &[u8]) -> [u8; SIGNATURE_LEN] {
+        self.signing.sign(payload).to_bytes()
+    }
+
+    /// The seed, for the durable store only (same crate); returns a zeroize-on-drop copy.
     pub(crate) fn seed(&self) -> Zeroizing<[u8; SEED_LEN]> {
-        Zeroizing::new(self.inner.to_bytes())
+        Zeroizing::new(*self.seed)
+    }
+
+    /// Reassemble an identity from an already-validated seed and public object.
+    ///
+    /// Same-crate only (the store, after its seed↔object cross-check). The seed must be
+    /// the one that derives `node.public_key()` — the caller asserts this.
+    pub(crate) fn from_parts(seed: [u8; SEED_LEN], node: NodeIdentity) -> Self {
+        Identity {
+            seed: Zeroizing::new(seed),
+            signing: SigningKey::from_bytes(&seed),
+            node,
+        }
     }
 }
 
-impl fmt::Debug for NodeSigningKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // NEVER print secret material.
-        f.debug_struct("NodeSigningKey")
-            .field("public_key", &hex::encode(&self.public_key()))
-            .field("secret", &"<redacted>")
-            .finish()
+/// Read 32 bytes of OS entropy. Unix: `/dev/urandom`. Otherwise: fail closed.
+#[cfg(unix)]
+pub(crate) fn os_entropy_32() -> Result<[u8; SEED_LEN], IdentityError> {
+    use std::io::Read;
+    use zeroize::Zeroize;
+    let mut buf = [0u8; SEED_LEN];
+    let result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::open("/dev/urandom")?;
+        f.read_exact(&mut buf)
+    })();
+    match result {
+        Ok(()) => Ok(buf),
+        Err(_) => {
+            buf.zeroize();
+            Err(IdentityError::EntropyUnavailable)
+        }
     }
 }
 
-/// Current wall-clock time in seconds since the Unix epoch.
-pub fn unix_now() -> Result<u64, IdentityError> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+/// Non-unix hosts have no configured entropy source in this wave; fail closed.
+#[cfg(not(unix))]
+pub(crate) fn os_entropy_32() -> Result<[u8; SEED_LEN], IdentityError> {
+    Err(IdentityError::EntropyUnavailable)
+}
+
+/// Current UNIX time in seconds (0 on a clock that reads before the epoch).
+pub(crate) fn now_unix() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .map_err(|_| IdentityError::ClockBeforeEpoch)
+        .unwrap_or(0)
 }
 
-/// Strictly verifies a detached Ed25519 signature.
-///
-/// Strict verification rejects malleable signatures (e.g. non-canonical `s`
-/// scalars) in addition to performing the normal RFC 8032 checks.
-pub fn verify_detached(
-    public_key: &[u8; PUBLIC_KEY_LEN],
-    payload: &[u8],
-    signature: &[u8],
-) -> Result<(), IdentityError> {
-    if signature.len() != SIGNATURE_LEN {
-        return Err(IdentityError::SignatureMalformed {
-            len: signature.len(),
-        });
-    }
-    let vk = VerifyingKey::from_bytes(public_key).map_err(|_| IdentityError::InvalidPublicKey)?;
-    let sig = Signature::from_bytes(signature.try_into().expect("length checked above"));
-    vk.verify_strict(payload, &sig)
-        .map_err(|_| IdentityError::SignatureVerificationFailed)
-}
-
-/// Typed identity failure.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Typed violations of the [`NodeIdentity`] wire contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityError {
-    /// Wire value was not a CBOR map.
+    /// The value was not a CBOR map.
     NotAMap,
-    /// A required wire key was absent.
-    MissingKey(i64),
-    /// A wire key had the wrong type.
-    WrongType { key: i64, expected: &'static str },
-    /// An unknown key appeared in a strict v1 object.
-    UnknownWireKey,
-    /// Scheme version is not 1.
-    UnsupportedSchemeVersion { found: i64 },
-    /// Public key byte string was not 32 bytes.
-    InvalidPublicKeyLength { found: usize },
-    /// Public key bytes are not a valid Ed25519 point.
-    InvalidPublicKey,
-    /// `created_at_unix` was negative or out of range.
-    TimestampOutOfRange { found: i128 },
-    /// Display name exceeded [`MAX_DISPLAY_NAME_BYTES`].
-    DisplayNameTooLong { bytes: usize, max: usize },
-    /// The system clock is before the Unix epoch.
-    ClockBeforeEpoch,
-    /// Signature byte length was not 64.
-    SignatureMalformed { len: usize },
-    /// Strict Ed25519 verification failed.
-    SignatureVerificationFailed,
+    /// A map key was not an integer.
+    KeyNotAnInteger,
+    /// A required field was missing (`key` is the CBOR field number).
+    MissingField {
+        /// The missing field number.
+        key: i64,
+    },
+    /// A field appeared twice.
+    DuplicateField {
+        /// The duplicated field number.
+        key: i64,
+    },
+    /// An unknown field number appeared (strict profile: 1..=4 only).
+    UnknownField {
+        /// The unknown field number.
+        key: i64,
+    },
+    /// A field's value had the wrong CBOR type.
+    FieldNotExpectedType {
+        /// The offending field number.
+        key: i64,
+    },
+    /// `scheme_version` was not the supported version.
+    SchemeVersionUnsupported {
+        /// The version that was found.
+        found: i64,
+    },
+    /// The public key was not 32 bytes.
+    PublicKeyWrongLength {
+        /// The length that was found.
+        len: usize,
+    },
+    /// The public key bytes were not a valid Ed25519 point encoding.
+    PublicKeyInvalid,
+    /// `created_at_unix` was negative or outside the wire range.
+    CreatedAtOutOfRange {
+        /// The value that was found.
+        found: i128,
+    },
+    /// `display_name` exceeded the byte limit.
+    DisplayNameTooLong {
+        /// The byte length that was found.
+        bytes: usize,
+        /// The allowed maximum.
+        max: usize,
+    },
+    /// The OS entropy source is unavailable on this platform.
+    EntropyUnavailable,
 }
 
 impl fmt::Display for IdentityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            IdentityError::NotAMap => write!(f, "wire object is not a CBOR map"),
-            IdentityError::MissingKey(k) => write!(f, "required wire key {k} is missing"),
-            IdentityError::WrongType { key, expected } => {
-                write!(f, "wire key {key} has the wrong type; expected {expected}")
+            IdentityError::NotAMap => write!(f, "NodeIdentity must be a CBOR map"),
+            IdentityError::KeyNotAnInteger => write!(f, "NodeIdentity map keys must be integers"),
+            IdentityError::MissingField { key } => {
+                write!(f, "NodeIdentity is missing required field {key}")
             }
-            IdentityError::UnknownWireKey => write!(
-                f,
-                "unknown wire key: NodeIdentity v1 allows only keys 1..=4"
-            ),
-            IdentityError::UnsupportedSchemeVersion { found } => write!(
-                f,
-                "unsupported identity scheme version {found} (expected {SCHEME_VERSION})"
-            ),
-            IdentityError::InvalidPublicKeyLength { found } => write!(
-                f,
-                "public key must be a {PUBLIC_KEY_LEN}-byte string, found {found} bytes"
-            ),
-            IdentityError::InvalidPublicKey => {
-                write!(f, "public key bytes are not a valid Ed25519 verification key")
+            IdentityError::DuplicateField { key } => {
+                write!(f, "NodeIdentity contains field {key} more than once")
             }
-            IdentityError::TimestampOutOfRange { found } => write!(
+            IdentityError::UnknownField { key } => write!(
                 f,
-                "created_at_unix {found} is negative or exceeds the i64 range"
+                "NodeIdentity contains unknown field {key} (scheme 1 allows fields 1..=4 only)"
+            ),
+            IdentityError::FieldNotExpectedType { key } => {
+                write!(f, "NodeIdentity field {key} has the wrong value type")
+            }
+            IdentityError::SchemeVersionUnsupported { found } => write!(
+                f,
+                "NodeIdentity scheme_version {found} is not supported (expected {SCHEME_VERSION})"
+            ),
+            IdentityError::PublicKeyWrongLength { len } => write!(
+                f,
+                "NodeIdentity public key must be {PUBLIC_KEY_LEN} bytes, found {len}"
+            ),
+            IdentityError::PublicKeyInvalid => {
+                write!(f, "NodeIdentity public key is not a valid Ed25519 point")
+            }
+            IdentityError::CreatedAtOutOfRange { found } => write!(
+                f,
+                "NodeIdentity created_at_unix {found} is outside the accepted range"
             ),
             IdentityError::DisplayNameTooLong { bytes, max } => write!(
                 f,
-                "display name is {bytes} bytes; maximum is {max} bytes"
+                "NodeIdentity display_name is {bytes} bytes; the maximum is {max}"
             ),
-            IdentityError::ClockBeforeEpoch => {
-                write!(f, "system clock is before the Unix epoch")
-            }
-            IdentityError::SignatureMalformed { len } => write!(
+            IdentityError::EntropyUnavailable => write!(
                 f,
-                "signature must be {SIGNATURE_LEN} bytes, found {len}"
-            ),
-            IdentityError::SignatureVerificationFailed => write!(
-                f,
-                "Ed25519 signature verification failed (strict mode)"
+                "OS entropy source unavailable on this platform; provide a seed explicitly"
             ),
         }
     }
@@ -424,122 +568,185 @@ impl fmt::Display for IdentityError {
 
 impl std::error::Error for IdentityError {}
 
+/// Typed signature verification failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyError {
+    /// The signature bytes are not a well-formed Ed25519 signature (e.g. wrong length).
+    SignatureEncodingInvalid {
+        /// The byte length that was supplied.
+        len: usize,
+    },
+    /// The signature is cryptographically invalid for this key and payload
+    /// (includes malleable signatures and foreign keys).
+    VerificationFailed,
+}
+
+impl fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VerifyError::SignatureEncodingInvalid { len } => write!(
+                f,
+                "signature is not a well-formed Ed25519 signature ({len} bytes; expected {SIGNATURE_LEN})"
+            ),
+            VerifyError::VerificationFailed => write!(
+                f,
+                "signature verification failed (wrong key, wrong payload, or malleable signature)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // RFC 8032 §7.1 test vector 1.
-    const RFC8032_SEED: [u8; 32] = [
-        0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec,
-        0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03,
-        0x1c, 0xae, 0x7f, 0x60,
-    ];
-    const RFC8032_PK: [u8; 32] = [
-        0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64,
-        0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68,
-        0xf7, 0x07, 0x51, 0x1a,
-    ];
+    // RFC 8032 §7.1 TEST 1.
+    const RFC8032_1_SEED_HEX: &str =
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+    const RFC8032_1_PK_HEX: &str =
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
 
-    #[test]
-    fn rfc8032_seed_to_public_key() {
-        let sk = NodeSigningKey::from_seed(&RFC8032_SEED);
-        assert_eq!(sk.public_key(), RFC8032_PK);
+    fn rfc8032_1_seed() -> [u8; 32] {
+        crate::testutil::from_hex(RFC8032_1_SEED_HEX)
+            .try_into()
+            .expect("rfc seed length")
+    }
+
+    fn rfc8032_1_pk() -> [u8; 32] {
+        crate::testutil::from_hex(RFC8032_1_PK_HEX)
+            .try_into()
+            .expect("rfc pk length")
     }
 
     #[test]
-    fn node_id_is_deterministic_and_metadata_independent() {
-        let a = NodeIdentity::new(RFC8032_PK, 1_700_000_000, Some("alpha")).unwrap();
-        let b = NodeIdentity::new(RFC8032_PK, 999, None).unwrap();
+    fn rfc8032_public_key_derivation() {
+        let id = Identity::from_seed(rfc8032_1_seed(), 0, None).unwrap();
+        assert_eq!(id.node_identity().public_key_bytes(), rfc8032_1_pk());
+    }
+
+    #[test]
+    fn node_id_changes_with_scheme_and_key() {
+        let id = Identity::from_seed(rfc8032_1_seed(), 0, None).unwrap();
+        let pk = id.node_identity().public_key_bytes();
+        let base = derive_node_id(1, &pk);
+        assert_eq!(id.node_id(), base);
+        let mut pk2 = pk;
+        pk2[0] ^= 1;
+        assert_ne!(
+            derive_node_id(1, &pk2),
+            base,
+            "key change must change node_id"
+        );
+        assert_ne!(
+            derive_node_id(2, &pk),
+            base,
+            "scheme change must change node_id"
+        );
+    }
+
+    #[test]
+    fn display_name_is_metadata_not_id_input() {
+        let a = Identity::from_seed(rfc8032_1_seed(), 1000, None).unwrap();
+        let b = Identity::from_seed(rfc8032_1_seed(), 2000, Some("renamed".into())).unwrap();
         assert_eq!(a.node_id(), b.node_id());
-        // Different key -> different node_id.
-        let mut other_pk = RFC8032_PK;
-        other_pk[0] ^= 1;
-        let c = NodeIdentity::new(other_pk, 1_700_000_000, Some("alpha")).unwrap();
-        assert_ne!(a.node_id(), c.node_id());
+        // created_at is likewise excluded from derivation
+        assert_ne!(
+            a.node_identity().created_at_unix(),
+            b.node_identity().created_at_unix()
+        );
     }
 
     #[test]
-    fn node_id_independent_cross_check() {
-        // Independent hand-computed expectation:
-        // canonical CBOR of {1: 1, 2: h'<pk>} = A2 01 01 02 58 20 || pk
-        let mut material = Vec::new();
-        material.extend_from_slice(&[0xA2, 0x01, 0x01, 0x02, 0x58, 0x20]);
-        material.extend_from_slice(&RFC8032_PK);
-        let digest = Sha256::digest(&material);
-        let id = NodeIdentity::new(RFC8032_PK, 0, None).unwrap();
-        assert_eq!(&digest[..], &id.node_id()[..]);
+    fn debug_redacts_seed() {
+        let id = Identity::from_seed(rfc8032_1_seed(), 0, None).unwrap();
+        let dbg = format!("{id:?}");
+        assert!(
+            !dbg.contains(&to_hex(&rfc8032_1_seed())),
+            "Debug must not leak the seed"
+        );
+        assert!(dbg.contains("redacted"));
     }
 
     #[test]
-    fn display_name_limits() {
-        let name_64 = "x".repeat(64);
-        assert!(NodeIdentity::new(RFC8032_PK, 0, Some(&name_64)).is_ok());
-        let name_65 = "x".repeat(65);
+    fn non_canonical_point_encodings_are_rejected() {
+        // 32 × 0xff encodes y = 2^255-1 >= p (non-canonical); decompression alone
+        // would accept it, which would allow two different byte images of the same
+        // point (and hence two node_ids) — the profile forbids that.
+        let mut wire = Value::Map(vec![
+            (Value::Int(1), Value::Int(SCHEME_VERSION)),
+            (Value::Int(2), Value::Bytes(vec![0xffu8; 32])),
+            (Value::Int(3), Value::Int(0)),
+        ]);
         assert_eq!(
-            NodeIdentity::new(RFC8032_PK, 0, Some(&name_65)),
-            Err(IdentityError::DisplayNameTooLong {
-                bytes: 65,
-                max: 64
-            })
+            NodeIdentity::from_wire(&wire),
+            Err(IdentityError::PublicKeyInvalid)
         );
-        // Byte length, not char count: 'ü' is 2 UTF-8 bytes, so 33 chars
-        // = 66 bytes > 64.
-        let multibyte = "ü".repeat(33);
-        assert_eq!(multibyte.len(), 66);
-        assert_eq!(
-            NodeIdentity::new(RFC8032_PK, 0, Some(&multibyte)),
-            Err(IdentityError::DisplayNameTooLong { bytes: 66, max: 64 })
-        );
-        // 32 chars = 64 bytes: exactly at the limit.
-        let at_limit = "ü".repeat(32);
-        assert_eq!(at_limit.len(), 64);
-        assert!(NodeIdentity::new(RFC8032_PK, 0, Some(&at_limit)).is_ok());
+        // Find a canonically-encoded y that does not decompress (no square root):
+        // at least one must exist among small candidates.
+        let mut found = false;
+        for y0 in 2u8..=40 {
+            let mut candidate = vec![0u8; 32];
+            candidate[0] = y0;
+            wire = Value::Map(vec![
+                (Value::Int(1), Value::Int(SCHEME_VERSION)),
+                (Value::Int(2), Value::Bytes(candidate)),
+                (Value::Int(3), Value::Int(0)),
+            ]);
+            if matches!(
+                NodeIdentity::from_wire(&wire),
+                Err(IdentityError::PublicKeyInvalid)
+            ) {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "some canonical y must fail decompression");
     }
 
     #[test]
-    fn sign_verify_roundtrip_and_failures() {
-        let sk = NodeSigningKey::from_seed(&RFC8032_SEED);
-        let payload = b"sharenet bridge payload";
-        let sig = sk.sign(payload);
-        assert_eq!(sig.len(), 64);
-        assert!(verify_detached(&sk.public_key(), payload, &sig).is_ok());
+    fn zeroize_primitives_act_on_live_buffers() {
+        // Observable zeroization of the exact primitives this crate uses for secrets.
+        use zeroize::Zeroize;
+        let mut live: [u8; 32] = [0x5a; 32];
+        live.zeroize();
+        assert!(live.iter().all(|&b| b == 0));
+        let mut z = Zeroizing::new([0x5au8; 32]);
+        z.zeroize(); // the same call Zeroizing's Drop performs
+        assert!(z.iter().all(|&b| b == 0));
+        // [u8; 32] and Vec<u8> (seed transit buffers) both implement Zeroize.
+        fn assert_zeroize<T: zeroize::Zeroize>() {}
+        assert_zeroize::<[u8; 32]>();
+        assert_zeroize::<Vec<u8>>();
+        assert_zeroize::<Zeroizing<[u8; 32]>>();
+    }
 
-        // Different payload (replay against wrong payload).
-        assert_eq!(
-            verify_detached(&sk.public_key(), b"other payload", &sig),
-            Err(IdentityError::SignatureVerificationFailed)
-        );
-        // Different key.
-        let other = NodeSigningKey::generate();
-        assert_eq!(
-            verify_detached(&other.public_key(), payload, &sig),
-            Err(IdentityError::SignatureVerificationFailed)
-        );
+    #[test]
+    fn sign_verify_roundtrip_and_strictness() {
+        let id = Identity::from_seed(rfc8032_1_seed(), 0, None).unwrap();
+        let payload = b"sharenet";
+        let sig = id.sign_detached(payload);
+        assert!(id.node_identity().verify_detached(payload, &sig).is_ok());
+        // Deterministic RFC 8032 signing: identical payload -> identical signature.
+        assert_eq!(id.sign_detached(payload), sig);
+        // Any single-bit flip in the signature must fail.
+        for i in [0usize, 31, 63] {
+            let mut bad = sig;
+            bad[i] ^= 0x01;
+            assert!(id.node_identity().verify_detached(payload, &bad).is_err());
+        }
         // Wrong lengths.
-        assert_eq!(
-            verify_detached(&sk.public_key(), payload, &sig[..63]),
-            Err(IdentityError::SignatureMalformed { len: 63 })
-        );
-        assert_eq!(
-            verify_detached(&sk.public_key(), payload, &[0u8; 65]),
-            Err(IdentityError::SignatureMalformed { len: 65 })
-        );
-    }
-
-    #[test]
-    fn debug_output_never_contains_seed() {
-        let sk = NodeSigningKey::from_seed(&RFC8032_SEED);
-        let dbg = format!("{sk:?}");
-        assert!(!dbg.contains(&hex::encode(&RFC8032_SEED)));
-        assert!(dbg.contains("<redacted>"));
-    }
-
-    #[test]
-    fn wire_roundtrip() {
-        let id = NodeIdentity::new(RFC8032_PK, 1_700_000_000, Some("gateway-alpha")).unwrap();
-        let wire = id.to_wire();
-        let parsed = NodeIdentity::from_wire(&wire).unwrap();
-        assert_eq!(parsed, id);
-        assert_eq!(parsed.node_id(), id.node_id());
+        assert!(id
+            .node_identity()
+            .verify_detached(payload, &sig[..63])
+            .is_err());
+        assert!(id
+            .node_identity()
+            .verify_detached(payload, &[0u8; 65][..])
+            .is_err());
+        assert!(id.node_identity().verify_detached(payload, &[]).is_err());
+        // Payload substitution (replay against a different payload) must fail.
+        assert!(id.node_identity().verify_detached(b"other", &sig).is_err());
     }
 }

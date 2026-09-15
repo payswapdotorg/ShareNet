@@ -1,677 +1,796 @@
 {
-  "description": "Golden vectors for the ShareNet Canonical CBOR Profile v1. Encode cases test both directions (value -> hex and hex -> value) plus byte-stability (encode(decode(hex)) == hex). Reject cases must be decoded to a typed error whose variant name is given in \"error\".",
-  "encode_cases": [
+  "profile": "sharenet-canonical-cbor-v1",
+  "description": "ShareNet canonical CBOR profile v1 conformance vectors. Roundtrip cases MUST decode to `value` and re-encode to exactly `hex`. Reject cases MUST fail with the named typed error. Map keys sort by bytewise lexicographic order of their canonical encodings (see profile notes: this coincides with RFC 8949 deterministic ordering for equal-length key encodings).",
+  "roundtrip": [
     {
       "hex": "00",
-      "name": "int-zero",
       "value": {
-        "t": "int",
-        "v": 0
+        "type": "int",
+        "value": 0
       }
+    },
+    {
+      "hex": "01",
+      "value": {
+        "type": "int",
+        "value": 1
+      },
+      "note": "int 1"
     },
     {
       "hex": "17",
-      "name": "int-23",
       "value": {
-        "t": "int",
-        "v": 23
-      }
+        "type": "int",
+        "value": 23
+      },
+      "note": "int 23 (last immediate)"
     },
     {
       "hex": "1818",
-      "name": "int-24",
       "value": {
-        "t": "int",
-        "v": 24
-      }
+        "type": "int",
+        "value": 24
+      },
+      "note": "int 24 (first 1-byte-arg)"
+    },
+    {
+      "hex": "1819",
+      "value": {
+        "type": "int",
+        "value": 25
+      },
+      "note": "int 25"
+    },
+    {
+      "hex": "1864",
+      "value": {
+        "type": "int",
+        "value": 100
+      },
+      "note": "int 100"
     },
     {
       "hex": "18ff",
-      "name": "int-255",
       "value": {
-        "t": "int",
-        "v": 255
-      }
+        "type": "int",
+        "value": 255
+      },
+      "note": "int 255 (last 1-byte-arg)"
     },
     {
       "hex": "190100",
-      "name": "int-256",
       "value": {
-        "t": "int",
-        "v": 256
-      }
+        "type": "int",
+        "value": 256
+      },
+      "note": "int 256"
+    },
+    {
+      "hex": "1903e8",
+      "value": {
+        "type": "int",
+        "value": 1000
+      },
+      "note": "int 1000"
     },
     {
       "hex": "19ffff",
-      "name": "int-65535",
       "value": {
-        "t": "int",
-        "v": 65535
-      }
+        "type": "int",
+        "value": 65535
+      },
+      "note": "int 65535"
     },
     {
       "hex": "1a00010000",
-      "name": "int-65536",
       "value": {
-        "t": "int",
-        "v": 65536
-      }
+        "type": "int",
+        "value": 65536
+      },
+      "note": "int 65536"
+    },
+    {
+      "hex": "1a000f4240",
+      "value": {
+        "type": "int",
+        "value": 1000000
+      },
+      "note": "int 1000000"
+    },
+    {
+      "hex": "1affffffff",
+      "value": {
+        "type": "int",
+        "value": 4294967295
+      },
+      "note": "int 4294967295"
+    },
+    {
+      "hex": "1b0000000100000000",
+      "value": {
+        "type": "int",
+        "value": 4294967296
+      },
+      "note": "int 4294967296"
+    },
+    {
+      "hex": "1b000000e8d4a51000",
+      "value": {
+        "type": "int",
+        "value": 1000000000000
+      },
+      "note": "int 10^12"
     },
     {
       "hex": "1b7fffffffffffffff",
-      "name": "int-i64-max",
       "value": {
-        "t": "int",
-        "v": 9223372036854775807
-      }
+        "type": "int",
+        "value": 9223372036854775807
+      },
+      "note": "int i64::MAX"
     },
     {
       "hex": "20",
-      "name": "int-minus-1",
       "value": {
-        "t": "int",
-        "v": -1
-      }
+        "type": "int",
+        "value": -1
+      },
+      "note": "int -1"
+    },
+    {
+      "hex": "29",
+      "value": {
+        "type": "int",
+        "value": -10
+      },
+      "note": "int -10"
     },
     {
       "hex": "37",
-      "name": "int-minus-24",
       "value": {
-        "t": "int",
-        "v": -24
-      }
+        "type": "int",
+        "value": -24
+      },
+      "note": "int -24"
     },
     {
       "hex": "3818",
-      "name": "int-minus-25",
       "value": {
-        "t": "int",
-        "v": -25
-      }
+        "type": "int",
+        "value": -25
+      },
+      "note": "int -25"
+    },
+    {
+      "hex": "38ff",
+      "value": {
+        "type": "int",
+        "value": -256
+      },
+      "note": "int -256"
+    },
+    {
+      "hex": "390100",
+      "value": {
+        "type": "int",
+        "value": -257
+      },
+      "note": "int -257"
+    },
+    {
+      "hex": "3903e7",
+      "value": {
+        "type": "int",
+        "value": -1000
+      },
+      "note": "int -1000"
     },
     {
       "hex": "3b7fffffffffffffff",
-      "name": "int-i64-min",
       "value": {
-        "t": "int",
-        "v": -9223372036854775808
-      }
+        "type": "int",
+        "value": -9223372036854775808
+      },
+      "note": "int i64::MIN"
     },
     {
       "hex": "f4",
-      "name": "bool-false",
       "value": {
-        "t": "bool",
-        "v": false
-      }
+        "type": "bool",
+        "value": false
+      },
+      "note": "false"
     },
     {
       "hex": "f5",
-      "name": "bool-true",
       "value": {
-        "t": "bool",
-        "v": true
-      }
+        "type": "bool",
+        "value": true
+      },
+      "note": "true"
     },
     {
       "hex": "f6",
-      "name": "null",
       "value": {
-        "t": "null"
-      }
+        "type": "null"
+      },
+      "note": "null"
     },
     {
       "hex": "40",
-      "name": "bytes-empty",
       "value": {
-        "t": "bytes",
-        "v": ""
-      }
+        "type": "bytes",
+        "hex": ""
+      },
+      "note": "empty bstr"
     },
     {
       "hex": "4401020304",
-      "name": "bytes-01020304",
       "value": {
-        "t": "bytes",
-        "v": "01020304"
-      }
-    },
-    {
-      "hex": "5820abababababababababababababababababababababababababababababababab",
-      "name": "bytes-32",
-      "value": {
-        "t": "bytes",
-        "v": "abababababababababababababababababababababababababababababababab"
-      }
-    },
-    {
-      "hex": "59012c5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
-      "name": "bytes-300",
-      "value": {
-        "t": "bytes",
-        "v": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
-      }
+        "type": "bytes",
+        "hex": "01020304"
+      },
+      "note": "bstr 01020304"
     },
     {
       "hex": "60",
-      "name": "text-empty",
       "value": {
-        "t": "text",
-        "v": ""
-      }
+        "type": "text",
+        "value": ""
+      },
+      "note": "empty text"
     },
     {
       "hex": "6161",
-      "name": "text-a",
       "value": {
-        "t": "text",
-        "v": "a"
-      }
+        "type": "text",
+        "value": "a"
+      },
+      "note": "text 'a'"
     },
     {
       "hex": "6449455446",
-      "name": "text-ietf",
       "value": {
-        "t": "text",
-        "v": "IETF"
-      }
+        "type": "text",
+        "value": "IETF"
+      },
+      "note": "text 'IETF'"
     },
     {
-      "hex": "7453686172654e657420e4b8ade6968720f09f8c8d",
-      "name": "text-utf8-multibyte",
+      "hex": "62225c",
       "value": {
-        "t": "text",
-        "v": "ShareNet 中文 🌍"
-      }
+        "type": "text",
+        "value": "\"\\"
+      },
+      "note": "text quote+backslash"
+    },
+    {
+      "hex": "62c3bc",
+      "value": {
+        "type": "text",
+        "value": "ü"
+      },
+      "note": "text 'ü' (2 UTF-8 bytes)"
+    },
+    {
+      "hex": "63e6b0b4",
+      "value": {
+        "type": "text",
+        "value": "水"
+      },
+      "note": "text '水' (3 UTF-8 bytes)"
+    },
+    {
+      "hex": "64f0908091",
+      "value": {
+        "type": "text",
+        "value": "𐀑"
+      },
+      "note": "text '𐀑' (4 UTF-8 bytes)"
     },
     {
       "hex": "80",
-      "name": "array-empty",
       "value": {
-        "t": "array",
-        "v": []
-      }
+        "type": "array",
+        "items": []
+      },
+      "note": "empty array"
     },
     {
       "hex": "83010203",
-      "name": "array-123",
       "value": {
-        "t": "array",
-        "v": [
+        "type": "array",
+        "items": [
           {
-            "t": "int",
-            "v": 1
+            "type": "int",
+            "value": 1
           },
           {
-            "t": "int",
-            "v": 2
+            "type": "int",
+            "value": 2
           },
           {
-            "t": "int",
-            "v": 3
+            "type": "int",
+            "value": 3
           }
         ]
-      }
+      },
+      "note": "array [1,2,3]"
     },
     {
       "hex": "8301820203820405",
-      "name": "array-nested",
       "value": {
-        "t": "array",
-        "v": [
+        "type": "array",
+        "items": [
           {
-            "t": "int",
-            "v": 1
+            "type": "int",
+            "value": 1
           },
           {
-            "t": "array",
-            "v": [
+            "type": "array",
+            "items": [
               {
-                "t": "int",
-                "v": 2
+                "type": "int",
+                "value": 2
               },
               {
-                "t": "int",
-                "v": 3
+                "type": "int",
+                "value": 3
               }
             ]
           },
           {
-            "t": "array",
-            "v": [
+            "type": "array",
+            "items": [
               {
-                "t": "int",
-                "v": 4
+                "type": "int",
+                "value": 4
               },
               {
-                "t": "int",
-                "v": 5
+                "type": "int",
+                "value": 5
               }
             ]
           }
         ]
-      }
-    },
-    {
-      "hex": "8517616141f0f5f6",
-      "name": "array-mixed",
-      "value": {
-        "t": "array",
-        "v": [
-          {
-            "t": "int",
-            "v": 23
-          },
-          {
-            "t": "text",
-            "v": "a"
-          },
-          {
-            "t": "bytes",
-            "v": "f0"
-          },
-          {
-            "t": "bool",
-            "v": true
-          },
-          {
-            "t": "null"
-          }
-        ]
-      }
+      },
+      "note": "nested arrays"
     },
     {
       "hex": "a0",
-      "name": "map-empty",
       "value": {
-        "t": "map",
-        "v": []
-      }
+        "type": "map",
+        "entries": []
+      },
+      "note": "empty map"
     },
     {
       "hex": "a201020304",
-      "name": "map-int-keys",
       "value": {
-        "t": "map",
-        "v": [
-          [
-            {
-              "t": "int",
-              "v": 1
+        "type": "map",
+        "entries": [
+          {
+            "key": {
+              "type": "int",
+              "value": 1
             },
-            {
-              "t": "int",
-              "v": 2
+            "value": {
+              "type": "int",
+              "value": 2
             }
-          ],
-          [
-            {
-              "t": "int",
-              "v": 3
+          },
+          {
+            "key": {
+              "type": "int",
+              "value": 3
             },
-            {
-              "t": "int",
-              "v": 4
+            "value": {
+              "type": "int",
+              "value": 4
             }
-          ]
+          }
         ]
-      }
+      },
+      "note": "map {1:2, 3:4}"
     },
     {
       "hex": "a26161016162820203",
-      "name": "map-text-keys",
       "value": {
-        "t": "map",
-        "v": [
-          [
-            {
-              "t": "text",
-              "v": "a"
+        "type": "map",
+        "entries": [
+          {
+            "key": {
+              "type": "text",
+              "value": "a"
             },
-            {
-              "t": "int",
-              "v": 1
+            "value": {
+              "type": "int",
+              "value": 1
             }
-          ],
-          [
-            {
-              "t": "text",
-              "v": "b"
+          },
+          {
+            "key": {
+              "type": "text",
+              "value": "b"
             },
-            {
-              "t": "array",
-              "v": [
+            "value": {
+              "type": "array",
+              "items": [
                 {
-                  "t": "int",
-                  "v": 2
+                  "type": "int",
+                  "value": 2
                 },
                 {
-                  "t": "int",
-                  "v": 3
+                  "type": "int",
+                  "value": 3
                 }
               ]
             }
-          ]
+          }
         ]
-      }
+      },
+      "note": "map {'a':1, 'b':[2,3]}"
     },
     {
-      "hex": "a261620262616201",
-      "name": "map-length-prefix-sorts-first",
+      "hex": "a201022003",
       "value": {
-        "t": "map",
-        "v": [
-          [
-            {
-              "t": "text",
-              "v": "b"
+        "type": "map",
+        "entries": [
+          {
+            "key": {
+              "type": "int",
+              "value": 1
             },
-            {
-              "t": "int",
-              "v": 2
+            "value": {
+              "type": "int",
+              "value": 2
             }
-          ],
-          [
-            {
-              "t": "text",
-              "v": "ab"
+          },
+          {
+            "key": {
+              "type": "int",
+              "value": -1
             },
-            {
-              "t": "int",
-              "v": 1
+            "value": {
+              "type": "int",
+              "value": 3
             }
-          ]
+          }
         ]
-      }
+      },
+      "note": "map {1:2, -1:3}: bytewise key order (0x01 < 0x20)"
     },
     {
-      "hex": "a200647a65726f20656d696e7573",
-      "name": "map-int-negative-key-sorts-after-zero",
+      "hex": "a21818022003",
       "value": {
-        "t": "map",
-        "v": [
-          [
-            {
-              "t": "int",
-              "v": 0
+        "type": "map",
+        "entries": [
+          {
+            "key": {
+              "type": "int",
+              "value": 24
             },
-            {
-              "t": "text",
-              "v": "zero"
+            "value": {
+              "type": "int",
+              "value": 2
             }
-          ],
-          [
-            {
-              "t": "int",
-              "v": -1
+          },
+          {
+            "key": {
+              "type": "int",
+              "value": -1
             },
-            {
-              "t": "text",
-              "v": "minus"
+            "value": {
+              "type": "int",
+              "value": 3
             }
-          ]
+          }
         ]
-      }
+      },
+      "note": "map {24:2, -1:3}: bytewise key order (0x1818 < 0x20) — diverges from RFC 8949 length-first order"
     },
     {
-      "hex": "a301010258204242424242424242424242424242424242424242424242424242424242424242031a6553f100",
-      "name": "nodeidentity-like-shape",
+      "hex": "a20102616103",
       "value": {
-        "t": "map",
-        "v": [
-          [
-            {
-              "t": "int",
-              "v": 1
+        "type": "map",
+        "entries": [
+          {
+            "key": {
+              "type": "int",
+              "value": 1
             },
-            {
-              "t": "int",
-              "v": 1
+            "value": {
+              "type": "int",
+              "value": 2
             }
-          ],
-          [
-            {
-              "t": "int",
-              "v": 2
+          },
+          {
+            "key": {
+              "type": "text",
+              "value": "a"
             },
-            {
-              "t": "bytes",
-              "v": "4242424242424242424242424242424242424242424242424242424242424242"
+            "value": {
+              "type": "int",
+              "value": 3
             }
-          ],
-          [
-            {
-              "t": "int",
-              "v": 3
-            },
-            {
-              "t": "int",
-              "v": 1700000000
-            }
-          ]
+          }
         ]
-      }
+      },
+      "note": "mixed-type keys {1:2, 'a':3}: bytewise (0x01 < 0x6161)"
     }
   ],
-  "profile": "sharenet-cbor-v1",
-  "reject_cases": [
+  "reject": [
     {
-      "error": "NonMinimalInteger",
-      "hex": "1800",
-      "name": "non-minimal-int-0"
-    },
-    {
-      "error": "NonMinimalInteger",
-      "hex": "1817",
-      "name": "non-minimal-int-23"
-    },
-    {
-      "error": "NonMinimalInteger",
-      "hex": "190018",
-      "name": "non-minimal-int-24-uint16"
-    },
-    {
-      "error": "NonMinimalInteger",
-      "hex": "1900ff",
-      "name": "non-minimal-int-255-uint16"
-    },
-    {
-      "error": "NonMinimalInteger",
-      "hex": "3800",
-      "name": "non-minimal-neg-1"
-    },
-    {
-      "error": "NonMinimalInteger",
-      "hex": "5803414244",
-      "name": "non-minimal-bstr-length"
-    },
-    {
-      "error": "IndefiniteLength",
-      "hex": "1f",
-      "name": "indefinite-int"
-    },
-    {
-      "error": "IndefiniteLength",
-      "hex": "5fff",
-      "name": "indefinite-bstr"
-    },
-    {
-      "error": "IndefiniteLength",
-      "hex": "7f6161ff",
-      "name": "indefinite-text"
-    },
-    {
-      "error": "IndefiniteLength",
-      "hex": "9f01ff",
-      "name": "indefinite-array"
-    },
-    {
-      "error": "IndefiniteLength",
-      "hex": "bf0161afff",
-      "name": "indefinite-map"
-    },
-    {
-      "error": "BreakCode",
-      "hex": "ff",
-      "name": "break-code"
-    },
-    {
-      "error": "UnsortedMapKeys",
-      "hex": "a203040102",
-      "name": "unsorted-map-keys"
-    },
-    {
-      "error": "DuplicateMapKey",
-      "hex": "a201020103",
-      "name": "duplicate-map-keys"
-    },
-    {
-      "error": "TagForbidden",
-      "hex": "c000",
-      "name": "tag-0"
-    },
-    {
-      "error": "TagForbidden",
-      "hex": "c11a514b67b0",
-      "name": "tag-1-epoch"
-    },
-    {
-      "error": "TagForbidden",
-      "hex": "c2420100",
-      "name": "tag-2-bignum"
-    },
-    {
-      "error": "TagForbidden",
-      "hex": "c349010000000000000000",
-      "name": "tag-3-negbigint"
-    },
-    {
-      "error": "FloatForbidden",
-      "hex": "f90000",
-      "name": "float-f16-zero"
-    },
-    {
-      "error": "FloatForbidden",
-      "hex": "f97e00",
-      "name": "float-f16-nan"
-    },
-    {
-      "error": "FloatForbidden",
-      "hex": "f97c00",
-      "name": "float-f16-inf"
-    },
-    {
-      "error": "FloatForbidden",
-      "hex": "fa47c35000",
-      "name": "float-f32"
-    },
-    {
-      "error": "FloatForbidden",
-      "hex": "fb3ff0000000000000",
-      "name": "float-f64"
-    },
-    {
-      "error": "SimpleValueForbidden",
-      "hex": "f7",
-      "name": "undefined"
-    },
-    {
-      "error": "SimpleValueForbidden",
-      "hex": "f0",
-      "name": "simple-16"
-    },
-    {
-      "error": "SimpleValueForbidden",
-      "hex": "f800",
-      "name": "simple-2byte-0"
-    },
-    {
-      "error": "InvalidUtf8",
-      "hex": "62c328",
-      "name": "invalid-utf8"
-    },
-    {
-      "error": "TrailingBytes",
-      "hex": "0000",
-      "name": "trailing-bytes"
-    },
-    {
-      "error": "UnexpectedEnd",
-      "hex": "18",
-      "name": "truncated-int-arg"
-    },
-    {
-      "error": "LengthExceedsInput",
-      "hex": "440102",
-      "name": "truncated-bstr"
-    },
-    {
-      "error": "LengthExceedsInput",
-      "hex": "82ff",
-      "name": "truncated-array"
-    },
-    {
-      "error": "EmptyInput",
       "hex": "",
-      "name": "empty-input"
+      "error": "EmptyInput",
+      "note": "empty input"
     },
     {
-      "error": "IntegerOutOfRange",
+      "hex": "0000",
+      "error": "TrailingBytes",
+      "note": "int 0 then int 0"
+    },
+    {
+      "hex": "0102",
+      "error": "TrailingBytes",
+      "note": "two complete ints"
+    },
+    {
+      "hex": "18",
+      "error": "Truncated",
+      "note": "missing 1-byte argument"
+    },
+    {
+      "hex": "19",
+      "error": "Truncated"
+    },
+    {
+      "hex": "41",
+      "error": "Truncated",
+      "note": "bstr claims 1 byte"
+    },
+    {
+      "hex": "44010203",
+      "error": "Truncated",
+      "note": "bstr claims 4, has 3"
+    },
+    {
+      "hex": "6261",
+      "error": "Truncated",
+      "note": "text claims 2, has 1"
+    },
+    {
+      "hex": "8201",
+      "error": "Truncated",
+      "note": "array claims 2 items"
+    },
+    {
+      "hex": "a101",
+      "error": "Truncated",
+      "note": "map claims 1 pair, value missing"
+    },
+    {
+      "hex": "1800",
+      "error": "NonMinimalInteger",
+      "note": "0 in 1-byte-arg form"
+    },
+    {
+      "hex": "1817",
+      "error": "NonMinimalInteger",
+      "note": "23 in 1-byte-arg form"
+    },
+    {
+      "hex": "190018",
+      "error": "NonMinimalInteger",
+      "note": "24 in 2-byte-arg form"
+    },
+    {
+      "hex": "1a000000ff",
+      "error": "NonMinimalInteger"
+    },
+    {
+      "hex": "1b000000000000ffff",
+      "error": "NonMinimalInteger"
+    },
+    {
+      "hex": "3817",
+      "error": "NonMinimalInteger",
+      "note": "-24 in 1-byte-arg form (immediate 0x37 exists)"
+    },
+    {
+      "hex": "5800",
+      "error": "NonMinimalInteger",
+      "note": "bstr length 0 in wide form"
+    },
+    {
+      "hex": "9800",
+      "error": "NonMinimalInteger",
+      "note": "array length 0 in wide form"
+    },
+    {
+      "hex": "b800",
+      "error": "NonMinimalInteger",
+      "note": "map length 0 in wide form"
+    },
+    {
       "hex": "1bffffffffffffffff",
-      "name": "uint-exceeds-i64"
+      "error": "IntegerOutOfRange",
+      "note": "2^64-1 > i64::MAX"
     },
     {
-      "error": "IntegerNegativeOutOfRange",
       "hex": "3bffffffffffffffff",
-      "name": "negative-exceeds-i64"
+      "error": "IntegerOutOfRange",
+      "note": "< i64::MIN"
     },
     {
-      "error": "ReservedAdditionalInfo",
+      "hex": "9f",
+      "error": "IndefiniteLength",
+      "note": "indefinite array"
+    },
+    {
+      "hex": "5f",
+      "error": "IndefiniteLength",
+      "note": "indefinite bstr"
+    },
+    {
+      "hex": "7f",
+      "error": "IndefiniteLength",
+      "note": "indefinite text"
+    },
+    {
+      "hex": "bf",
+      "error": "IndefiniteLength",
+      "note": "indefinite map"
+    },
+    {
+      "hex": "9f01ff",
+      "error": "IndefiniteLength"
+    },
+    {
+      "hex": "a202010102",
+      "error": "UnsortedMapKeys",
+      "note": "{2:1, 1:2}"
+    },
+    {
+      "hex": "a2616201616101",
+      "error": "UnsortedMapKeys",
+      "note": "{'b':1,'a':1}"
+    },
+    {
+      "hex": "a201020103",
+      "error": "DuplicateMapKey",
+      "note": "{1:2, 1:3}"
+    },
+    {
+      "hex": "a2616101616102",
+      "error": "DuplicateMapKey",
+      "note": "{'a':1,'a':2}"
+    },
+    {
+      "hex": "c000",
+      "error": "TagNotAllowed",
+      "note": "tag 0 (date)"
+    },
+    {
+      "hex": "d86400",
+      "error": "TagNotAllowed",
+      "note": "tag 100"
+    },
+    {
+      "hex": "c24b00ffffffffffffffff",
+      "error": "TagNotAllowed",
+      "note": "positive bignum tag"
+    },
+    {
+      "hex": "c349010000000000000000",
+      "error": "TagNotAllowed",
+      "note": "negative bignum tag"
+    },
+    {
+      "hex": "f90000",
+      "error": "FloatNotAllowed",
+      "note": "f16 0.0"
+    },
+    {
+      "hex": "f93c00",
+      "error": "FloatNotAllowed",
+      "note": "f16 1.0"
+    },
+    {
+      "hex": "f93e00",
+      "error": "FloatNotAllowed",
+      "note": "f16 1.5"
+    },
+    {
+      "hex": "f97c00",
+      "error": "FloatNotAllowed",
+      "note": "f16 +Inf"
+    },
+    {
+      "hex": "f97e00",
+      "error": "FloatNotAllowed",
+      "note": "f16 NaN"
+    },
+    {
+      "hex": "fa47c35000",
+      "error": "FloatNotAllowed",
+      "note": "f32 100000.0"
+    },
+    {
+      "hex": "fb3ff199999999999a",
+      "error": "FloatNotAllowed",
+      "note": "f64 1.1"
+    },
+    {
+      "hex": "f7",
+      "error": "UndefinedNotAllowed",
+      "note": "undefined"
+    },
+    {
+      "hex": "e0",
+      "error": "SimpleValueNotAllowed",
+      "note": "simple 0"
+    },
+    {
+      "hex": "f3",
+      "error": "SimpleValueNotAllowed",
+      "note": "simple 19"
+    },
+    {
+      "hex": "f814",
+      "error": "SimpleValueNotAllowed",
+      "note": "two-byte false (non-canonical)"
+    },
+    {
+      "hex": "f8ff",
+      "error": "SimpleValueNotAllowed",
+      "note": "two-byte simple 255"
+    },
+    {
+      "hex": "ff",
+      "error": "BreakByteNotAllowed",
+      "note": "stray break"
+    },
+    {
       "hex": "1c",
-      "name": "reserved-info-28"
+      "error": "ReservedAdditionalInfo"
     },
     {
-      "error": "LengthExceedsInput",
-      "hex": "9affffffff",
-      "name": "hostile-array-count"
+      "hex": "1f",
+      "error": "ReservedAdditionalInfo"
+    },
+    {
+      "hex": "5c",
+      "error": "ReservedAdditionalInfo"
+    },
+    {
+      "hex": "9e",
+      "error": "ReservedAdditionalInfo"
+    },
+    {
+      "hex": "be",
+      "error": "ReservedAdditionalInfo"
+    },
+    {
+      "hex": "dc",
+      "error": "ReservedAdditionalInfo"
+    },
+    {
+      "hex": "fc",
+      "error": "ReservedAdditionalInfo"
+    },
+    {
+      "hex": "61ff",
+      "error": "InvalidUtf8"
+    },
+    {
+      "hex": "62c328",
+      "error": "InvalidUtf8"
+    },
+    {
+      "hex": "63e6b0",
+      "error": "Truncated",
+      "note": "text claims 3, has 2 (truncated 水)"
     }
-  ],
-  "value_encoding": {
-    "array": {
-      "t": "array",
-      "v": [
-        "<value>",
-        "..."
-      ]
-    },
-    "bool": {
-      "t": "bool",
-      "v": "<true|false>"
-    },
-    "bytes": {
-      "t": "bytes",
-      "v": "<hex>"
-    },
-    "int": {
-      "t": "int",
-      "v": "<i64>"
-    },
-    "map": {
-      "t": "map",
-      "v": [
-        [
-          "<key>",
-          "<value>"
-        ],
-        "..."
-      ]
-    },
-    "null": {
-      "t": "null"
-    },
-    "text": {
-      "t": "text",
-      "v": "<utf-8 string>"
-    }
-  }
+  ]
 }

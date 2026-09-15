@@ -1,225 +1,178 @@
-# sharenet-protocol
+# sharenet-protocol — ShareNet protocol core (Wave 1: R1-001 + R1-002)
 
-ShareNet protocol core (Rust, platform-independent — architecture lock L007).
-Wave 1 scope: **R1-002 Canonical CBOR wire foundation** and **R1-001
-Identity binding**.
+ShareNet's mission is **resilient Internet bridging**: people who have Internet access
+bridge it to people who do not. This crate is the protocol core's implementation home
+(`AGENTS.md`: protocol authority, platform- and database-independent). It provides the
+two Wave 1 foundations:
 
-- Every future ShareNet wire object (`Advertisement`, `LinkAuthentication`,
-  `RouteProposal`, `RouteAcceptance`, `RouteCommitment`, `Circuit*`,
-  `ContributionReceipt`, ... — see `spec/protocol-registry.yaml`) serializes
-  through this crate's CBOR profile. There is no second encoder.
-- Node identities are created/loaded at node startup through
-  `IdentityStore::load_or_create` — the same library API the `sharenet-id`
-  binary exercises today and the future ShareNet daemon will call.
+- **R1-002 — ShareNet Canonical CBOR Profile v1**: the ONE wire serialization path.
+  Every future normative wire object in `spec/protocol-registry.yaml` (Advertisement,
+  LinkAuthentication, RouteProposal, RouteAcceptance, RouteCommitment, Circuit*,
+  Contribution*) MUST serialize through `cbor::encode` and parse through `cbor::decode`.
+- **R1-001 — Identity binding**: the self-certifying Ed25519 node identity, the derived
+  `node_id`, strict detached signatures, and the durable fail-closed identity store with
+  the `sharenet-id` CLI as its real runtime path.
 
-## Layout
+Platform independence is proven by `cargo check --target wasm32-unknown-unknown`
+(architecture lock L007). No databases, no platform SDKs, no `unsafe` (the crate is
+`#![forbid(unsafe_code)]`).
 
-```text
-src/cbor.rs             Canonical CBOR profile v1 (strict encoder/decoder)
-src/identity.rs         NodeIdentity, node_id derivation, Ed25519 sign/verify
-src/store.rs            Durable identity file store (atomic, 0600, fail-closed)
-src/bin/sharenet-id.rs  Production CLI (create/show/verify/sign/verify-signature)
-src/hex.rs              Minimal hex helpers
-tests/cbor_conformance.rs  RFC 8949 vectors, golden vectors, property tests
-tests/cbor_reject.rs       Adversarial rejection suite (typed errors)
-tests/identity_adversarial.rs  RFC 8032 vectors, malleability, tamper matrix,
-                               zeroization, golden identity vectors
-tests/cli_runtime.rs     End-to-end CLI tests (real process, real files)
-tests/vectors/*.json     Machine-readable golden vectors for the future
-                         cross-language conformance harness (R1-003)
-```
+## Canonical CBOR Profile v1 (normative)
 
-## ShareNet Canonical CBOR Profile v1
+**Value model** (the only things that exist on the wire): `Int` (i64 range), `Bytes`,
+`Text` (UTF-8), `Array`, `Map` (unique keys, canonically sorted), `Bool`, `Null`.
 
-Value model: `Int (i64 range) | Bytes | Text | Array | Map (keys unique,
-canonically sorted) | Bool | Null`.
+**Encoding rules** (RFC 8949 core deterministic encoding, restricted):
 
-Wire rules (RFC 8949 core deterministic encoding + ShareNet profile):
+- integers (including lengths): minimal-length encoding only;
+- strings/arrays/maps: definite lengths only;
+- map keys: sorted by **bytewise lexicographic order of their canonical encodings**,
+  duplicates forbidden. (Bytewise comparison of the full key encodings is the ShareNet
+  rule. It coincides with RFC 8949 §4.2.1's "shorter key first, then bytewise" whenever
+  key encodings have equal length; the rules differ only for mixed-length key pairs
+  such as `24` vs `-1`. All ShareNet objects use small unsigned integer keys where both
+  rules agree. The choice is pinned by the exported vectors.)
+- text must be valid UTF-8;
+- allowed simple values: `false`/`true`/`null` only, in their single-byte forms.
 
-- integers: minimal-length encoding only;
-- byte strings / text strings / arrays / maps: definite lengths only;
-- map keys: unique, sorted by the **bytewise lexicographic order of their
-  full canonical encodings** (the length prefix is part of the key encoding:
-  text `"b"` (`61 62`) sorts before `"ab"` (`62 61 62`), and integer `0`
-  (`00`) sorts before `-1` (`20`));
-- text: must be valid UTF-8;
-- allowed simple values: `false`, `true`, `null` only;
-- forbidden on the wire (decoder rejects with a typed error; the encoder
-  cannot produce them): tags (incl. bignums), **all** floats (f16/f32/f64,
-  NaN, ±Inf), indefinite lengths, `undefined`, other simple values, trailing
-  bytes after a complete top-level item.
+**Forbidden on the wire** (encoder errors, decoder rejects with a typed error naming the
+violation): tags of any kind (incl. bignums); all floats (f16/f32/f64, NaN, Inf);
+indefinite lengths; `undefined` and any other simple value; trailing bytes after a
+complete top-level item; non-minimal integers; unsorted or duplicate map keys; invalid
+UTF-8; truncated input; empty input; integers outside the i64 range; nesting deeper than
+`MAX_DEPTH` (128).
 
-Strictness law (tested): for in-profile bytes `B`:
-`encode(decode(B)) == B` (byte-stability) and `decode(encode(x)) == x`.
+**Strictness law** (tested as both vectors and properties): for every in-profile byte
+string `B`: `encode(decode(B)) == B`; and for every encodable value `x`:
+`decode(encode(x)) == x`. Decoding arbitrary random bytes never panics; anything it
+accepts re-encodes to exactly itself.
 
-Implementation protections (documented deviations-by-addition, fail-closed):
-structural depth limit `cbor::MAX_DEPTH = 256`; declared definite lengths that
-exceed the remaining input are rejected before allocation.
-
-### API sketch
+## API
 
 ```rust
-use sharenet_protocol::cbor::{self, MapBuilder, Value};
+use sharenet_protocol::{cbor::{decode, encode, Value}, identity::Identity,
+                        store::IdentityStore};
 
-let value = MapBuilder::new()
-    .insert_int(1, Value::Int(1))
-    .insert_int(2, Value::Bytes(public_key.to_vec()))
-    .build()?;                      // sorted unique keys, typed error on dups
-let bytes = cbor::encode(&value)?;  // canonical bytes
-let back = cbor::decode(&bytes)?;   // strict: any violation is a typed error
+// Wire objects:
+let v = Value::Map(vec![
+    (Value::Int(1), Value::Int(1)),          // field 1: scheme_version = 1
+    (Value::Int(2), Value::Bytes(pub_key)),  // field 2: public_key
+]);
+let wire: Vec<u8> = encode(&v)?;              // canonical bytes (maps are sorted)
+let back: Value = decode(&wire)?;             // strict; typed errors on violation
+
+// Node identity (created/loaded at node startup):
+let store = IdentityStore::new("/var/lib/sharenet");
+let id = store.load_or_create(Some("human-readable-name"))?;  // generate-once semantics
+println!("node_id: {}", id.node_id());       // derived, never caller-chosen
+let sig = id.sign_detached(payload);          // detached Ed25519 (RFC 8032)
+id.node_identity().verify_detached(payload, &sig)?;  // strict: rejects malleable sigs
 ```
 
-`Value::get_by_int(k)` / `get_by_text(k)` give typed lookups for wire objects
-with compact integer keys (NodeIdentity uses keys 1..=4).
-
-## Node identity (R1-001)
-
-Wire object (strict v1; unknown keys rejected):
+### NodeIdentity wire object
 
 ```text
-NodeIdentity = {1: scheme_version (uint, =1),
-                2: public_key (32-byte bstr),
-                3: created_at_unix (uint),
-                4: display_name (optional text, <= 64 bytes)}
+{1: scheme_version (uint, =1),
+ 2: public_key (32-byte bstr, canonical Ed25519 point encoding),
+ 3: created_at_unix (uint),
+ 4: display_name (optional text, ≤ 64 UTF-8 bytes)}
 ```
 
-- Algorithm: Ed25519 (RFC 8032) via `ed25519-dalek` (zeroize feature on).
-  Verification is **strict**: malleable signatures (e.g. `S' = S + L`) and
-  non-canonical scalars are rejected (`verify_strict`).
-- `node_id` is **derived, never caller-chosen**:
-  `node_id = SHA-256(canonical_cbor({1: scheme_version, 2: public_key}))`
-  (32 bytes, lowercase hex for display).
-- `display_name` / `created_at_unix` are mutable metadata and are NOT part of
-  the derivation — the identity is self-certifying, and editing the name does
-  not change the `node_id`.
-- Detached signatures over arbitrary payloads: `NodeSigningKey::sign` /
-  `LoadedIdentity::sign`, `identity::verify_detached` (raw bytes in/out).
-- Secret material: the seed lives only in zeroize-on-drop types; `Debug`
-  impls are redacted; no public API returns seed bytes (only the store
-  materializes the seed, and only to persist it with 0600).
+`node_id = SHA-256(canonical_cbor({1: scheme_version, 2: public_key}))` (32 bytes, hex
+for display). The identity is self-certifying: knowing `node_id` binds you to the exact
+key material and scheme. `display_name` and `created_at_unix` are mutable metadata,
+deliberately NOT part of the derivation (renaming does not break the binding); tampering
+with `public_key` or `scheme_version` changes `node_id` and — on the stored file — fails
+closed (the seed must derive the exact public-key bytes).
 
-## Durable identity store
+Public-key encodings are validated for RFC 8032 canonical form (y < p) in addition to
+decompression, so one node has exactly one possible key byte image (and one `node_id`).
 
-File: `<dir>/node.sharenet-identity` (matches the repo `.gitignore` pattern
-`*.sharenet-identity`), strict canonical CBOR:
+## Durable identity store — persistence guarantees
+
+The identity file (`<dir>/identity.cbor`) is strict-canonical CBOR:
+`{1: seed (32-byte bstr), 2: NodeIdentity map}``.
+
+- **Atomic writes**: tmp file (same directory, `create_new`, 0600 from creation) →
+  `write` + `fsync` → pin permissions to exactly 0600 (umask cannot add bits, only
+  remove; the pin restores anything removed) → install **without clobbering**
+  (`hard_link` + `unlink`, which fails atomically if the destination exists; an
+  exists-check + `rename` fallback covers filesystems without hard links, with a
+  documented TOCTOU window in that fallback only) → parent-directory `fsync`.
+- **Fail-closed loads**: symlink at the path → refused; not a regular file → refused;
+  any permission bit beyond 0600 (unix) → refused; larger than 4 KiB → refused;
+  non-canonical CBOR, wrong shape, wrong scheme version, seed↔object mismatch → refused.
+  **The store never silently overwrites, recreates, or partially accepts.**
+- `IdentityStore::load_or_create(dir)` generates exactly once; a concurrent creator
+  that wins the race is loaded rather than clobbered.
+- The identity directory is created 0700 (unix) when the store has to make it; an
+  existing directory's permissions are not enforced.
+
+## sharenet-id CLI (the production runtime path)
 
 ```text
-{1: seed (32-byte bstr), 2: node_identity (NodeIdentity map)}
-```
-
-Guarantees:
-
-- **Atomic durable write**: unique temp file created with mode 0600 →
-  `fsync(file)` → `rename` → `fsync(parent dir)`. A crash never leaves a
-  half-written file under the final name; no temp files remain.
-- **Permissions**: exactly `0600` on unix (enforced at creation and after
-  write, umask-independent).
-- **Fail-closed load**: strict canonical decode, exact structural shape,
-  scheme check, 32-byte seed/public key, and a cryptographic cross-check
-  (seed-derived public key must equal the recorded public key). Any
-  corruption, tampering, seed/object mismatch, or non-0600 permissions is a
-  hard error. The store NEVER silently recreates or overwrites; a missing
-  file is the only trigger for creation.
-- What tampering is/isn't detected: seed or public-key edits fail closed
-  (cross-check); scheme/structure edits fail closed; `display_name` /
-  `created_at` edits are deliberately undetectable (unbound metadata) and
-  leave `node_id` unchanged; replacing the whole file (seed+object
-  consistently) is not detectable from the file alone — inherent to local
-  storage.
-
-### API
-
-```rust
-use sharenet_protocol::store::IdentityStore;
-
-// Daemon startup path:
-let (identity, created_new) = IdentityStore::load_or_create(&dir, Some("name"))?;
-let node_id = identity.node_id_hex();
-let sig = identity.sign(b"payload");
-IdentityStore::verify_file(&path)?;   // full re-validation, public data only
-```
-
-The directory is injectable (tests use tempdirs).
-
-## `sharenet-id` CLI (production runtime path)
-
-```text
-sharenet-id create --dir <DIR> [--name <NAME>]
-sharenet-id show --dir <DIR>                     # never prints the seed
-sharenet-id verify --dir <DIR>
-sharenet-id sign --dir <DIR> --payload <FILE> [--out <FILE>]   # default: <PAYLOAD>.sig
+sharenet-id create --dir <DIR> [--name <NAME>]        # generate + write; refuses existing
+sharenet-id show --dir <DIR>                          # node_id, pk, created_at, name; never the seed
+sharenet-id verify --dir <DIR>                         # strict re-validation (fail-closed)
+sharenet-id sign --dir <DIR> --payload <FILE> [--out <FILE>]   # detached signature
 sharenet-id verify-signature --identity-file <FILE> --payload <FILE> --signature <FILE>
 ```
 
-Exit codes: 0 success, 1 failure (actionable message on stderr), 2 usage
-error. Example:
+Exit codes: `0` success, `1` operational failure, `2` usage error. All failures print an
+actionable message to stderr. The future ShareNet daemon calls
+`IdentityStore::load_or_create` (the same API) at node startup.
 
-```console
-$ sharenet-id create --dir /tmp/nodeA --name nodeA
-status: created
-node_id: cd17d28a348ee16dc2f64c7f6ed5a951cf52068b68ec1ea57daa86d7f1dbcc78
-...
-$ sharenet-id sign --dir /tmp/nodeA --payload msg.bin
-node_id: cd17d2...
-signature_file: msg.bin.sig
-$ sharenet-id verify-signature --identity-file /tmp/nodeA/node.sharenet-identity \
-      --payload msg.bin --signature msg.bin.sig
-signature valid
+## Test vectors (for the R1-003 cross-language harness)
+
+`tests/vectors/cbor_vectors.json` — 45 roundtrip cases (decode → value, value →
+canonical bytes) and 57 reject cases (input → exact typed error name).
+`tests/vectors/identity_vectors.json` — 5 cases: fixed seeds (three RFC 8032 §7.1
+seeds), the exact `node_id` SHA-256 preimage, the NodeIdentity wire bytes, the identity
+file bytes, and deterministic detached signatures.
+
+- Validate the committed vectors: `cargo test --test test_vectors`
+- Regenerate after intentional changes: `cargo test --test test_vectors -- --ignored`
+
+## Verification commands
+
+```bash
+cargo test --workspace                        # 65 tests: unit + adversarial + conformance
+cargo check --target wasm32-unknown-unknown    # platform independence (L007)
+cargo clippy --workspace --all-targets         # clean
+cargo fmt --all --check                        # clean
 ```
 
-## Vectors (for the R1-003 cross-language harness)
+## Security notes, threat model and honest limits
 
-`tests/vectors/cbor_vectors.json` and `tests/vectors/identity_vectors.json`
-are machine-readable golden vectors:
+- **Strict verification**: signatures are verified with `verify_strict` (rejects
+  malleable signatures with a non-canonical `S`); wrong-length signatures are rejected
+  before verification; deterministic RFC 8032 signing (no RNG on the signing path).
+- **Zeroization**: the seed copy in `Identity` lives in `Zeroizing<[u8; 32]>`; the
+  `SigningKey` zeroizes on drop via the `ed25519-dalek` `zeroize` feature; seed transit
+  buffers in the store are zeroized and the encoded file bytes (which contain the seed)
+  are wrapped in a zeroize-on-drop buffer. Tests observe the zeroize primitives on live
+  buffers and assert the wiring by construction. **Limit:** observing memory after
+  deallocation would require `unsafe`, which this crate forbids — post-drop zeroization
+  is therefore trusted to the `zeroize` crate's guarantees rather than directly
+  observed. `Debug` for `Identity` redacts the seed.
+- **No public API hands out the raw secret bytes**; only the same-crate store can
+  request the seed (to write the 0600 file).
+- **Entropy**: unix hosts read 32 bytes from `/dev/urandom`; other platforms fail closed
+  with an actionable error (callers provide a seed via `Identity::from_seed`).
+- **Permissions** are enforced on unix only (the profile's rule is explicitly unix); on
+  platforms without POSIX modes the checks are skipped and documented.
+- **TOCTOU**: the load path stat → read window is not protected against a concurrent
+  replacement of the file by an attacker with write access to the directory; the write
+  path does not clobber, and symlinked identity files are refused. Host directory
+  integrity is assumed.
+- The identity file is the durable secret store by design (0600); its contents are not
+  zeroized on disk (deleting the file is the operator's revocation).
+- Hand-rolled CBOR encoder/decoder over an explicit value model: no codec dependency to
+  audit, fully deterministic, `#![forbid(unsafe_code)]`.
 
-- CBOR values are encoded as tagged JSON:
-  `{"t":"int","v":1}`, `{"t":"bytes","v":"<hex>"}`, `{"t":"text","v":"..."}`,
-  `{"t":"array","v":[...]}`, `{"t":"map","v":[[key,value],...]}`,
-  `{"t":"bool","v":true}`, `{"t":"null"}`.
-- `encode_cases` test both directions plus byte-stability; `reject_cases`
-  carry the expected typed error variant name.
-- Identity vectors cover seed → public key, `node_id` derivation, canonical
-  wire bytes, and Ed25519 signature acceptance/rejection (including the
-  malleable `S + L` case). RFC 8032 §7.1 vectors are included, so other
-  language implementations can be validated against the standard directly.
-- The files are kept in sync with the Rust case tables by
-  `*_vectors_file_is_in_sync` tests; regenerate after changing the tables:
+## Scope
 
-  ```console
-  cargo test --test cbor_conformance -- --ignored regenerate_cbor_vectors
-  cargo test --test identity_adversarial -- --ignored regenerate_identity_vectors
-  ```
-
-## Building and verification
-
-```console
-cargo test --workspace                       # unit + adversarial + conformance
-cargo run --bin share-id ...                 # (use: cargo run --bin sharenet-id -- ...)
-cargo check --target wasm32-unknown-unknown  # L007 platform-independence proof
-```
-
-Note on wasm32: `NodeSigningKey::generate()` and the store's creation path
-require an OS entropy source and are compiled only for
-`not(wasm32-unknown-unknown)` (getrandom cannot compile there). The CBOR and
-identity modules — the wire/protocol surface — compile everywhere; on bare
-wasm, construct keys with `NodeSigningKey::from_seed` from host-provided
-entropy.
-
-Dependencies (runtime): `ed25519-dalek` (+`curve25519-dalek`, `sha2`,
-`zeroize`, `rand` on non-bare-wasm). No async runtime, no platform SDKs, no
-database, no network stack. `#![forbid(unsafe_code)]` throughout.
-
-## Honest limits
-
-- Zeroization of the third-party `SigningKey`'s internal buffer cannot be
-  observed from safe code; the `zeroize` feature (which implements
-  `Drop → secret_key.zeroize()`) is enabled and the crate-side wiring
-  (`Zeroizing` seed buffers, scrubbed decoded values, redacted `Debug`) is
-  tested with a zeroize-aware probe.
-- No file locking: concurrent `load_or_create` in one directory may both
-  create; last atomic rename wins (one daemon per identity directory is the
-  v1 assumption).
-- Symlinked identity files are followed; the target's permissions are
-  checked.
-- The store requires exactly `0600` (more restrictive modes such as `0400`
-  are also rejected, with an actionable `chmod 600` message).
+Wave 1 only: `NodeIdentity` (the registry's foundation wire object), the CBOR profile,
+the identity store and CLI. Advertisement, LinkAuthentication, Route*, Circuit*,
+Contribution*, capabilities/admission, transports, ADCOS integration, and the
+cross-language harness are deliberately **not** here (R1-003/R1-004 and later waves).

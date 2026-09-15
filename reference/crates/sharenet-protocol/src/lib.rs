@@ -1,56 +1,66 @@
-//! # sharenet-protocol
+//! ShareNet protocol core — Rust implementation of the Wave 1 foundations
+//! (work items R1-001 identity binding and R1-002 canonical CBOR wire).
 //!
-//! ShareNet's platform-independent protocol core (Rust; architecture lock
-//! L007). This crate owns the canonical wire encoding and the cryptographic
-//! node identity for Wave 1 (work items R1-002 and R1-001).
+//! This crate is the protocol core's implementation home. Per `AGENTS.md` and
+//! architecture lock L007 it is platform-independent Rust with no database and no
+//! OS integration beyond the file I/O of the durable identity store; it compiles
+//! for `wasm32-unknown-unknown` (`cargo check --target wasm32-unknown-unknown`)
+//! to prove that independence.
 //!
-//! ## Who calls this crate (production callers)
+//! # Modules
 //!
-//! - **Every future ShareNet wire object** — `Advertisement`,
-//!   `LinkAuthentication`, `RouteProposal`, `RouteAcceptance`,
-//!   `RouteCommitment`, `CircuitSetup`, `ContributionReceipt`, ... as
-//!   registered in `spec/protocol-registry.yaml` — serializes through the
-//!   canonical CBOR profile in [`cbor`]. There is no second encoder; this
-//!   module is the single wire authority.
-//! - **Node startup**: the `sharenet-id` binary (and, later, the ShareNet
-//!   daemon at node startup) creates/loads the node identity through
-//!   [`store::IdentityStore::load_or_create`] — the exact same library API.
-//! - Detached signing/verification of arbitrary payloads flows through
-//!   [`identity::verify_detached`] and
-//!   [`store::LoadedIdentity::sign`].
+//! - [`cbor`]: ShareNet Canonical CBOR Profile v1 (R1-002). This is the ONE wire
+//!   serialization path for the protocol: every future normative wire object in
+//!   `spec/protocol-registry.yaml` (Advertisement, LinkAuthentication, RouteProposal,
+//!   RouteAcceptance, RouteCommitment, Circuit*, Contribution*) MUST serialize through
+//!   `cbor::encode` and parse through `cbor::decode`, so the whole network shares one
+//!   canonical byte image per object.
+//! - [`identity`]: the self-certifying node identity (R1-001): Ed25519 keys, the
+//!   NodeIdentity wire object, the derived `node_id`, and strict detached signatures.
+//! - [`store`]: the durable, atomic, fail-closed identity file store.
 //!
-//! ## Modules
+//! # Expected production callers
 //!
-//! - [`cbor`]: ShareNet Canonical CBOR Profile v1 (strict encoder/decoder,
-//!   byte-stable, typed rejection of every out-of-profile input).
-//! - [`identity`]: `NodeIdentity` wire object, derived `node_id`
-//!   (SHA-256 over canonical CBOR of scheme+public key), Ed25519
-//!   sign/verify with strict verification and zeroized secret keys.
-//! - [`store`]: durable identity file store — atomic writes, 0600
-//!   permissions, fail-closed loads.
-//! - [`hex`]: minimal hex helpers.
-//!
-//! ## Platform independence
-//!
-//! No platform, OS, database or network dependencies. The only I/O is plain
-//! `std::fs` in [`store`]. The crate compiles for `wasm32-unknown-unknown`
-//! (checked as the L007 architecture proof) — on targets without a real
-//! filesystem the store simply cannot be used, while `cbor`/`identity`
-//! remain fully functional.
-//!
-//! ## Security posture (summary)
-//!
-//! - `node_id` is always **derived**, never caller-chosen.
-//! - Identity loads **fail closed** on corruption, tampering, seed/object
-//!   mismatch, or insecure permissions.
-//! - Secret key material lives only in zeroize-on-drop types; `Debug`
-//!   output is redacted; no public API returns the seed.
-//! - Signature verification is strict (malleable/non-canonical signatures
-//!   are rejected).
+//! - Today: the `sharenet-id` binary (create/show/verify/sign/verify-signature) — a real
+//!   process performing real file I/O through the [`store::IdentityStore`] API.
+//! - Next: the future ShareNet daemon, which will create/load the node identity at
+//!   startup by calling `IdentityStore::load_or_create` — the same API — and every wire
+//!   object it sends or receives will be serialized through this CBOR profile.
+//! - The cross-language conformance harness (R1-003) consumes the JSON vectors under
+//!   `tests/vectors/`.
 
 #![forbid(unsafe_code)]
 
 pub mod cbor;
-pub mod hex;
 pub mod identity;
 pub mod store;
+
+pub use cbor::{decode, encode, DecodeError, EncodeError, Value};
+pub use identity::{
+    derive_node_id, Identity, IdentityError, NodeId, NodeIdentity, VerifyError,
+    MAX_DISPLAY_NAME_BYTES, NODE_ID_LEN, PUBLIC_KEY_LEN, SCHEME_VERSION, SEED_LEN, SIGNATURE_LEN,
+};
+pub use store::{load_identity_file, IdentityStore, StoreError, IDENTITY_FILE_NAME};
+
+#[cfg(test)]
+pub(crate) mod testutil {
+    /// Lowercase hex decoding for tests and vectors.
+    pub fn from_hex(s: &str) -> Vec<u8> {
+        let s = s.trim();
+        assert!(s.len().is_multiple_of(2), "odd-length hex string");
+        let mut out = Vec::with_capacity(s.len() / 2);
+        let bytes = s.as_bytes();
+        let nib = |c: u8| -> u8 {
+            match c {
+                b'0'..=b'9' => c - b'0',
+                b'a'..=b'f' => c - b'a' + 10,
+                b'A'..=b'F' => c - b'A' + 10,
+                _ => panic!("invalid hex digit"),
+            }
+        };
+        for pair in bytes.chunks(2) {
+            out.push((nib(pair[0]) << 4) | nib(pair[1]));
+        }
+        out
+    }
+}

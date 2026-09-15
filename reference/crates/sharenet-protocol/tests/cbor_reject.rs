@@ -1,404 +1,328 @@
-//! Adversarial rejection tests for the ShareNet Canonical CBOR Profile v1
-//! (R1-002). Every out-of-profile input class must be rejected with the
-//! exact typed error.
+//! Adversarial rejection tests for the ShareNet Canonical CBOR Profile v1 (R1-002).
+//!
+//! Every out-of-profile input must be rejected with the exact typed error naming the
+//! violation, and decoding must never panic on arbitrary bytes (fuzz below).
 
-#![forbid(unsafe_code)]
+mod common;
 
+use common::{from_hex, Rng};
 use sharenet_protocol::cbor::{decode, DecodeError};
-use sharenet_protocol::hex::decode as unhex;
 
-fn rejects(hex: &str) -> DecodeError {
-    let bytes = unhex(hex).expect("test hex is valid");
+fn expect_reject(hex: &str, want: fn(usize) -> DecodeError) {
+    let bytes = from_hex(hex);
     match decode(&bytes) {
-        Ok(v) => panic!("input {hex} must be rejected, decoded to {v:?}"),
-        Err(e) => e,
+        Err(e) => assert_eq!(e, want(hex.len()), "wrong error for {hex}: {e}"),
+        Ok(v) => panic!("input {hex} was wrongly ACCEPTED as {v:?}"),
     }
 }
 
 #[test]
-fn empty_input_is_rejected() {
+fn rejects_empty_and_trailing() {
+    // Empty input.
     assert_eq!(decode(&[]), Err(DecodeError::EmptyInput));
+    // Trailing garbage after a complete top-level item.
+    expect_reject("0000", |_| DecodeError::TrailingBytes { at: 1, count: 1 });
+    expect_reject("0102", |_| DecodeError::TrailingBytes { at: 1, count: 1 });
+    expect_reject("f4f5", |_| DecodeError::TrailingBytes { at: 1, count: 1 });
+    expect_reject("6061", |_| DecodeError::TrailingBytes { at: 1, count: 1 });
+    expect_reject("44ff00000000", |_| DecodeError::TrailingBytes {
+        at: 5,
+        count: 1,
+    });
 }
 
 #[test]
-fn non_minimal_integer_values_are_rejected() {
-    // 0 in one-byte form must be 0x00.
-    assert_eq!(
-        rejects("1800"),
-        DecodeError::NonMinimalInteger { at: 0 }
-    );
-    // 23 must be immediate.
-    assert_eq!(rejects("1817"), DecodeError::NonMinimalInteger { at: 0 });
-    // 24 must use uint8 form.
-    assert_eq!(rejects("190018"), DecodeError::NonMinimalInteger { at: 0 });
-    // 255 in uint16 form.
-    assert_eq!(rejects("1900ff"), DecodeError::NonMinimalInteger { at: 0 });
-    // 256 in uint32 form.
-    assert_eq!(
-        rejects("1a00000100"),
-        DecodeError::NonMinimalInteger { at: 0 }
-    );
-    // 65536 in uint64 form.
-    assert_eq!(
-        rejects("1b0000000000010000"),
-        DecodeError::NonMinimalInteger { at: 0 }
-    );
-    // -1 must be 0x20, not 0x38 0x00.
-    assert_eq!(rejects("3800"), DecodeError::NonMinimalInteger { at: 0 });
-    // -24 must be immediate 0x37.
-    assert_eq!(rejects("3817"), DecodeError::NonMinimalInteger { at: 0 });
+fn rejects_truncated_inputs() {
+    // Header present, argument missing.
+    expect_reject("18", |_| DecodeError::Truncated { at: 1 });
+    expect_reject("19", |_| DecodeError::Truncated { at: 1 });
+    expect_reject("1a", |_| DecodeError::Truncated { at: 1 });
+    expect_reject("1b", |_| DecodeError::Truncated { at: 1 });
+    // Byte string claims more than provided.
+    expect_reject("41", |_| DecodeError::Truncated { at: 1 });
+    expect_reject("43 0102".replace(' ', "").as_str(), |_| {
+        DecodeError::Truncated { at: 1 }
+    });
+    expect_reject("44010203", |_| DecodeError::Truncated { at: 1 });
+    // Text claims more than provided.
+    expect_reject("62 61".replace(' ', "").as_str(), |_| {
+        DecodeError::Truncated { at: 1 }
+    });
+    expect_reject("64 494554".replace(' ', "").as_str(), |_| {
+        DecodeError::Truncated { at: 1 }
+    });
+    // Array claims more items than provided.
+    expect_reject("8201", |_| DecodeError::Truncated { at: 2 });
+    expect_reject("830102", |_| DecodeError::Truncated { at: 3 });
+    // Map claims more pairs than provided.
+    expect_reject("a101", |_| DecodeError::Truncated { at: 2 });
+    expect_reject("a2010203", |_| DecodeError::Truncated { at: 4 });
+    // Tag head with missing argument.
+    expect_reject("d8", |_| DecodeError::Truncated { at: 1 });
+    // Two-byte simple with missing payload.
+    expect_reject("f8", |_| DecodeError::Truncated { at: 1 });
+    // Float heads are rejected at the head byte, payload or not.
+    expect_reject("fb3ff1", |_| DecodeError::FloatNotAllowed { at: 0 });
+    // Immediate tag is complete (rejected as tag, not truncated).
+    expect_reject("c100", |_| DecodeError::TagNotAllowed { at: 0, tag: 1 });
 }
 
 #[test]
-fn non_minimal_definite_lengths_are_rejected() {
-    // Byte string of length 3 must use 0x43.
-    assert_eq!(
-        rejects("5803414244"),
-        DecodeError::NonMinimalInteger { at: 0 }
-    );
-    // Text of length 5 must use 0x65.
-    assert_eq!(
-        rejects("790068656c6c6f"),
-        DecodeError::NonMinimalInteger { at: 0 }
-    );
-    // Array with 1 element must use 0x81.
-    assert_eq!(
-        rejects("980101"),
-        DecodeError::NonMinimalInteger { at: 0 }
-    );
-    // Map with 1 entry must use 0xa1.
-    assert_eq!(
-        rejects("b8000102"),
-        DecodeError::NonMinimalInteger { at: 0 }
-    );
+fn rejects_non_minimal_integers() {
+    // 0 encoded with a 1-byte argument.
+    expect_reject("1800", |_| DecodeError::NonMinimalInteger { at: 0 });
+    // 23 encoded with a 1-byte argument.
+    expect_reject("1817", |_| DecodeError::NonMinimalInteger { at: 0 });
+    // 24 with a 2-byte argument.
+    expect_reject("190018", |_| DecodeError::NonMinimalInteger { at: 0 });
+    // 255 with a 4-byte argument.
+    expect_reject("1a000000ff", |_| DecodeError::NonMinimalInteger { at: 0 });
+    // 65535 with an 8-byte argument.
+    expect_reject("1b000000000000ffff", |_| DecodeError::NonMinimalInteger {
+        at: 0,
+    });
+    // Negative: -24 fits in the immediate form (0x37), so 0x38 0x17 is non-minimal.
+    // (Note: -25 is 0x38 0x18 — that IS minimal; the 1-byte-arg class starts at -25.)
+    expect_reject("3817", |_| DecodeError::NonMinimalInteger { at: 0 });
+    expect_reject("390018", |_| DecodeError::NonMinimalInteger { at: 0 });
+    // Non-minimal lengths on strings/arrays/maps are equally rejected.
+    expect_reject("5800", |_| DecodeError::NonMinimalInteger { at: 0 }); // bstr len 0, wide form
+    expect_reject("9800", |_| DecodeError::NonMinimalInteger { at: 0 }); // array len 0, wide form
+    expect_reject("b800", |_| DecodeError::NonMinimalInteger { at: 0 }); // map len 0, wide form
+    expect_reject("d80000", |_| DecodeError::NonMinimalInteger { at: 0 }); // tag 0, wide form
 }
 
 #[test]
-fn indefinite_lengths_are_rejected_everywhere() {
-    // Integer with additional-info 31.
-    assert_eq!(rejects("1f"), DecodeError::IndefiniteLength { at: 0 });
-    // Indefinite byte string (open + break).
-    assert_eq!(rejects("5fff"), DecodeError::IndefiniteLength { at: 0 });
-    // Indefinite byte string with a chunk.
-    assert_eq!(
-        rejects("5f420102ff"),
-        DecodeError::IndefiniteLength { at: 0 }
-    );
-    // Indefinite text string.
-    assert_eq!(rejects("7f6161ff"), DecodeError::IndefiniteLength { at: 0 });
-    // Indefinite array.
-    assert_eq!(rejects("9f01ff"), DecodeError::IndefiniteLength { at: 0 });
-    // Indefinite array with several items.
-    assert_eq!(
-        rejects("9f010203ff"),
-        DecodeError::IndefiniteLength { at: 0 }
-    );
-    // Indefinite map.
-    assert_eq!(
-        rejects("bf0161afff"),
-        DecodeError::IndefiniteLength { at: 0 }
-    );
+fn rejects_out_of_range_integers() {
+    // 2^64-1 > i64::MAX.
+    expect_reject("1bffffffffffffffff", |_| DecodeError::IntegerOutOfRange {
+        at: 0,
+    });
+    // -2^64 < i64::MIN.
+    expect_reject("3bffffffffffffffff", |_| DecodeError::IntegerOutOfRange {
+        at: 0,
+    });
 }
 
 #[test]
-fn break_code_is_rejected() {
-    assert_eq!(rejects("ff"), DecodeError::BreakCode { at: 0 });
-    // Break inside a definite structure.
-    assert_eq!(rejects("81ff"), DecodeError::BreakCode { at: 1 });
+fn rejects_indefinite_lengths() {
+    expect_reject("9f", |_| DecodeError::IndefiniteLength { at: 0 }); // array
+    expect_reject("5f", |_| DecodeError::IndefiniteLength { at: 0 }); // bstr
+    expect_reject("7f", |_| DecodeError::IndefiniteLength { at: 0 }); // tstr
+    expect_reject("bf", |_| DecodeError::IndefiniteLength { at: 0 }); // map
+                                                                      // Indefinite forms with content are still rejected at the head.
+    expect_reject("9f01ff", |_| DecodeError::IndefiniteLength { at: 0 });
+    expect_reject("7f6161ff", |_| DecodeError::IndefiniteLength { at: 0 });
+    expect_reject("bf0102ff", |_| DecodeError::IndefiniteLength { at: 0 });
 }
 
 #[test]
-fn unsorted_map_keys_are_rejected() {
-    // {3: 4, 1: 2}
-    assert_eq!(rejects("a203040102"), DecodeError::UnsortedMapKeys { at: 3 });
-    // {"b": 1, "a": 2}: enc("b") = 61 62, enc("a") = 61 61 — the second key
-    // (header at offset 4) sorts lower bytewise.
-    assert_eq!(
-        rejects("a2616201616102"),
-        DecodeError::UnsortedMapKeys { at: 4 }
-    );
-    // Nested: outer sorted, inner unsorted; inner second key at offset 6.
-    assert_eq!(
-        rejects("a20102a203040102"),
-        DecodeError::UnsortedMapKeys { at: 6 }
-    );
+fn rejects_unsorted_and_duplicate_map_keys() {
+    // {2:1, 1:2}: unsorted (second key at offset 3).
+    expect_reject("a202010102", |_| DecodeError::UnsortedMapKeys { at: 3 });
+    // {1:2, 1:3}: duplicate (second key at offset 3).
+    expect_reject("a201020103", |_| DecodeError::DuplicateMapKey { at: 3 });
+    // {"b":1, "a":1}: unsorted text keys (second key at offset 4).
+    expect_reject("a2616201616101", |_| DecodeError::UnsortedMapKeys { at: 4 });
+    // {"a":1, "a":2}: duplicate text keys (second key at offset 4).
+    expect_reject("a2616101616102", |_| DecodeError::DuplicateMapKey { at: 4 });
+    // Negative key before smaller uint key: -1 (0x20) then 1 (0x01): unsorted at offset 3.
+    expect_reject("a220030102", |_| DecodeError::UnsortedMapKeys { at: 3 });
+    // Nested maps must be sorted too (second key of inner map at offset 4).
+    expect_reject("81a202010102", |_| DecodeError::UnsortedMapKeys { at: 4 });
 }
 
 #[test]
-fn duplicate_map_keys_are_rejected() {
-    // {1: 2, 1: 3}
-    assert_eq!(rejects("a201020103"), DecodeError::DuplicateMapKey { at: 3 });
-    // {1: {1: 2}, 2: {1: 2, 1: 3}}; the inner duplicate key sits at
-    // offset 9.
-    assert_eq!(
-        rejects("a201a1010202a201020103"),
-        DecodeError::DuplicateMapKey { at: 9 }
-    );
-}
-
-#[test]
-fn tags_are_rejected() {
-    assert_eq!(rejects("c000"), DecodeError::TagForbidden { at: 0, tag: 0 });
-    assert_eq!(rejects("c10a"), DecodeError::TagForbidden { at: 0, tag: 1 });
-    assert_eq!(rejects("ca00"), DecodeError::TagForbidden { at: 0, tag: 10 });
-    // Bignum (tag 2): would decode as 256 in permissive decoders.
-    assert_eq!(
-        rejects("c2420100"),
-        DecodeError::TagForbidden { at: 0, tag: 2 }
-    );
+fn rejects_tags() {
+    // Tag 0 (date/time) over an int.
+    expect_reject("c000", |_| DecodeError::TagNotAllowed { at: 0, tag: 0 });
+    // Tag 1 (epoch seconds).
+    expect_reject("c100", |_| DecodeError::TagNotAllowed { at: 0, tag: 1 });
+    // Tag 100 in the 1-byte-argument form.
+    expect_reject("d86400", |_| DecodeError::TagNotAllowed { at: 0, tag: 100 });
+    // Positive bignum (tag 2): 18446744073709551615.
+    expect_reject("c24b00ffffffffffffffff", |_| DecodeError::TagNotAllowed {
+        at: 0,
+        tag: 2,
+    });
     // Negative bignum (tag 3).
-    assert_eq!(
-        rejects("c349010000000000000000"),
-        DecodeError::TagForbidden { at: 0, tag: 3 }
-    );
-    // Tag 1 (epoch time) over an integer.
-    assert_eq!(
-        rejects("c11a514b67b0"),
-        DecodeError::TagForbidden { at: 0, tag: 1 }
-    );
+    expect_reject("c349010000000000000000", |_| DecodeError::TagNotAllowed {
+        at: 0,
+        tag: 3,
+    });
+    // Nested tag.
+    expect_reject("81c100", |_| DecodeError::TagNotAllowed { at: 1, tag: 1 });
 }
 
 #[test]
-fn floats_are_rejected_at_all_widths() {
-    assert_eq!(
-        rejects("f90000"),
-        DecodeError::FloatForbidden { at: 0, width_bytes: 2 }
-    );
-    assert_eq!(
-        rejects("fa00000000"),
-        DecodeError::FloatForbidden { at: 0, width_bytes: 4 }
-    );
-    assert_eq!(
-        rejects("fb0000000000000000"),
-        DecodeError::FloatForbidden { at: 0, width_bytes: 8 }
-    );
+fn rejects_floats() {
+    expect_reject("f90000", |_| DecodeError::FloatNotAllowed { at: 0 }); // 0.0 (f16)
+    expect_reject("f93c00", |_| DecodeError::FloatNotAllowed { at: 0 }); // 1.0 (f16)
+    expect_reject("f93e00", |_| DecodeError::FloatNotAllowed { at: 0 }); // 1.5 (f16)
+    expect_reject("f97c00", |_| DecodeError::FloatNotAllowed { at: 0 }); // +Inf
+    expect_reject("f9fc00", |_| DecodeError::FloatNotAllowed { at: 0 }); // -Inf
+    expect_reject("f97e00", |_| DecodeError::FloatNotAllowed { at: 0 }); // NaN
+    expect_reject("fa47c35000", |_| DecodeError::FloatNotAllowed { at: 0 }); // 100000.0 (f32)
+    expect_reject("fb8000000000000000", |_| DecodeError::FloatNotAllowed {
+        at: 0,
+    }); // -0.0 (f64)
+    expect_reject("fb3ff199999999999a", |_| DecodeError::FloatNotAllowed {
+        at: 0,
+    }); // 1.1
+        // Nested float.
+    expect_reject("81f97c00", |_| DecodeError::FloatNotAllowed { at: 1 });
 }
 
 #[test]
-fn nan_and_infinity_are_rejected() {
-    // f16 NaN and ±Inf.
-    assert_eq!(
-        rejects("f97e00"),
-        DecodeError::FloatForbidden { at: 0, width_bytes: 2 }
-    );
-    assert_eq!(
-        rejects("f97c00"),
-        DecodeError::FloatForbidden { at: 0, width_bytes: 2 }
-    );
-    assert_eq!(
-        rejects("f9fc00"),
-        DecodeError::FloatForbidden { at: 0, width_bytes: 2 }
-    );
-    // f64 NaN.
-    assert_eq!(
-        rejects("fb7ff8000000000000"),
-        DecodeError::FloatForbidden { at: 0, width_bytes: 8 }
-    );
-    // f32 +Inf.
-    assert_eq!(
-        rejects("fa7f800000"),
-        DecodeError::FloatForbidden { at: 0, width_bytes: 4 }
-    );
+fn rejects_undefined_and_other_simple_values() {
+    expect_reject("f7", |_| DecodeError::UndefinedNotAllowed { at: 0 });
+    // Simple values 0..=19 in single-byte form.
+    expect_reject("e0", |_| DecodeError::SimpleValueNotAllowed {
+        at: 0,
+        value: 0,
+    });
+    expect_reject("ef", |_| DecodeError::SimpleValueNotAllowed {
+        at: 0,
+        value: 15,
+    });
+    expect_reject("f3", |_| DecodeError::SimpleValueNotAllowed {
+        at: 0,
+        value: 19,
+    });
+    // Two-byte simple-value form (even for false/true/null payloads: non-canonical).
+    expect_reject("f814", |_| DecodeError::SimpleValueNotAllowed {
+        at: 0,
+        value: 20,
+    });
+    expect_reject("f815", |_| DecodeError::SimpleValueNotAllowed {
+        at: 0,
+        value: 21,
+    });
+    expect_reject("f816", |_| DecodeError::SimpleValueNotAllowed {
+        at: 0,
+        value: 22,
+    });
+    expect_reject("f8ff", |_| DecodeError::SimpleValueNotAllowed {
+        at: 0,
+        value: 255,
+    });
 }
 
 #[test]
-fn undefined_is_rejected() {
-    assert_eq!(
-        rejects("f7"),
-        DecodeError::SimpleValueForbidden { at: 0, value: 23 }
-    );
-    // undefined inside an array.
-    assert_eq!(
-        rejects("81f7"),
-        DecodeError::SimpleValueForbidden { at: 1, value: 23 }
-    );
+fn rejects_break_byte_and_reserved_heads() {
+    expect_reject("ff", |_| DecodeError::BreakByteNotAllowed { at: 0 });
+    // Reserved additional-info 28-30 across major types.
+    expect_reject("1c", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("1d", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("1e", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("1f", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("5c", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("7d", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("9e", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("be", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("dc", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("fc", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("fd", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    expect_reject("fe", |_| DecodeError::ReservedAdditionalInfo { at: 0 });
+    // Stray break byte after a complete item (also trailing, but break is the
+    // first violation encountered).
+    expect_reject("00ff", |_| DecodeError::TrailingBytes { at: 1, count: 1 });
 }
 
 #[test]
-fn other_simple_values_are_rejected() {
-    // Unassigned immediate simple values.
-    assert_eq!(
-        rejects("e0"),
-        DecodeError::SimpleValueForbidden { at: 0, value: 0 }
-    );
-    assert_eq!(
-        rejects("f3"),
-        DecodeError::SimpleValueForbidden { at: 0, value: 19 }
-    );
-    // Two-byte simple value 0.
-    assert_eq!(
-        rejects("f800"),
-        DecodeError::SimpleValueForbidden { at: 0, value: 0 }
-    );
-    // Two-byte simple value 32.
-    assert_eq!(
-        rejects("f820"),
-        DecodeError::SimpleValueForbidden { at: 0, value: 32 }
-    );
+fn rejects_invalid_utf8() {
+    expect_reject("61ff", |_| DecodeError::InvalidUtf8 { at: 0 });
+    expect_reject("62c328", |_| DecodeError::InvalidUtf8 { at: 0 }); // 0xc3 0x28
+    expect_reject("62c0af", |_| DecodeError::InvalidUtf8 { at: 0 }); // overlong encoding start
+    expect_reject("61f4", |_| DecodeError::InvalidUtf8 { at: 0 }); // lone 4-byte-sequence lead
+    expect_reject("62e6b0", |_| DecodeError::InvalidUtf8 { at: 0 }); // truncated 水 sequence
 }
 
 #[test]
-fn invalid_utf8_text_is_rejected() {
-    // 0xC3 0x28 is not valid UTF-8.
-    assert_eq!(rejects("62c328"), DecodeError::InvalidUtf8 { at: 0 });
-    // Overlong encoding 0xC0 0x80.
-    assert_eq!(rejects("62c080"), DecodeError::InvalidUtf8 { at: 0 });
-    // Lone continuation byte.
-    assert_eq!(rejects("6180"), DecodeError::InvalidUtf8 { at: 0 });
-    // Truncated multi-byte sequence as the whole text.
-    assert_eq!(rejects("61c3"), DecodeError::InvalidUtf8 { at: 0 });
-    // Invalid UTF-8 inside a map key (text header at offset 1).
-    assert_eq!(
-        rejects("a161806161"),
-        DecodeError::InvalidUtf8 { at: 1 }
-    );
+fn rejects_oversized_claims_without_allocating() {
+    // A 2^61-1-length byte string with no payload must fail as Truncated, quickly.
+    let huge = from_hex("5b7fffffffffffffff");
+    assert!(matches!(decode(&huge), Err(DecodeError::Truncated { .. })));
+    // Same for an array claiming a huge count with no items.
+    let huge = from_hex("9b7fffffffffffffff");
+    assert!(matches!(decode(&huge), Err(DecodeError::Truncated { .. })));
+    let huge = from_hex("bb7fffffffffffffff");
+    assert!(matches!(decode(&huge), Err(DecodeError::Truncated { .. })));
 }
 
 #[test]
-fn trailing_garbage_is_rejected() {
-    assert_eq!(
-        rejects("0000"),
-        DecodeError::TrailingBytes { at: 1, count: 1 }
-    );
-    assert_eq!(
-        rejects("01ff"),
-        DecodeError::TrailingBytes { at: 1, count: 1 }
-    );
-    // A complete map followed by a complete int.
-    assert_eq!(
-        rejects("a00101"),
-        DecodeError::TrailingBytes { at: 1, count: 2 }
-    );
-    // Trailing whitespace is still trailing.
-    assert_eq!(
-        rejects("0120"),
-        DecodeError::TrailingBytes { at: 1, count: 1 }
-    );
-}
-
-#[test]
-fn truncated_inputs_are_rejected() {
-    // Missing argument byte.
-    assert_eq!(
-        rejects("18"),
-        DecodeError::UnexpectedEnd { at: 0, needed: 1 }
-    );
-    // Half of a uint16 argument.
-    assert_eq!(
-        rejects("1903"),
-        DecodeError::UnexpectedEnd { at: 0, needed: 2 }
-    );
-    // Byte string body shorter than declared.
-    assert_eq!(
-        rejects("440102"),
-        DecodeError::LengthExceedsInput { at: 0, declared: 4 }
-    );
-    // Array header with element count exceeding remaining bytes.
-    assert_eq!(
-        rejects("82ff"),
-        DecodeError::LengthExceedsInput { at: 0, declared: 2 }
-    );
-    // Map value missing.
-    assert_eq!(
-        rejects("a101"),
-        DecodeError::UnexpectedEnd { at: 2, needed: 1 }
-    );
-    // Float payload missing.
-    assert_eq!(
-        rejects("fb0000"),
-        DecodeError::UnexpectedEnd { at: 0, needed: 8 }
-    );
-    // Text body missing entirely.
-    assert_eq!(
-        rejects("65"),
-        DecodeError::LengthExceedsInput { at: 0, declared: 5 }
-    );
-}
-
-#[test]
-fn integers_out_of_i64_range_are_rejected() {
-    // u64::MAX as unsigned.
-    assert_eq!(
-        rejects("1bffffffffffffffff"),
-        DecodeError::IntegerOutOfRange {
-            at: 0,
-            raw: u64::MAX
+fn fuzz_decode_never_panics_and_accepted_implies_canonical() {
+    // Arbitrary random bytes: decode must return (not panic) and, if it accepts,
+    // the strictness law must hold.
+    let mut rng = Rng::new(0xC805);
+    for len in 0..=48usize {
+        for _ in 0..400 {
+            let bytes: Vec<u8> = (0..len).map(|_| rng.next_byte()).collect();
+            if let Ok(v) = decode(&bytes) {
+                let re = sharenet_protocol::cbor::encode(&v).unwrap();
+                assert_eq!(
+                    re,
+                    bytes,
+                    "accepted non-canonical bytes: {}",
+                    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                );
+            }
         }
-    );
-    // -(u64::MAX + 1).
-    assert_eq!(
-        rejects("3bffffffffffffffff"),
-        DecodeError::IntegerNegativeOutOfRange {
-            at: 0,
-            raw: u64::MAX
-        }
-    );
-    // 2^63 as unsigned (i64::MAX + 1).
-    assert_eq!(
-        rejects("1b8000000000000000"),
-        DecodeError::IntegerOutOfRange {
-            at: 0,
-            raw: 1u64 << 63
-        }
-    );
+    }
+    // Some longer blobs too.
+    for _ in 0..200 {
+        let len = 49 + (rng.next_u64() % 512) as usize;
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next_byte()).collect();
+        let _ = decode(&bytes); // must not panic
+    }
 }
 
 #[test]
-fn reserved_additional_info_is_rejected() {
-    assert_eq!(
-        rejects("1c"),
-        DecodeError::ReservedAdditionalInfo { at: 0, info: 28 }
-    );
-    assert_eq!(
-        rejects("5c00010203"),
-        DecodeError::ReservedAdditionalInfo { at: 0, info: 28 }
-    );
-    assert_eq!(
-        rejects("1d"),
-        DecodeError::ReservedAdditionalInfo { at: 0, info: 29 }
-    );
-    assert_eq!(
-        rejects("1e"),
-        DecodeError::ReservedAdditionalInfo { at: 0, info: 30 }
-    );
+fn fuzz_mutated_valid_inputs_never_panic() {
+    let seeds = [
+        "a26161016162820203",
+        "8301820203820405",
+        "1b000000e8d4a51000",
+        "a21818022003",
+        "6449455446",
+        "a2010241ff03",
+    ];
+    let mut rng = Rng::new(0xfeed);
+    for s in seeds {
+        let base = from_hex(s);
+        // Truncations of every prefix length.
+        for cut in 0..base.len() {
+            let _ = decode(&base[..cut]);
+        }
+        // Appended garbage.
+        for extra in 0..4 {
+            let mut m = base.clone();
+            m.extend(std::iter::repeat_n(0xff, extra));
+            if let Ok(v) = decode(&m) {
+                // Only the un-mutated base can be valid; any extension is trailing.
+                assert!(extra == 0, "appended bytes were accepted for {s}");
+                let _ = v;
+            }
+        }
+        // Single-bit flips.
+        for pos in 0..base.len() {
+            for bit in 0..8u32 {
+                let mut m = base.clone();
+                m[pos] ^= 1 << bit;
+                if let Ok(v) = decode(&m) {
+                    let re = sharenet_protocol::cbor::encode(&v).unwrap();
+                    assert_eq!(re, m, "non-canonical acceptance for mutated {s}");
+                }
+            }
+        }
+        let _ = rng.next_byte();
+    }
 }
 
 #[test]
-fn hostile_declared_lengths_fail_closed() {
-    // Array claiming 2^32-1 elements.
-    assert_eq!(
-        rejects("9affffffff"),
-        DecodeError::LengthExceedsInput {
-            at: 0,
-            declared: 4294967295
-        }
-    );
-    // Map claiming 2^64-1 entries (0xBB = map + uint64 count).
-    assert_eq!(
-        rejects("bbffffffffffffffff"),
-        DecodeError::LengthExceedsInput {
-            at: 0,
-            declared: u64::MAX
-        }
-    );
-    // Byte string claiming 2^64-1 bytes.
-    assert_eq!(
-        rejects("5bffffffffffffffff"),
-        DecodeError::LengthExceedsInput {
-            at: 0,
-            declared: u64::MAX
-        }
-    );
-}
-
-#[test]
-fn depth_limit_is_enforced() {
-    let mut bytes = vec![0x81u8; sharenet_protocol::cbor::MAX_DEPTH + 1];
-    bytes.push(0x01);
-    assert_eq!(
-        decode(&bytes),
-        Err(DecodeError::DepthLimitExceeded {
-            at: sharenet_protocol::cbor::MAX_DEPTH + 1
-        })
-    );
+fn arbitrary_error_display_is_nonempty() {
+    // Sanity: the typed errors render actionable text.
+    let e = DecodeError::NonMinimalInteger { at: 7 };
+    assert!(e.to_string().contains("minimally"));
+    assert!(e.to_string().contains('7'));
 }

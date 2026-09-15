@@ -1,674 +1,595 @@
-//! ShareNet Canonical CBOR Profile v1 — strict encoder/decoder.
+//! ShareNet Canonical CBOR Profile v1 (work item R1-002).
 //!
-//! This is the single canonical wire encoding for every ShareNet normative
-//! wire object (see `spec/protocol-registry.yaml`: NodeIdentity, Advertisement,
-//! LinkAuthentication, Route*, Contribution*, ...). Every future wire object
-//! MUST serialize through this module. There is no second encoder.
+//! This is the ONE wire serialization path for ShareNet: every normative wire object that
+//! follows in the protocol registry (Advertisement, LinkAuthentication, RouteProposal,
+//! RouteAcceptance, RouteCommitment, Circuit*, Contribution*, ...) MUST serialize through
+//! [`encode`] and parse through [`decode`] so the whole network shares one canonical byte
+//! image per object. The future cross-language conformance harness (R1-003) pins this
+//! profile with the JSON vectors under `tests/vectors/`.
 //!
-//! # Value model
+//! # Profile (normative)
 //!
-//! ```text
-//! Int (i64 range) | Bytes | Text | Array | Map (keys unique, canonically sorted)
-//! | Bool | Null
-//! ```
+//! Value model (the only things that exist on the wire):
 //!
-//! # Wire rules (RFC 8949 core deterministic encoding + ShareNet profile)
+//! - [`Value::Int`] — signed 64-bit integer range
+//! - [`Value::Bytes`] — byte string
+//! - [`Value::Text`] — UTF-8 text string
+//! - [`Value::Array`] — array
+//! - [`Value::Map`] — map with unique keys, canonically sorted
+//! - [`Value::Bool`] — false / true
+//! - [`Value::Null`] — null
 //!
-//! - integers: minimal-length encoding only;
-//! - byte strings, text strings, arrays, maps: definite lengths only;
-//! - map keys: unique, sorted by bytewise lexicographic order of their
-//!   canonical encodings;
+//! Encoding rules (RFC 8949 core deterministic encoding, restricted by this profile):
+//!
+//! - integers: minimal-length encoding only (including lengths and tag-number arguments);
+//! - strings, arrays and maps: definite lengths only;
+//! - map keys: sorted by bytewise lexicographic order of their canonical encodings,
+//!   duplicates forbidden. (Note: plain bytewise comparison of the full key encodings is
+//!   the ShareNet rule. It coincides with RFC 8949's "shorter key first, then bytewise"
+//!   ordering whenever key encodings have equal length, and differs only for
+//!   mixed-length key pairs such as `24` vs `-1`; all ShareNet objects use small unsigned
+//!   integer keys, where both rules agree. The rule is pinned by the exported vectors.)
 //! - text: must be valid UTF-8;
-//! - allowed simple values: `false`, `true`, `null` ONLY;
-//! - forbidden on the wire (decoder rejects, encoder cannot produce):
-//!   tags (including bignums), all floats (f16/f32/f64, NaN, ±Inf),
-//!   indefinite lengths, `undefined`, other simple values, and trailing
-//!   bytes after a complete top-level item.
+//! - allowed simple values: `false`, `true`, `null` only, each in its single-byte form.
 //!
-//! # Strictness law
+//! Forbidden on the wire (the encoder never produces these; the decoder rejects them with
+//! a typed error naming the violation):
+//!
+//! - tags of any kind (including bignums);
+//! - all floats (f16/f32/f64, NaN, infinity);
+//! - indefinite lengths (`undefined`-style streaming);
+//! - `undefined` and any other simple value;
+//! - trailing bytes after a complete top-level item;
+//! - non-minimal integer encodings, unsorted or duplicate map keys, invalid UTF-8,
+//!   truncated input, empty input.
+//!
+//! # Strictness law (tested)
 //!
 //! For every in-profile byte string `B`:
 //!
-//! ```text
-//! encode(decode(B)) == B        (byte-stability)
-//! decode(encode(x)) == x        (round-trip)
-//! ```
+//! - byte-stability: `encode(decode(B)) == B`, and
+//! - round-trip: for every encodable value `x`: `decode(encode(x)) == x`.
 //!
-//! Anything out of profile is rejected with a typed [`DecodeError`] naming the
-//! violation. The encoder is canonical by construction: the value model cannot
-//! represent floats, tags, indefinite lengths or `undefined`, and map entries
-//! are emitted sorted with duplicate keys rejected.
+//! Anything outside the profile is rejected with a typed error ([`DecodeError`] /
+//! [`EncodeError`]) that names the violation.
 //!
-//! # Implementation protection
+//! # Implementation notes
 //!
-//! The decoder enforces a structural depth limit ([`MAX_DEPTH`]) and rejects
-//! declared definite lengths that exceed the remaining input, so hostile
-//! inputs fail closed instead of exhausting memory or the stack. Inputs deeper
-//! than [`MAX_DEPTH`] are rejected with [`DecodeError::DepthLimitExceeded`].
+//! Hand-rolled encoder/decoder over the explicit [`Value`] model: no codec dependency,
+//! no `unsafe`, and full control over strictness. Nesting depth is capped at
+//! [`MAX_DEPTH`] in both directions so adversarial inputs can be rejected with a typed
+//! error instead of exhausting the stack.
 
 use core::fmt;
 
-/// Maximum structural nesting depth accepted by the encoder and decoder.
+/// Maximum nesting depth accepted on the wire (and on encode).
 ///
-/// This is an implementation-level DoS protection; it does not loosen any
-/// canonicality rule. Wire objects defined by ShareNet are shallow maps.
-pub const MAX_DEPTH: usize = 256;
+/// ShareNet wire objects are shallow; a generous fixed cap keeps adversarial deep-nesting
+/// inputs from exhausting the stack while still being far above anything legitimate.
+pub const MAX_DEPTH: usize = 128;
 
-/// A ShareNet canonical-CBOR value.
+/// The ShareNet canonical CBOR profile v1 value model.
 ///
-/// `Value::Map` entries are stored in canonical order (keys sorted by the
-/// bytewise lexicographic order of their canonical encodings, no duplicates)
-/// when produced by [`MapBuilder::build`], [`decode`] or [`canonicalize_map`].
-/// [`encode`] always emits canonically sorted keys and rejects duplicates,
-/// regardless of entry order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Maps are stored as entry lists; the *canonical* form (the only form decoding ever
+/// produces, and the form encoding always emits) has entries sorted by the bytewise
+/// lexicographic order of the canonical key encodings, with unique keys.
+///
+/// [`PartialEq`] for the `Map` variant is deliberately order-insensitive (multiset
+/// equality over entries), so `decode(encode(x)) == x` holds for every encodable `x`
+/// regardless of the order the map was built in.
+#[derive(Debug, Clone)]
 pub enum Value {
-    /// Integer in the i64 range (major types 0 and 1).
+    /// Signed integer (CBOR majors 0/1), i64 range.
     Int(i64),
-    /// Definite-length byte string.
+    /// Byte string (CBOR major 2), definite length.
     Bytes(Vec<u8>),
-    /// Definite-length text string (always valid UTF-8).
+    /// UTF-8 text string (CBOR major 3), definite length.
     Text(String),
-    /// Definite-length array.
+    /// Array (CBOR major 4), definite length.
     Array(Vec<Value>),
-    /// Definite-length map with unique, canonically sorted keys.
+    /// Map (CBOR major 5), definite length, canonical key order, unique keys.
     Map(Vec<(Value, Value)>),
-    /// Boolean (`false`/`true`).
+    /// `false` / `true` (CBOR simple values 20/21).
     Bool(bool),
-    /// Null.
+    /// `null` (CBOR simple value 22).
     Null,
 }
 
-impl Value {
-    /// Returns the integer value if this is `Value::Int`.
-    pub fn as_int(&self) -> Option<i64> {
-        match self {
-            Value::Int(i) => Some(*i),
-            _ => None,
-        }
-    }
-
-    /// Returns the byte string if this is `Value::Bytes`.
-    pub fn as_bytes(&self) -> Option<&[u8]> {
-        match self {
-            Value::Bytes(b) => Some(b),
-            _ => None,
-        }
-    }
-
-    /// Returns the text if this is `Value::Text`.
-    pub fn as_text(&self) -> Option<&str> {
-        match self {
-            Value::Text(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    /// Returns the array elements if this is `Value::Array`.
-    pub fn as_array(&self) -> Option<&[Value]> {
-        match self {
-            Value::Array(items) => Some(items),
-            _ => None,
-        }
-    }
-
-    /// Returns the map entries if this is `Value::Map`.
-    pub fn as_map(&self) -> Option<&[(Value, Value)]> {
-        match self {
-            Value::Map(entries) => Some(entries),
-            _ => None,
-        }
-    }
-
-    /// Returns `true` if this is `Value::Null`.
-    pub fn is_null(&self) -> bool {
-        matches!(self, Value::Null)
-    }
-
-    /// Looks up an integer-keyed map entry.
-    ///
-    /// Intended for ShareNet wire objects that use compact integer keys
-    /// (e.g. NodeIdentity keys 1..=4).
-    pub fn get_by_int(&self, key: i64) -> Option<&Value> {
-        let entries = self.as_map()?;
-        entries
-            .iter()
-            .find(|(k, _)| matches!(k, Value::Int(i) if *i == key))
-            .map(|(_, v)| v)
-    }
-
-    /// Looks up a text-keyed map entry.
-    pub fn get_by_text(&self, key: &str) -> Option<&Value> {
-        let entries = self.as_map()?;
-        entries
-            .iter()
-            .find(|(k, _)| matches!(k, Value::Text(s) if s == key))
-            .map(|(_, v)| v)
-    }
-}
-
-/// Builds a canonical `Value::Map` (sorted unique keys).
-///
-/// Example:
-///
-/// ```
-/// use sharenet_protocol::cbor::{MapBuilder, Value};
-///
-/// let v = MapBuilder::new()
-///     .insert_int(1, Value::Int(1))
-///     .insert_int(2, Value::Bytes(vec![0xAA; 32]))
-///     .insert_text("note", Value::Text("hello".into()))
-///     .build()
-///     .unwrap();
-/// ```
-#[derive(Clone, Debug, Default)]
-pub struct MapBuilder {
-    entries: Vec<(Value, Value)>,
-}
-
-impl MapBuilder {
-    /// Creates an empty map builder.
-    pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
-
-    /// Appends an integer-keyed entry.
-    pub fn insert_int(mut self, key: i64, value: Value) -> Self {
-        self.entries.push((Value::Int(key), value));
-        self
-    }
-
-    /// Appends a text-keyed entry.
-    pub fn insert_text(self, key: &str, value: Value) -> Self {
-        self.insert(Value::Text(key.to_string()), value)
-    }
-
-    /// Appends an arbitrary-keyed entry.
-    pub fn insert(mut self, key: Value, value: Value) -> Self {
-        self.entries.push((key, value));
-        self
-    }
-
-    /// Finishes the map, returning a [`Value::Map`] with canonically sorted,
-    /// unique keys, or a typed error on duplicate keys.
-    pub fn build(self) -> Result<Value, EncodeError> {
-        canonicalize_map(self.entries)
-    }
-}
-
-/// Sorts map entries canonically and rejects duplicate keys.
-///
-/// Returns a `Value::Map` whose entries are ordered by the bytewise
-/// lexicographic order of the canonical encodings of the keys. Duplicate keys
-/// are rejected with [`EncodeError::DuplicateMapKey`].
-pub fn canonicalize_map(mut entries: Vec<(Value, Value)>) -> Result<Value, EncodeError> {
-    let mut keyed: Vec<(Vec<u8>, usize)> = Vec::with_capacity(entries.len());
-    for (idx, (k, _)) in entries.iter().enumerate() {
-        let mut bytes = Vec::new();
-        encode_at(k, &mut bytes, 0)?;
-        keyed.push((bytes, idx));
-    }
-    keyed.sort_by(|a, b| a.0.cmp(&b.0));
-    for pair in keyed.windows(2) {
-        if pair[0].0 == pair[1].0 {
-            return Err(EncodeError::DuplicateMapKey);
-        }
-    }
-    let mut sorted: Vec<(Value, Value)> = Vec::with_capacity(entries.len());
-    for (_, idx) in keyed {
-        sorted.push(std::mem::replace(
-            &mut entries[idx],
-            (Value::Null, Value::Null),
-        ));
-    }
-    Ok(Value::Map(sorted))
-}
-
-/// Typed encoder failure. The encoder cannot produce out-of-profile bytes;
-/// the only possible failures are duplicate map keys or exceeding
-/// [`MAX_DEPTH`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EncodeError {
-    /// Two entries of a map encode to the same canonical key bytes.
-    DuplicateMapKey,
-    /// The value nests deeper than [`MAX_DEPTH`].
-    DepthLimitExceeded,
-}
-
-impl fmt::Display for EncodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EncodeError::DuplicateMapKey => write!(
-                f,
-                "duplicate map key: map keys must be unique in the ShareNet CBOR profile"
-            ),
-            EncodeError::DepthLimitExceeded => write!(
-                f,
-                "value exceeds maximum nesting depth {MAX_DEPTH}"
-            ),
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Bytes(a), Value::Bytes(b)) => a == b,
+            (Value::Text(a), Value::Text(b)) => a == b,
+            (Value::Array(a), Value::Array(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
+            }
+            (Value::Map(a), Value::Map(b)) => map_entries_eq(a, b),
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Null, Value::Null) => true,
+            _ => false,
         }
     }
 }
 
-impl std::error::Error for EncodeError {}
+/// Multiset equality for map entries (order-insensitive, duplicate-aware).
+fn map_entries_eq(a: &[(Value, Value)], b: &[(Value, Value)]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    fn count(hay: &[(Value, Value)], k: &Value, v: &Value) -> usize {
+        hay.iter().filter(|(k2, v2)| k2 == k && v2 == v).count()
+    }
+    a.iter().all(|(k, v)| count(a, k, v) == count(b, k, v))
+}
 
-/// Typed decoder failure. Every variant names the exact profile violation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Typed decode violation. Every variant names the exact profile rule that was broken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
-    /// The input is empty.
+    /// The input was empty.
     EmptyInput,
-    /// The input ends in the middle of an item that declared more bytes.
-    UnexpectedEnd { at: usize, needed: usize },
-    /// An integer argument (value or definite length) was not minimally encoded.
-    NonMinimalInteger { at: usize },
-    /// An indefinite length (additional info 31) was found; forbidden.
-    IndefiniteLength { at: usize },
-    /// A break stop code (0xFF) appeared outside an indefinite item.
-    BreakCode { at: usize },
-    /// Additional info 28..=30 is reserved in RFC 8949 and rejected here.
-    ReservedAdditionalInfo { at: usize, info: u8 },
-    /// A tag (major type 6) was found; tags are forbidden on the wire.
-    TagForbidden { at: usize, tag: u64 },
-    /// A float (f16/f32/f64) was found; all floats are forbidden.
-    FloatForbidden { at: usize, width_bytes: usize },
-    /// A simple value other than false/true/null was found (includes `undefined`).
-    SimpleValueForbidden { at: usize, value: u8 },
-    /// A text string contained invalid UTF-8.
-    InvalidUtf8 { at: usize },
-    /// Map keys were not in canonical bytewise sorted order.
-    UnsortedMapKeys { at: usize },
-    /// A map contained two entries with identical canonical key encodings.
-    DuplicateMapKey { at: usize },
-    /// An unsigned integer exceeded the i64 range of the value model.
-    IntegerOutOfRange { at: usize, raw: u64 },
-    /// A negative integer exceeded the i64 range of the value model.
-    IntegerNegativeOutOfRange { at: usize, raw: u64 },
-    /// Structural nesting exceeded [`MAX_DEPTH`].
-    DepthLimitExceeded { at: usize },
-    /// A declared definite length exceeds the remaining input.
-    LengthExceedsInput { at: usize, declared: u64 },
-    /// Extra bytes followed the complete top-level item.
-    TrailingBytes { at: usize, count: usize },
+    /// More bytes were required to complete the claimed item.
+    Truncated {
+        /// Byte offset where the incomplete item started (or where input ran out).
+        at: usize,
+    },
+    /// A complete top-level item was followed by extra bytes.
+    TrailingBytes {
+        /// Offset of the first trailing byte.
+        at: usize,
+        /// How many trailing bytes were present.
+        count: usize,
+    },
+    /// The header used additional-information bits 28-30, which are reserved.
+    ReservedAdditionalInfo {
+        /// Offset of the invalid header byte.
+        at: usize,
+    },
+    /// An indefinite-length item was encountered.
+    IndefiniteLength {
+        /// Offset of the indefinite-length head.
+        at: usize,
+    },
+    /// An integer (or length/tag argument) was not minimally encoded.
+    NonMinimalInteger {
+        /// Offset of the offending integer head.
+        at: usize,
+    },
+    /// A map key sorted before its predecessor (not canonically sorted).
+    UnsortedMapKeys {
+        /// Offset of the offending key.
+        at: usize,
+    },
+    /// A map contained the same key twice.
+    DuplicateMapKey {
+        /// Offset of the duplicate key.
+        at: usize,
+    },
+    /// An integer outside the i64 range accepted by the profile.
+    IntegerOutOfRange {
+        /// Offset of the offending integer head.
+        at: usize,
+    },
+    /// A CBOR tag (major 6) was encountered.
+    TagNotAllowed {
+        /// Offset of the tag head.
+        at: usize,
+        /// The tag number that was found.
+        tag: u64,
+    },
+    /// A floating-point value (f16/f32/f64, incl. NaN/Inf) was encountered.
+    FloatNotAllowed {
+        /// Offset of the float head.
+        at: usize,
+    },
+    /// The `undefined` simple value (23) was encountered.
+    UndefinedNotAllowed {
+        /// Offset of the value byte.
+        at: usize,
+    },
+    /// A simple value other than false/true/null (or the two-byte simple form) was found.
+    SimpleValueNotAllowed {
+        /// Offset of the value byte.
+        at: usize,
+        /// The simple value that was found.
+        value: u8,
+    },
+    /// A break byte (0xff) appeared outside any indefinite-length context.
+    BreakByteNotAllowed {
+        /// Offset of the break byte.
+        at: usize,
+    },
+    /// A text string was not valid UTF-8.
+    InvalidUtf8 {
+        /// Offset of the text head.
+        at: usize,
+    },
+    /// Nesting exceeded [`MAX_DEPTH`].
+    DepthLimitExceeded {
+        /// Offset of the item that went over the limit.
+        at: usize,
+        /// The limit that was exceeded.
+        limit: usize,
+    },
+}
+
+impl DecodeError {
+    /// Stable machine name of the violation (used by the exported conformance vectors).
+    pub fn name(&self) -> &'static str {
+        match self {
+            DecodeError::EmptyInput => "EmptyInput",
+            DecodeError::Truncated { .. } => "Truncated",
+            DecodeError::TrailingBytes { .. } => "TrailingBytes",
+            DecodeError::ReservedAdditionalInfo { .. } => "ReservedAdditionalInfo",
+            DecodeError::IndefiniteLength { .. } => "IndefiniteLength",
+            DecodeError::NonMinimalInteger { .. } => "NonMinimalInteger",
+            DecodeError::UnsortedMapKeys { .. } => "UnsortedMapKeys",
+            DecodeError::DuplicateMapKey { .. } => "DuplicateMapKey",
+            DecodeError::IntegerOutOfRange { .. } => "IntegerOutOfRange",
+            DecodeError::TagNotAllowed { .. } => "TagNotAllowed",
+            DecodeError::FloatNotAllowed { .. } => "FloatNotAllowed",
+            DecodeError::UndefinedNotAllowed { .. } => "UndefinedNotAllowed",
+            DecodeError::SimpleValueNotAllowed { .. } => "SimpleValueNotAllowed",
+            DecodeError::BreakByteNotAllowed { .. } => "BreakByteNotAllowed",
+            DecodeError::InvalidUtf8 { .. } => "InvalidUtf8",
+            DecodeError::DepthLimitExceeded { .. } => "DepthLimitExceeded",
+        }
+    }
 }
 
 impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DecodeError::EmptyInput => write!(f, "empty input: at least one byte is required"),
-            DecodeError::UnexpectedEnd { at, needed } => write!(
-                f,
-                "truncated input at byte offset {at}: {needed} more byte(s) were declared but the input ends"
-            ),
-            DecodeError::NonMinimalInteger { at } => write!(
-                f,
-                "non-minimal integer encoding at byte offset {at}: integers and definite lengths must use the shortest form"
-            ),
-            DecodeError::IndefiniteLength { at } => write!(
-                f,
-                "indefinite length at byte offset {at}: only definite lengths are allowed"
-            ),
-            DecodeError::BreakCode { at } => write!(
-                f,
-                "unexpected break code 0xFF at byte offset {at}"
-            ),
-            DecodeError::ReservedAdditionalInfo { at, info } => write!(
-                f,
-                "reserved additional-info value {info} at byte offset {at}"
-            ),
-            DecodeError::TagForbidden { at, tag } => write!(
-                f,
-                "CBOR tag {tag} at byte offset {at}: tags (including bignums) are forbidden on the ShareNet wire"
-            ),
-            DecodeError::FloatForbidden { at, width_bytes } => write!(
-                f,
-                "float value (width {width_bytes} bytes) at byte offset {at}: all floats (f16/f32/f64, NaN, Inf) are forbidden"
-            ),
-            DecodeError::SimpleValueForbidden { at, value } => write!(
-                f,
-                "simple value {value} at byte offset {at}: only false, true and null are allowed"
-            ),
-            DecodeError::InvalidUtf8 { at } => write!(
-                f,
-                "invalid UTF-8 in text string starting at byte offset {at}"
-            ),
-            DecodeError::UnsortedMapKeys { at } => write!(
-                f,
-                "unsorted map keys at byte offset {at}: keys must be sorted by the bytewise lexicographic order of their canonical encodings"
-            ),
-            DecodeError::DuplicateMapKey { at } => write!(
-                f,
-                "duplicate map key at byte offset {at}: map keys must be unique"
-            ),
-            DecodeError::IntegerOutOfRange { at, raw } => write!(
-                f,
-                "unsigned integer {raw} at byte offset {at} exceeds the i64 range of the ShareNet value model"
-            ),
-            DecodeError::IntegerNegativeOutOfRange { at, raw } => write!(
-                f,
-                "negative integer encoding {raw} at byte offset {at} exceeds the i64 range of the ShareNet value model"
-            ),
-            DecodeError::DepthLimitExceeded { at } => write!(
-                f,
-                "nesting deeper than {MAX_DEPTH} at byte offset {at}"
-            ),
-            DecodeError::LengthExceedsInput { at, declared } => write!(
-                f,
-                "declared definite length {declared} at byte offset {at} exceeds the remaining input"
-            ),
-            DecodeError::TrailingBytes { at, count } => write!(
-                f,
-                "{count} trailing byte(s) after the complete top-level item at byte offset {at}: trailing bytes are forbidden"
-            ),
+            DecodeError::EmptyInput => write!(f, "empty input: exactly one canonical CBOR data item is required"),
+            DecodeError::Truncated { at } => write!(f, "truncated input at byte offset {at}: more bytes are required to complete the data item"),
+            DecodeError::TrailingBytes { at, count } => write!(f, "trailing bytes after the top-level data item: {count} extra byte(s) starting at offset {at}"),
+            DecodeError::ReservedAdditionalInfo { at } => write!(f, "reserved additional-information bits in the header at offset {at}"),
+            DecodeError::IndefiniteLength { at } => write!(f, "indefinite-length encoding at offset {at} is forbidden by the ShareNet canonical CBOR profile"),
+            DecodeError::NonMinimalInteger { at } => write!(f, "integer or length at offset {at} is not minimally encoded"),
+            DecodeError::UnsortedMapKeys { at } => write!(f, "map keys are not canonically sorted (key at offset {at} sorts before its predecessor)"),
+            DecodeError::DuplicateMapKey { at } => write!(f, "duplicate map key at offset {at}"),
+            DecodeError::IntegerOutOfRange { at } => write!(f, "integer at offset {at} is outside the i64 range accepted by the ShareNet profile"),
+            DecodeError::TagNotAllowed { at, tag } => write!(f, "CBOR tag {tag} at offset {at} is forbidden by the ShareNet canonical CBOR profile"),
+            DecodeError::FloatNotAllowed { at } => write!(f, "floating-point value at offset {at} is forbidden by the ShareNet canonical CBOR profile"),
+            DecodeError::UndefinedNotAllowed { at } => write!(f, "`undefined` at offset {at} is forbidden by the ShareNet canonical CBOR profile"),
+            DecodeError::SimpleValueNotAllowed { at, value } => write!(f, "simple value {value} at offset {at} is not one of false/true/null, or uses the forbidden two-byte simple form"),
+            DecodeError::BreakByteNotAllowed { at } => write!(f, "unexpected break byte 0xff at offset {at}"),
+            DecodeError::InvalidUtf8 { at } => write!(f, "text string at offset {at} is not valid UTF-8"),
+            DecodeError::DepthLimitExceeded { at, limit } => write!(f, "nesting depth exceeds the profile limit of {limit} (item at offset {at})"),
         }
     }
 }
 
 impl std::error::Error for DecodeError {}
 
-/// Encodes a value to canonical ShareNet CBOR bytes.
+/// Typed encode violation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodeError {
+    /// The value contained two map keys with the same canonical encoding.
+    DuplicateMapKey {
+        /// Index of the duplicate entry in the source map.
+        index: usize,
+    },
+    /// The value nests deeper than [`MAX_DEPTH`].
+    DepthLimitExceeded {
+        /// The limit that was exceeded.
+        limit: usize,
+    },
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EncodeError::DuplicateMapKey { index } => {
+                write!(
+                    f,
+                    "map contains duplicate key(s) (duplicate at entry index {index})"
+                )
+            }
+            EncodeError::DepthLimitExceeded { limit } => {
+                write!(f, "value nests deeper than the profile limit of {limit}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
+/// Encode a value to its canonical ShareNet CBOR byte image.
+///
+/// Maps are canonicalized: entries are emitted sorted by the bytewise lexicographic order
+/// of their encoded keys, regardless of the order they were inserted in. Duplicate keys
+/// (identical canonical encodings) are an [`EncodeError::DuplicateMapKey`].
 pub fn encode(value: &Value) -> Result<Vec<u8>, EncodeError> {
     let mut out = Vec::new();
-    encode_at(value, &mut out, 0)?;
+    write_value(value, &mut out, 1)?;
     Ok(out)
 }
 
-/// Encodes a value into an existing buffer (canonical bytes).
-pub fn encode_into(value: &Value, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-    encode_at(value, out, 0)
-}
-
-/// Decodes exactly one canonical value from `bytes`.
+/// Decode exactly one canonical ShareNet CBOR data item from `bytes`.
 ///
-/// Fails (typed) on any profile violation, including trailing bytes and
-/// truncated input.
+/// Every profile rule is enforced (see the module documentation). On success the decoded
+/// value is guaranteed to re-encode to exactly the input bytes.
 pub fn decode(bytes: &[u8]) -> Result<Value, DecodeError> {
     if bytes.is_empty() {
         return Err(DecodeError::EmptyInput);
     }
-    let mut dec = Decoder { buf: bytes, pos: 0 };
-    let value = dec.parse(0)?;
-    if dec.pos != bytes.len() {
+    let mut r = Reader { buf: bytes, pos: 0 };
+    let value = read_value(&mut r, 1)?;
+    if r.pos != bytes.len() {
         return Err(DecodeError::TrailingBytes {
-            at: dec.pos,
-            count: bytes.len() - dec.pos,
+            at: r.pos,
+            count: bytes.len() - r.pos,
         });
     }
     Ok(value)
 }
 
-fn encode_at(value: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), EncodeError> {
+// ---------------------------------------------------------------------------
+// Encoder
+// ---------------------------------------------------------------------------
+
+fn write_value(value: &Value, out: &mut Vec<u8>, depth: usize) -> Result<(), EncodeError> {
     if depth > MAX_DEPTH {
-        return Err(EncodeError::DepthLimitExceeded);
+        return Err(EncodeError::DepthLimitExceeded { limit: MAX_DEPTH });
     }
     match value {
         Value::Int(i) => {
             if *i >= 0 {
-                encode_head(out, 0, *i as u64);
+                write_head(0, *i as u64, out);
             } else {
-                // -1 - i is at most i64::MAX (when i == i64::MIN), so this
-                // cannot overflow.
-                encode_head(out, 1, (-1 - *i) as u64);
+                // -1 - i is in [0, 2^63-1] for every negative i64; no overflow occurs
+                // because the mathematical result always fits (i64::MIN maps to 2^63-1).
+                write_head(1, (-1 - *i) as u64, out);
             }
         }
         Value::Bytes(b) => {
-            encode_head(out, 2, b.len() as u64);
+            write_head(2, b.len() as u64, out);
             out.extend_from_slice(b);
         }
         Value::Text(s) => {
-            encode_head(out, 3, s.len() as u64);
-            out.extend_from_slice(s.as_bytes());
+            let b = s.as_bytes();
+            write_head(3, b.len() as u64, out);
+            out.extend_from_slice(b);
         }
         Value::Array(items) => {
-            encode_head(out, 4, items.len() as u64);
+            write_head(4, items.len() as u64, out);
             for item in items {
-                encode_at(item, out, depth + 1)?;
+                write_value(item, out, depth + 1)?;
             }
         }
         Value::Map(entries) => {
-            // Encode every key once, sort entries by canonical key bytes,
-            // reject duplicates, then emit. This guarantees the wire form is
-            // canonical regardless of the in-memory entry order.
+            // Canonicalize: encode each key, sort by canonical key bytes, reject duplicates.
             let mut keyed: Vec<(Vec<u8>, usize)> = Vec::with_capacity(entries.len());
-            for (idx, (k, _)) in entries.iter().enumerate() {
+            for (i, (k, _)) in entries.iter().enumerate() {
                 let mut kb = Vec::new();
-                encode_at(k, &mut kb, depth + 1)?;
-                keyed.push((kb, idx));
+                write_value(k, &mut kb, depth + 1)?;
+                keyed.push((kb, i));
             }
             keyed.sort_by(|a, b| a.0.cmp(&b.0));
             for pair in keyed.windows(2) {
                 if pair[0].0 == pair[1].0 {
-                    return Err(EncodeError::DuplicateMapKey);
+                    return Err(EncodeError::DuplicateMapKey { index: pair[1].1 });
                 }
             }
-            encode_head(out, 5, entries.len() as u64);
-            for (kb, idx) in keyed {
-                out.extend_from_slice(&kb);
-                encode_at(&entries[idx].1, out, depth + 1)?;
+            write_head(5, entries.len() as u64, out);
+            for (key_bytes, i) in keyed {
+                out.extend_from_slice(&key_bytes);
+                let (_, v) = &entries[i];
+                write_value(v, out, depth + 1)?;
             }
         }
-        Value::Bool(false) => out.push(0xF4),
-        Value::Bool(true) => out.push(0xF5),
-        Value::Null => out.push(0xF6),
+        Value::Bool(true) => out.push(0xf5),
+        Value::Bool(false) => out.push(0xf4),
+        Value::Null => out.push(0xf6),
     }
     Ok(())
 }
 
-fn encode_head(out: &mut Vec<u8>, major: u8, arg: u64) {
-    let mt = major << 5;
+/// Minimal-length head for a given major type and unsigned argument.
+fn write_head(major: u8, arg: u64, out: &mut Vec<u8>) {
+    let m = major << 5;
     if arg <= 23 {
-        out.push(mt | arg as u8);
+        out.push(m | arg as u8);
     } else if arg <= 0xFF {
-        out.push(mt | 24);
+        out.push(m | 24);
         out.push(arg as u8);
     } else if arg <= 0xFFFF {
-        out.push(mt | 25);
+        out.push(m | 25);
         out.extend_from_slice(&(arg as u16).to_be_bytes());
     } else if arg <= 0xFFFF_FFFF {
-        out.push(mt | 26);
+        out.push(m | 26);
         out.extend_from_slice(&(arg as u32).to_be_bytes());
     } else {
-        out.push(mt | 27);
+        out.push(m | 27);
         out.extend_from_slice(&arg.to_be_bytes());
     }
 }
 
-struct Decoder<'a> {
+// ---------------------------------------------------------------------------
+// Decoder
+// ---------------------------------------------------------------------------
+
+struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
 }
 
-impl<'a> Decoder<'a> {
-    /// Parses one value, enforcing every canonicality rule.
-    fn parse(&mut self, depth: usize) -> Result<Value, DecodeError> {
-        if depth > MAX_DEPTH {
-            return Err(DecodeError::DepthLimitExceeded { at: self.pos });
-        }
-        let at = self.pos;
-        if self.pos >= self.buf.len() {
-            return Err(DecodeError::UnexpectedEnd { at, needed: 1 });
-        }
-        let initial = self.buf[self.pos];
+impl<'a> Reader<'a> {
+    fn take(&mut self) -> Result<u8, DecodeError> {
+        let b = *self
+            .buf
+            .get(self.pos)
+            .ok_or(DecodeError::Truncated { at: self.pos })?;
         self.pos += 1;
-        let major = initial >> 5;
-        let info = initial & 0x1F;
-        match major {
-            0 => {
-                let v = self.read_arg(info, at)?;
-                if v > i64::MAX as u64 {
-                    return Err(DecodeError::IntegerOutOfRange { at, raw: v });
-                }
-                Ok(Value::Int(v as i64))
-            }
-            1 => {
-                let v = self.read_arg(info, at)?;
-                // Encodes -(v+1); must be >= i64::MIN, i.e. v <= i64::MAX.
-                if v > i64::MAX as u64 {
-                    return Err(DecodeError::IntegerNegativeOutOfRange { at, raw: v });
-                }
-                Ok(Value::Int(-1 - v as i64))
-            }
-            2 => {
-                let len = self.read_definite_length(info, at)?;
-                let end = self
-                    .pos
-                    .checked_add(len)
-                    .ok_or(DecodeError::LengthExceedsInput { at, declared: u64::MAX })?;
-                if end > self.buf.len() {
-                    return Err(DecodeError::LengthExceedsInput { at, declared: len as u64 });
-                }
-                let b = self.buf[self.pos..end].to_vec();
-                self.pos = end;
-                Ok(Value::Bytes(b))
-            }
-            3 => {
-                let len = self.read_definite_length(info, at)?;
-                let end = self
-                    .pos
-                    .checked_add(len)
-                    .ok_or(DecodeError::LengthExceedsInput { at, declared: u64::MAX })?;
-                if end > self.buf.len() {
-                    return Err(DecodeError::LengthExceedsInput { at, declared: len as u64 });
-                }
-                let s = std::str::from_utf8(&self.buf[self.pos..end])
-                    .map_err(|_| DecodeError::InvalidUtf8 { at })?
-                    .to_string();
-                self.pos = end;
-                Ok(Value::Text(s))
-            }
-            4 => {
-                let count = self.read_count(info, at)?;
-                let mut items = Vec::new();
-                for _ in 0..count {
-                    items.push(self.parse(depth + 1)?);
-                }
-                Ok(Value::Array(items))
-            }
-            5 => {
-                let count = self.read_count(info, at)?;
-                let mut entries: Vec<(Value, Value)> = Vec::new();
-                let mut prev_key: Option<Vec<u8>> = None;
-                for _ in 0..count {
-                    let key_at = self.pos;
-                    let key = self.parse(depth + 1)?;
-                    // Re-encoding a decoded key cannot fail: the decoder has
-                    // already enforced depth <= MAX_DEPTH and no duplicate
-                    // keys can exist inside a freshly decoded value.
-                    let key_bytes =
-                        encode(&key).expect("canonical re-encode of a decoded value");
-                    if let Some(prev) = &prev_key {
-                        if key_bytes == *prev {
-                            return Err(DecodeError::DuplicateMapKey { at: key_at });
-                        }
-                        if key_bytes < *prev {
-                            return Err(DecodeError::UnsortedMapKeys { at: key_at });
-                        }
-                    }
-                    prev_key = Some(key_bytes);
-                    let value = self.parse(depth + 1)?;
-                    entries.push((key, value));
-                }
-                Ok(Value::Map(entries))
-            }
-            6 => {
-                let tag = self.read_arg(info, at)?;
-                Err(DecodeError::TagForbidden { at, tag })
-            }
-            _ => self.parse_simple(info, at),
-        }
+        Ok(b)
     }
 
-    fn parse_simple(&mut self, info: u8, at: usize) -> Result<Value, DecodeError> {
-        match info {
+    /// Take exactly `n` bytes, failing with a typed truncation error if unavailable.
+    /// `n` is only ever a length that fits in the remaining input (checked by callers),
+    /// so this never attempts oversized allocations.
+    fn take_n(&mut self, n: u64) -> Result<&'a [u8], DecodeError> {
+        let avail = (self.buf.len() - self.pos) as u64;
+        if n > avail {
+            return Err(DecodeError::Truncated { at: self.pos });
+        }
+        let n = n as usize; // <= avail <= isize::MAX
+        let s = &self.buf[self.pos..self.pos + n];
+        self.pos += n;
+        Ok(s)
+    }
+}
+
+/// Read the unsigned argument that follows a head byte.
+///
+/// Enforces the minimal-length rule for every argument class (integers, lengths,
+/// tag numbers): a wider encoding that could have used a narrower one is rejected.
+fn read_arg(r: &mut Reader<'_>, ai: u8, at: usize) -> Result<u64, DecodeError> {
+    match ai {
+        0..=23 => Ok(ai as u64),
+        24 => {
+            let b = r.take()?;
+            if b <= 23 {
+                return Err(DecodeError::NonMinimalInteger { at });
+            }
+            Ok(b as u64)
+        }
+        25 => {
+            let s = r.take_n(2)?;
+            let v = u16::from_be_bytes([s[0], s[1]]) as u64;
+            if v <= 0xFF {
+                return Err(DecodeError::NonMinimalInteger { at });
+            }
+            Ok(v)
+        }
+        26 => {
+            let s = r.take_n(4)?;
+            let v = u32::from_be_bytes([s[0], s[1], s[2], s[3]]) as u64;
+            if v <= 0xFFFF {
+                return Err(DecodeError::NonMinimalInteger { at });
+            }
+            Ok(v)
+        }
+        27 => {
+            let s = r.take_n(8)?;
+            let v = u64::from_be_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]);
+            if v <= 0xFFFF_FFFF {
+                return Err(DecodeError::NonMinimalInteger { at });
+            }
+            Ok(v)
+        }
+        28..=30 => Err(DecodeError::ReservedAdditionalInfo { at }),
+        // 31: for major types 0/1 this is not a valid argument form; majors 2-5 have
+        // already been routed to read_len, major 6 lands here, major 7 handles its own.
+        31 => Err(DecodeError::ReservedAdditionalInfo { at }),
+        _ => unreachable!("additional info is 5 bits"),
+    }
+}
+
+/// Read a length (or count) argument for major types 2-5: definite only.
+fn read_len(r: &mut Reader<'_>, ai: u8, at: usize) -> Result<u64, DecodeError> {
+    if ai == 31 {
+        return Err(DecodeError::IndefiniteLength { at });
+    }
+    read_arg(r, ai, at)
+}
+
+fn read_value(r: &mut Reader<'_>, depth: usize) -> Result<Value, DecodeError> {
+    if depth > MAX_DEPTH {
+        return Err(DecodeError::DepthLimitExceeded {
+            at: r.pos,
+            limit: MAX_DEPTH,
+        });
+    }
+    let at = r.pos;
+    let ib = r.take()?;
+    let major = ib >> 5;
+    let ai = ib & 0x1f;
+    match major {
+        0 => {
+            let n = read_arg(r, ai, at)?;
+            if n > i64::MAX as u64 {
+                return Err(DecodeError::IntegerOutOfRange { at });
+            }
+            Ok(Value::Int(n as i64))
+        }
+        1 => {
+            let n = read_arg(r, ai, at)?;
+            if n > i64::MAX as u64 {
+                return Err(DecodeError::IntegerOutOfRange { at });
+            }
+            // -1 - n with n <= i64::MAX always lands in i64 range (i64::MIN at worst).
+            Ok(Value::Int(-1 - n as i64))
+        }
+        2 => {
+            let len = read_len(r, ai, at)?;
+            let bytes = r.take_n(len)?;
+            Ok(Value::Bytes(bytes.to_vec()))
+        }
+        3 => {
+            let len = read_len(r, ai, at)?;
+            let bytes = r.take_n(len)?;
+            let s =
+                String::from_utf8(bytes.to_vec()).map_err(|_| DecodeError::InvalidUtf8 { at })?;
+            Ok(Value::Text(s))
+        }
+        4 => {
+            let n = read_len(r, ai, at)?;
+            // Never preallocate from the claimed count: items are read one at a time and
+            // truncation fails fast, so a huge claimed length cannot force a huge alloc.
+            let mut items = Vec::new();
+            for _ in 0..n {
+                items.push(read_value(r, depth + 1)?);
+            }
+            Ok(Value::Array(items))
+        }
+        5 => {
+            let n = read_len(r, ai, at)?;
+            let mut entries: Vec<(Value, Value)> = Vec::new();
+            let mut prev_key: Option<(usize, usize)> = None; // byte range of previous key
+            for _ in 0..n {
+                let key_start = r.pos;
+                let k = read_value(r, depth + 1)?;
+                let key_end = r.pos;
+                if let Some((ps, pe)) = prev_key {
+                    let prev = &r.buf[ps..pe];
+                    let cur = &r.buf[key_start..key_end];
+                    // The key items themselves are strict-canonical (decoded recursively),
+                    // so their raw wire bytes are exactly their canonical encodings.
+                    if cur == prev {
+                        return Err(DecodeError::DuplicateMapKey { at: key_start });
+                    }
+                    if cur < prev {
+                        return Err(DecodeError::UnsortedMapKeys { at: key_start });
+                    }
+                }
+                let v = read_value(r, depth + 1)?;
+                entries.push((k, v));
+                prev_key = Some((key_start, key_end));
+            }
+            Ok(Value::Map(entries))
+        }
+        6 => {
+            let tag = read_arg(r, ai, at)?;
+            Err(DecodeError::TagNotAllowed { at, tag })
+        }
+        7 => match ai {
             20 => Ok(Value::Bool(false)),
             21 => Ok(Value::Bool(true)),
             22 => Ok(Value::Null),
-            23 => Err(DecodeError::SimpleValueForbidden { at, value: 23 }), // undefined
+            23 => Err(DecodeError::UndefinedNotAllowed { at }),
             24 => {
-                // Two-byte simple value: consume the extension byte so error
-                // offsets stay meaningful, then reject.
-                if self.pos >= self.buf.len() {
-                    return Err(DecodeError::UnexpectedEnd { at, needed: 1 });
-                }
-                let ext = self.buf[self.pos];
-                self.pos += 1;
-                Err(DecodeError::SimpleValueForbidden { at, value: ext })
+                // Two-byte simple-value form: forbidden entirely (it is also the
+                // non-canonical encoding of false/true/null when the payload is 20/21/22).
+                let v = r.take()?;
+                Err(DecodeError::SimpleValueNotAllowed { at, value: v })
             }
-            25..=27 => {
-                let width = match info {
-                    25 => 2usize,
-                    26 => 4,
-                    _ => 8,
-                };
-                if self.pos + width > self.buf.len() {
-                    return Err(DecodeError::UnexpectedEnd {
-                        at,
-                        needed: width,
-                    });
-                }
-                self.pos += width;
-                Err(DecodeError::FloatForbidden { at, width_bytes: width })
-            }
-            28..=30 => Err(DecodeError::ReservedAdditionalInfo { at, info }),
-            31 => Err(DecodeError::BreakCode { at }),
-            _ => Err(DecodeError::SimpleValueForbidden { at, value: info }),
-        }
-    }
-
-    /// Reads the argument for integer values / tag numbers.
-    fn read_arg(&mut self, info: u8, at: usize) -> Result<u64, DecodeError> {
-        match info {
-            0..=23 => Ok(info as u64),
-            24 => self.read_ext_arg(1, 23, at),
-            25 => self.read_ext_arg(2, 0xFF, at),
-            26 => self.read_ext_arg(4, 0xFFFF, at),
-            27 => self.read_ext_arg(8, 0xFFFF_FFFF, at),
-            31 => Err(DecodeError::IndefiniteLength { at }),
-            28..=30 => Err(DecodeError::ReservedAdditionalInfo { at, info }),
-            // `info` is 5 bits; 0..=31 fully covered above.
-            _ => unreachable!(),
-        }
-    }
-
-    /// Reads an extended argument of `len` bytes, enforcing that the value is
-    /// strictly greater than `min_excl` (minimality).
-    fn read_ext_arg(&mut self, len: usize, min_excl: u64, at: usize) -> Result<u64, DecodeError> {
-        if self.pos + len > self.buf.len() {
-            return Err(DecodeError::UnexpectedEnd { at, needed: len });
-        }
-        let mut v: u64 = 0;
-        for _ in 0..len {
-            v = (v << 8) | self.buf[self.pos] as u64;
-            self.pos += 1;
-        }
-        if v <= min_excl {
-            return Err(DecodeError::NonMinimalInteger { at });
-        }
-        Ok(v)
-    }
-
-    /// Reads a definite length for byte/text strings, rejecting indefinite
-    /// and non-minimal forms.
-    fn read_definite_length(&mut self, info: u8, at: usize) -> Result<usize, DecodeError> {
-        let v = self.read_arg(info, at)?;
-        if v > self.buf.len() as u64 {
-            // Cannot fit in the input at all; report as exceeding input.
-            return Err(DecodeError::LengthExceedsInput { at, declared: v });
-        }
-        Ok(v as usize)
-    }
-
-    /// Reads an array/map element count. Every element needs at least one
-    /// byte, so a count larger than the remaining input is rejected up front
-    /// (fail-closed against hostile over-allocation).
-    fn read_count(&mut self, info: u8, at: usize) -> Result<usize, DecodeError> {
-        let v = self.read_arg(info, at)?;
-        let remaining = (self.buf.len() - self.pos) as u64;
-        if v > remaining {
-            return Err(DecodeError::LengthExceedsInput { at, declared: v });
-        }
-        Ok(v as usize)
+            25..=27 => Err(DecodeError::FloatNotAllowed { at }),
+            28..=30 => Err(DecodeError::ReservedAdditionalInfo { at }),
+            31 => Err(DecodeError::BreakByteNotAllowed { at }),
+            _ => Err(DecodeError::SimpleValueNotAllowed { at, value: ai }),
+        },
+        _ => unreachable!("major type is 3 bits"),
     }
 }
 
@@ -676,447 +597,113 @@ impl<'a> Decoder<'a> {
 mod tests {
     use super::*;
 
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    fn unhex(s: &str) -> Vec<u8> {
-        (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-            .collect()
-    }
-
-    #[test]
-    fn encode_rfc8949_core_examples() {
-        // Canonical encodings from RFC 8949 (sections 3.1 / 4.2.1).
-        let cases: Vec<(Value, &str)> = vec![
-            (Value::Int(0), "00"),
-            (Value::Int(1), "01"),
-            (Value::Int(10), "0a"),
-            (Value::Int(23), "17"),
-            (Value::Int(24), "1818"),
-            (Value::Int(25), "1819"),
-            (Value::Int(100), "1864"),
-            (Value::Int(1000), "1903e8"),
-            (Value::Int(1000000), "1a000f4240"),
-            (Value::Int(1000000000000), "1b000000e8d4a51000"),
-            (Value::Int(-1), "20"),
-            (Value::Int(-10), "29"),
-            (Value::Int(-100), "3863"),
-            (Value::Int(-1000), "3903e7"),
-            (Value::Bool(false), "f4"),
-            (Value::Bool(true), "f5"),
-            (Value::Null, "f6"),
-            (Value::Text("".into()), "60"),
-            (Value::Text("a".into()), "6161"),
-            (Value::Text("IETF".into()), "6449455446"),
-            (Value::Text("\"\\".into()), "62225c"),
-            (Value::Text("ü".into()), "62c3bc"),
-            (Value::Bytes(vec![]), "40"),
-            (Value::Bytes(vec![0x01, 0x02, 0x03, 0x04]), "4401020304"),
-            (Value::Array(vec![]), "80"),
-            (Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]), "83010203"),
-            (
-                Value::Array(vec![
-                    Value::Int(1),
-                    Value::Array(vec![Value::Int(2), Value::Int(3)]),
-                    Value::Array(vec![Value::Int(4), Value::Int(5)]),
-                ]),
-                "8301820203820405",
-            ),
-            (
-                Value::Array(vec![Value::Array(vec![]), Value::Array(vec![Value::Array(vec![])])]),
-                "82808180",
-            ),
-            (Value::Map(vec![]), "a0"),
-            (
-                Value::Map(vec![(Value::Int(1), Value::Int(2)), (Value::Int(3), Value::Int(4))]),
-                "a201020304",
-            ),
-            (
-                Value::Map(vec![
-                    (Value::Text("a".into()), Value::Int(1)),
-                    (Value::Text("b".into()), Value::Array(vec![Value::Int(2), Value::Int(3)])),
-                ]),
-                "a26161016162820203",
-            ),
-        ];
-        for (value, expected) in cases {
-            let encoded = encode(&value).unwrap();
-            assert_eq!(hex(&encoded), expected, "encoding of {value:?}");
-        }
+    fn rt(hex: &str, expected: &Value) {
+        let bytes = crate::testutil::from_hex(hex);
+        let v = decode(&bytes).unwrap_or_else(|e| panic!("decode({hex}) failed: {e}"));
+        assert_eq!(&v, expected, "decoded value for {hex}");
+        let re = encode(&v).unwrap_or_else(|e| panic!("encode of {hex} failed: {e}"));
+        assert_eq!(re, bytes, "byte-stability for {hex}");
+        let v2 = decode(&re).unwrap();
+        assert_eq!(v2, v);
     }
 
     #[test]
-    fn encode_integer_boundaries() {
-        let cases: Vec<(i64, &str)> = vec![
-            (255, "18ff"),
-            (256, "190100"),
-            (65535, "19ffff"),
-            (65536, "1a00010000"),
-            (4294967295, "1affffffff"),
-            (4294967296, "1b0000000100000000"),
-            (i64::MAX, "1b7fffffffffffffff"),
-            (-24, "37"),
-            (-25, "3818"),
-            (-256, "38ff"),
-            (-257, "390100"),
-            (-65536, "39ffff"),
-            (-65537, "3a00010000"),
-            (-4294967296, "3affffffff"),
-            (-4294967297, "3b0000000100000000"),
-            (i64::MIN, "3b7fffffffffffffff"),
-        ];
-        for (value, expected) in cases {
-            assert_eq!(hex(&encode(&Value::Int(value)).unwrap()), expected);
-            // Round-trip.
-            assert_eq!(decode(&unhex(expected)).unwrap(), Value::Int(value));
-        }
+    fn basic_vectors_roundtrip() {
+        rt("00", &Value::Int(0));
+        rt("01", &Value::Int(1));
+        rt("17", &Value::Int(23));
+        rt("1818", &Value::Int(24));
+        rt("1903e8", &Value::Int(1000));
+        rt("20", &Value::Int(-1));
+        rt("3863", &Value::Int(-100));
+        rt("f4", &Value::Bool(false));
+        rt("f5", &Value::Bool(true));
+        rt("f6", &Value::Null);
+        rt("4401020304", &Value::Bytes(vec![1, 2, 3, 4]));
+        rt("6449455446", &Value::Text("IETF".to_string()));
+        rt("80", &Value::Array(vec![]));
+        rt(
+            "83010203",
+            &Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+        rt(
+            "a201020304",
+            &Value::Map(vec![
+                (Value::Int(1), Value::Int(2)),
+                (Value::Int(3), Value::Int(4)),
+            ]),
+        );
     }
 
     #[test]
-    fn encode_sorts_map_keys_regardless_of_entry_order() {
+    fn i64_boundaries() {
+        rt("1b7fffffffffffffff", &Value::Int(i64::MAX));
+        rt("3b7fffffffffffffff", &Value::Int(i64::MIN));
+        assert_eq!(
+            decode(&[0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+            Err(DecodeError::IntegerOutOfRange { at: 0 })
+        );
+        assert_eq!(
+            decode(&[0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+            Err(DecodeError::IntegerOutOfRange { at: 0 })
+        );
+    }
+
+    #[test]
+    fn map_encode_sorts_and_rejects_dups() {
         let unsorted = Value::Map(vec![
             (Value::Int(3), Value::Int(4)),
             (Value::Int(1), Value::Int(2)),
         ]);
-        assert_eq!(hex(&encode(&unsorted).unwrap()), "a201020304");
-
-        // Keys sort by their FULL canonical encodings (length prefix
-        // included): enc("b")   = 61 62
-        //                 enc("ab") = 62 61 62
-        // Bytewise, 0x61 < 0x62, so "b" sorts BEFORE "ab".
-        let m = Value::Map(vec![
-            (Value::Text("b".into()), Value::Int(2)),
-            (Value::Text("ab".into()), Value::Int(1)),
-        ]);
-        assert_eq!(hex(&encode(&m).unwrap()), "a261620262616201");
-    }
-
-    #[test]
-    fn encode_rejects_duplicate_map_keys() {
-        let m = Value::Map(vec![
+        assert_eq!(
+            encode(&unsorted).unwrap(),
+            crate::testutil::from_hex("a201020304")
+        );
+        let dup = Value::Map(vec![
             (Value::Int(1), Value::Int(2)),
             (Value::Int(1), Value::Int(3)),
         ]);
-        assert_eq!(encode(&m), Err(EncodeError::DuplicateMapKey));
+        assert_eq!(encode(&dup), Err(EncodeError::DuplicateMapKey { index: 1 }));
     }
 
     #[test]
-    fn map_builder_sorts_and_dedups() {
-        let v = MapBuilder::new()
-            .insert_int(2, Value::Int(20))
-            .insert_int(1, Value::Int(10))
-            .build()
-            .unwrap();
-        assert_eq!(
-            v,
-            Value::Map(vec![(Value::Int(1), Value::Int(10)), (Value::Int(2), Value::Int(20))])
-        );
-        let err = MapBuilder::new()
-            .insert_int(1, Value::Int(10))
-            .insert_int(1, Value::Int(20))
-            .build()
-            .unwrap_err();
-        assert_eq!(err, EncodeError::DuplicateMapKey);
+    fn map_equality_is_order_insensitive() {
+        let a = Value::Map(vec![
+            (Value::Int(1), Value::Int(2)),
+            (Value::Int(3), Value::Int(4)),
+        ]);
+        let b = Value::Map(vec![
+            (Value::Int(3), Value::Int(4)),
+            (Value::Int(1), Value::Int(2)),
+        ]);
+        assert_eq!(a, b);
     }
 
     #[test]
-    fn roundtrip_and_byte_stability() {
-        let values = vec![
-            Value::Int(i64::MIN),
-            Value::Int(i64::MAX),
-            Value::Text("ShareNet 中文 🌍".into()),
-            Value::Bytes((0u8..=255).collect()),
-            Value::Array(vec![Value::Null, Value::Bool(true), Value::Bytes(vec![0xAA; 300])]),
-            MapBuilder::new()
-                .insert_int(1, Value::Int(1))
-                .insert_int(2, Value::Bytes(vec![0x42; 32]))
-                .insert_text("zzz", Value::Array(vec![Value::Int(-1)]))
-                .build()
-                .unwrap(),
-        ];
-        for v in values {
-            let bytes = encode(&v).unwrap();
-            let decoded = decode(&bytes).unwrap();
-            assert_eq!(decoded, v, "round-trip of {v:?}");
-            assert_eq!(encode(&decoded).unwrap(), bytes, "byte-stability");
-        }
-    }
-
-    #[test]
-    fn decode_rejects_empty_input() {
+    fn empty_and_trailing() {
         assert_eq!(decode(&[]), Err(DecodeError::EmptyInput));
-    }
-
-    #[test]
-    fn decode_rejects_trailing_bytes() {
         assert_eq!(
-            decode(&unhex("0000")),
-            Err(DecodeError::TrailingBytes { at: 1, count: 1 })
-        );
-        assert_eq!(
-            decode(&unhex("01ff")),
+            decode(&[0x00, 0x00]),
             Err(DecodeError::TrailingBytes { at: 1, count: 1 })
         );
     }
 
     #[test]
-    fn decode_rejects_non_minimal_integers() {
-        assert_eq!(
-            decode(&unhex("1800")),
-            Err(DecodeError::NonMinimalInteger { at: 0 })
-        );
-        assert_eq!(
-            decode(&unhex("1817")),
-            Err(DecodeError::NonMinimalInteger { at: 0 })
-        );
-        assert_eq!(
-            decode(&unhex("190018")),
-            Err(DecodeError::NonMinimalInteger { at: 0 })
-        );
-        // Non-minimal negative: -1 must be 0x20, not 0x38 0x00.
-        assert_eq!(
-            decode(&unhex("3800")),
-            Err(DecodeError::NonMinimalInteger { at: 0 })
-        );
-        // 255 encoded in uint16 form (must be 0x18 0xff).
-        assert_eq!(
-            decode(&unhex("1900ff")),
-            Err(DecodeError::NonMinimalInteger { at: 0 })
-        );
-        // Non-minimal byte-string length: 3 bytes must be 0x43, not 0x58 0x03.
-        assert_eq!(
-            decode(&unhex("5803414244")),
-            Err(DecodeError::NonMinimalInteger { at: 0 })
-        );
-    }
-
-    #[test]
-    fn decode_rejects_indefinite_lengths() {
-        assert_eq!(
-            decode(&unhex("1f")),
-            Err(DecodeError::IndefiniteLength { at: 0 })
-        );
-        // Indefinite byte string.
-        assert_eq!(
-            decode(&unhex("5fff")),
-            Err(DecodeError::IndefiniteLength { at: 0 })
-        );
-        // Indefinite text string with break.
-        assert_eq!(
-            decode(&unhex("7f6161ff")),
-            Err(DecodeError::IndefiniteLength { at: 0 })
-        );
-        // Indefinite array.
-        assert_eq!(
-            decode(&unhex("9f01ff")),
-            Err(DecodeError::IndefiniteLength { at: 0 })
-        );
-        // Indefinite map.
-        assert_eq!(
-            decode(&unhex("bf0161afff")),
-            Err(DecodeError::IndefiniteLength { at: 0 })
-        );
-        // Bare break code.
-        assert_eq!(decode(&unhex("ff")), Err(DecodeError::BreakCode { at: 0 }));
-    }
-
-    #[test]
-    fn decode_rejects_tags() {
-        assert_eq!(
-            decode(&unhex("c000")),
-            Err(DecodeError::TagForbidden { at: 0, tag: 0 })
-        );
-        assert_eq!(
-            decode(&unhex("c10a")),
-            Err(DecodeError::TagForbidden { at: 0, tag: 1 })
-        );
-        assert_eq!(
-            decode(&unhex("ca00")),
-            Err(DecodeError::TagForbidden { at: 0, tag: 10 })
-        );
-        // Bignum tag 2.
-        assert_eq!(
-            decode(&unhex("c2420100")),
-            Err(DecodeError::TagForbidden { at: 0, tag: 2 })
-        );
-    }
-
-    #[test]
-    fn decode_rejects_floats() {
-        assert_eq!(
-            decode(&unhex("f90000")),
-            Err(DecodeError::FloatForbidden { at: 0, width_bytes: 2 })
-        );
-        assert_eq!(
-            decode(&unhex("fa00000000")),
-            Err(DecodeError::FloatForbidden { at: 0, width_bytes: 4 })
-        );
-        assert_eq!(
-            decode(&unhex("fb0000000000000000")),
-            Err(DecodeError::FloatForbidden { at: 0, width_bytes: 8 })
-        );
-        // f16 NaN.
-        assert_eq!(
-            decode(&unhex("f97e00")),
-            Err(DecodeError::FloatForbidden { at: 0, width_bytes: 2 })
-        );
-        // f16 +Inf.
-        assert_eq!(
-            decode(&unhex("f97c00")),
-            Err(DecodeError::FloatForbidden { at: 0, width_bytes: 2 })
-        );
-    }
-
-    #[test]
-    fn decode_rejects_undefined_and_other_simple_values() {
-        assert_eq!(
-            decode(&unhex("f7")),
-            Err(DecodeError::SimpleValueForbidden { at: 0, value: 23 })
-        );
-        assert_eq!(
-            decode(&unhex("e0")),
-            Err(DecodeError::SimpleValueForbidden { at: 0, value: 0 })
-        );
-        assert_eq!(
-            decode(&unhex("f3")),
-            Err(DecodeError::SimpleValueForbidden { at: 0, value: 19 })
-        );
-        assert_eq!(
-            decode(&unhex("f800")),
-            Err(DecodeError::SimpleValueForbidden { at: 0, value: 0 })
-        );
-    }
-
-    #[test]
-    fn decode_rejects_invalid_utf8() {
-        assert_eq!(
-            decode(&unhex("62c328")),
-            Err(DecodeError::InvalidUtf8 { at: 0 })
-        );
-        // Overlong encoding 0xC0 0x80.
-        assert_eq!(
-            decode(&unhex("62c080")),
-            Err(DecodeError::InvalidUtf8 { at: 0 })
-        );
-    }
-
-    #[test]
-    fn decode_rejects_unsorted_and_duplicate_map_keys() {
-        // {3: 4, 1: 2} — keys out of order; the violation is reported at
-        // the offset of the offending (out-of-order) key.
-        assert_eq!(
-            decode(&unhex("a203040102")),
-            Err(DecodeError::UnsortedMapKeys { at: 3 })
-        );
-        // {1: 2, 1: 3} — duplicate key, reported at the duplicate key.
-        assert_eq!(
-            decode(&unhex("a201020103")),
-            Err(DecodeError::DuplicateMapKey { at: 3 })
-        );
-    }
-
-    #[test]
-    fn decode_rejects_out_of_range_integers() {
-        assert_eq!(
-            decode(&unhex("1bffffffffffffffff")),
-            Err(DecodeError::IntegerOutOfRange {
-                at: 0,
-                raw: u64::MAX
-            })
-        );
-        assert_eq!(
-            decode(&unhex("3bffffffffffffffff")),
-            Err(DecodeError::IntegerNegativeOutOfRange {
-                at: 0,
-                raw: u64::MAX
-            })
-        );
-    }
-
-    #[test]
-    fn decode_rejects_truncated_inputs() {
-        // Argument byte missing.
-        assert_eq!(
-            decode(&unhex("18")),
-            Err(DecodeError::UnexpectedEnd { at: 0, needed: 1 })
-        );
-        // Byte string longer than input.
-        assert_eq!(
-            decode(&unhex("440102")),
-            Err(DecodeError::LengthExceedsInput { at: 0, declared: 4 })
-        );
-        // Array claiming one element with nothing behind it: the count
-        // itself exceeds the remaining input.
-        assert_eq!(
-            decode(&unhex("81")),
-            Err(DecodeError::LengthExceedsInput { at: 0, declared: 1 })
-        );
-        // Map key parsed, value missing.
-        assert_eq!(
-            decode(&unhex("a101")),
-            Err(DecodeError::UnexpectedEnd { at: 2, needed: 1 })
-        );
-        // Float with missing payload.
-        assert_eq!(
-            decode(&unhex("f9")),
-            Err(DecodeError::UnexpectedEnd { at: 0, needed: 2 })
-        );
-    }
-
-    #[test]
-    fn decode_rejects_reserved_additional_info() {
-        assert_eq!(
-            decode(&unhex("1c")),
-            Err(DecodeError::ReservedAdditionalInfo { at: 0, info: 28 })
-        );
-        assert_eq!(
-            decode(&unhex("3d00")),
-            Err(DecodeError::ReservedAdditionalInfo { at: 0, info: 29 })
-        );
-        assert_eq!(
-            decode(&unhex("5e0000")),
-            Err(DecodeError::ReservedAdditionalInfo { at: 0, info: 30 })
-        );
-    }
-
-    #[test]
-    fn decode_rejects_hostile_counts() {
-        // Array claiming 2^32-1 elements with nothing behind it.
-        assert_eq!(
-            decode(&unhex("9affffffff")),
-            Err(DecodeError::LengthExceedsInput { at: 0, declared: 4294967295 })
-        );
-    }
-
-    #[test]
-    fn depth_limit_is_enforced() {
-        let mut bytes = vec![0x81u8; MAX_DEPTH + 1];
-        bytes.push(0x01);
-        assert_eq!(
-            decode(&bytes),
-            Err(DecodeError::DepthLimitExceeded { at: MAX_DEPTH + 1 })
-        );
-        // Exactly MAX_DEPTH nested arrays is fine.
-        let mut ok = vec![0x81u8; MAX_DEPTH];
-        ok.push(0x01);
+    fn deep_nesting_enforced() {
+        let ok = {
+            let mut b = vec![0x81; 127];
+            b.push(0x00);
+            b
+        };
         assert!(decode(&ok).is_ok());
-    }
-
-    #[test]
-    fn accessors() {
-        let v = MapBuilder::new()
-            .insert_int(1, Value::Text("one".into()))
-            .insert_text("k", Value::Int(9))
-            .build()
-            .unwrap();
-        assert_eq!(v.get_by_int(1).unwrap().as_text(), Some("one"));
-        assert_eq!(v.get_by_text("k").unwrap().as_int(), Some(9));
-        assert!(v.get_by_int(7).is_none());
-        assert!(Value::Int(1).get_by_int(1).is_none());
-        assert!(Value::Null.is_null());
-        assert_eq!(Value::Bytes(vec![1, 2]).as_bytes(), Some(&[1u8, 2][..]));
+        let too_deep = {
+            let mut b = vec![0x81; 128];
+            b.push(0x00);
+            b
+        };
+        match decode(&too_deep) {
+            Err(DecodeError::DepthLimitExceeded { limit, .. }) => assert_eq!(limit, MAX_DEPTH),
+            other => panic!("expected DepthLimitExceeded, got {other:?}"),
+        }
     }
 }

@@ -1,99 +1,164 @@
-# ShareNet Dependency Graph and 3-Worker Execution Model
+# ShareNet Dependency Graph — Three-Worker Orchestration
 
-## Worker rule
+## Authority
 
-Maximum 3 direct workers.
+The atomic registry is `spec/work-items.yaml`. This document explains how the Tech Lead may schedule those items across at most three direct workers.
 
-Each work item must have one clear owner, explicit prerequisites, and a verification gate.
+## Worker contracts
 
-## Parallel lanes
-
-### Worker 1 — Protocol Core
-
-R1-001 → R1-004 → R3-001 → R3-004 → R4-002 → R7 → R8
-
+### Worker 1 — Protocol / Security
 Owns:
 - identity
-- wire formats
+- canonical wire formats
+- capabilities and admission
+- authenticated links
+- topology evidence
 - route commitments
-- protocol state machines
-- conformance
-- recovery/economics core
+- circuit/recovery state machines
+- contribution proof and Civic Points protocol logic
+- protocol conformance
 
-### Worker 2 — Runtime / Transport
+Never owns:
+- Android/Linux device adapters
+- ADCOS provider APIs
+- provider-native network mechanisms
 
-R2-001/R2-002/R2-003 → R4-001/R4-003/R4-004/R4-005/R4-006 → R10
-
+### Worker 2 — Runtime / Network / Platforms
 Owns:
-- Android/Linux transport
-- QUIC
-- TUN/VpnService
-- NAT traversal
-- real-network verification
+- Android nearby transports
+- Android VpnService
+- Linux transport/TUN
+- QUIC/TLS runtime
+- ICE/TURN/MASQUE adapters
+- gateway forwarding
+- iOS/network platform adapters
+- real-device and real-network validation
 
-### Worker 3 — Connectivity / Control Plane
+Never owns:
+- route identity
+- cryptographic authority
+- Civic Point valuation semantics
+- ADCOS contract authority
 
-R5-001 → R5-005 → gateway admission → R6 → R9
-
+### Worker 3 — Connectivity / Content / Service Operations
 Owns:
-- ADCOS adapter
-- contract projection
-- observations
-- gateway control plane
-- DTN/content runtime
-- later platform adapters
+- ConnectivityPort
+- ADCOS developer API integration
+- contract projection and observations
+- gateway/backhaul admission integration
+- content addressing/transfer
+- DTN queues
+- service-priority consumption
+- final simulation and operational evidence
 
-## Cross-worker dependencies
+Never owns:
+- provider-native APIs inside protocol-core
+- ShareNet cryptographic authority
+- canonical Civic Point issuance rules
+
+## Scheduling rule
+
+At any time:
 
 ```text
-R1
-├── Worker 1 ──> R3
-└── Worker 2 ──> R2
-
-R2 + R3
-    └──> R4
-
-R4 + ADCOS boundary
-    └──> R5
-
-R4
-    ├──> R6
-    └──> R7
-
-R6 + R7
-    └──> R8
-
-R4 + R5 + R7
-    └──> R9
-
-R4 + R5 + R6 + R7 + R8 + R9
-    └──> R10
+READY items
+   ↓
+filter by predecessors COMPLETE
+   ↓
+filter by architecture authority conflicts
+   ↓
+choose at most 3
+   ↓
+execute independently
+   ↓
+worker verification
+   ↓
+Tech Lead integration
+   ↓
+fresh audit
+   ↓
+mark COMPLETE
 ```
 
-## Hard ordering rules
+The Tech Lead must prefer three-way parallelism only when the dependency graph proves independence. Artificially filling all three slots is forbidden.
 
-1. Do not implement Civic Points before measured service exists.
-2. Do not call live Internet bridging complete before an Android/Linux real-device test.
-3. Do not call ADCOS integration complete until ShareNet can continue local/offline operation while ADCOS is unavailable.
-4. Do not call recovery complete before a real replacement route and circuit have been established.
-5. Do not add a transport-specific feature to protocol-core.
-6. Do not add provider-native ADCOS semantics to ShareNet.
+## Critical dependency spine
 
-## Verification gates
+```text
+R1 + R2
+  ↓
+R3 authenticated topology/routing
+  ↓
+R4 real circuit/IP bridge
+  ↓
+R7 recovery
+  ↓
+R8 measured contribution/Civic Points
+  ↓
+R10 production verification
+```
 
-Every gate requires:
+R5 (ADCOS) is a control-plane branch that can begin with the typed connectivity seam before the full bridge is finished, but gateway admission must consume the real ShareNet route/circuit and ADCOS evidence.
 
-    unit
-    architecture
-    conformance
-    integration
+R6 (DTN/content) depends on real circuit/data-plane primitives, but its content-domain work may proceed in parallel with late R4 work once the required transport contract is frozen.
 
-Higher gates additionally require:
+R9 is expansion, not a prerequisite to the Android/Linux mission gate.
 
-    multiprocess
-    restart
-    real-device
-    endurance
-    adversarial
+## High-value parallel waves
 
-The final production gate requires real connectivity evidence, not only simulation.
+| Wave | Worker 1 | Worker 2 | Worker 3 |
+|---|---|---|---|
+| 1 | R1-001, R1-002 | R2-001, R2-003 | idle until a non-conflicting task is READY |
+| 2 | R1-003, R1-004 | R2-004 | idle |
+| 6 | R3-004 | R4-001 | idle |
+| 8 | — | R4-003, R4-004 | R5-001 |
+| 9 | — | R4-006 / R4-007 | R5-002 |
+| 11 | R7-001 | — | R5-005 / R6-001 |
+| 12 | R7-002 | — | R6-002 / R6-003 |
+| 17 | R8-001 | R9-001 | — |
+| 18 | R8-002 | R9-003 | — |
+| 20 | R8-003 | R9-002 | R8-004 |
+| 22 | — | R10-001, R10-002 | — |
+| 23 | R10-004 | R10-003 | — |
+
+The exact machine-readable schedule is authoritative in `spec/roadmap.yaml` and `spec/work-items.yaml`.
+
+## Integration gates
+
+Every worker must provide:
+
+1. files changed;
+2. tests added/updated;
+3. production caller(s);
+4. runtime path;
+5. persistence implications;
+6. verification level;
+7. known remaining gaps.
+
+The Tech Lead integrates only after reviewing those seven items.
+
+## Hard stop conditions
+
+Stop the current work item and ask the Architect to resolve the authority if:
+
+- a worker must alter a frozen primitive;
+- two modules become competing sources of truth;
+- a security property depends on caller-controlled metadata;
+- the work requires a provider-native API in protocol-core;
+- a test passes only through mocks while production wiring is missing;
+- the implementation requires changing a predecessor's contract unexpectedly.
+
+## Definition of implementation complete
+
+A work item is complete only when:
+
+    definition
+      + implementation
+      + production caller
+      + real runtime path
+      + required persistence
+      + adversarial tests
+      + required verification level
+      + fresh audit of pushed HEAD
+
+are all satisfied.

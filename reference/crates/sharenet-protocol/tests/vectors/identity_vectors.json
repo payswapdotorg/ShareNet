@@ -1,0 +1,70 @@
+{
+  "scheme": "sharenet-node-identity-v1",
+  "node_id_derivation": "node_id = SHA-256(canonical_cbor({1: scheme_version, 2: public_key}))",
+  "description": "Node identity binding vectors (R1-001). node_id_input_hex is the exact SHA-256 preimage; node_id_hex = SHA-256(node_id_input_hex). identity_wire_hex is the NodeIdentity map; file_wire_hex is the durable identity file (seed is TEST-ONLY, never use for production). signature_hex is the deterministic RFC 8032 detached signature over payload_hex with the given seed.",
+  "cases": [
+    {
+      "note": "RFC 8032 §7.1 TEST 1 seed; empty payload",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "created_at_unix": 0,
+      "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "node_id_input_hex": "a20101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "node_id_hex": "a72f5df313a965faf0138ebeebd698c5bb3eac07278e925fff8f69bb0f5d1188",
+      "identity_wire_hex": "a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300",
+      "file_wire_hex": "a20158209d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f6002a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300",
+      "payload_hex": "",
+      "signature_hex": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    },
+    {
+      "note": "RFC 8032 §7.1 TEST 2 seed; 1-byte payload",
+      "seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "created_at_unix": 1700000000,
+      "public_key_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "node_id_input_hex": "a201010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "node_id_hex": "d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f96302326",
+      "identity_wire_hex": "a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c031a6553f100",
+      "file_wire_hex": "a20158204ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb02a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c031a6553f100",
+      "payload_hex": "72",
+      "signature_hex": "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+    },
+    {
+      "note": "RFC 8032 §7.1 TEST 3 seed; 2-byte payload",
+      "seed_hex": "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+      "created_at_unix": 1735689600,
+      "display_name": "bridge-gateway-alpha",
+      "public_key_hex": "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+      "node_id_input_hex": "a20101025820fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+      "node_id_hex": "c2f57fa541690e754a2e06c9462f85acfc72b862560b4e5ae37769529a27b7b5",
+      "identity_wire_hex": "a40101025820fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025031a6774858004746272696467652d676174657761792d616c706861",
+      "file_wire_hex": "a2015820c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f702a40101025820fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025031a6774858004746272696467652d676174657761792d616c706861",
+      "payload_hex": "af82",
+      "signature_hex": "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"
+    },
+    {
+      "note": "deterministic generated case with name",
+      "seed_hex": "833fe62409237b9d62ec775ae113decbb0e30b7e2cd6e9de040a0ce9f0d4a556",
+      "created_at_unix": 1700000001,
+      "display_name": "relay-node",
+      "public_key_hex": "18c614367e297edf215734e18c1bb2968c349d0770adcb2765033bc7cd929efe",
+      "node_id_input_hex": "a2010102582018c614367e297edf215734e18c1bb2968c349d0770adcb2765033bc7cd929efe",
+      "node_id_hex": "6d67114fc809de4d8f35559774eb6f951c2c9002bcb15a86b1d68f8733e77678",
+      "identity_wire_hex": "a4010102582018c614367e297edf215734e18c1bb2968c349d0770adcb2765033bc7cd929efe031a6553f101046a72656c61792d6e6f6465",
+      "file_wire_hex": "a2015820833fe62409237b9d62ec775ae113decbb0e30b7e2cd6e9de040a0ce9f0d4a55602a4010102582018c614367e297edf215734e18c1bb2968c349d0770adcb2765033bc7cd929efe031a6553f101046a72656c61792d6e6f6465",
+      "payload_hex": "53686172654e65742072656c6179207061796c6f6164",
+      "signature_hex": "e5660319bee8cf8d4c631f062e090a6c3c66cd5ed207a7bcb15bda673987aabb8ab9c96326e2eee191de2798d66d2b751b66393d8fad7dd1a620302d9df5b60c"
+    },
+    {
+      "note": "display_name with multi-byte UTF-8 (32 × 'é' = 64 bytes)",
+      "seed_hex": "0d4a556833fe62409237b9d62ec775ae113decbb0e30b7e2cd6e9de040a0ce9f",
+      "created_at_unix": 0,
+      "display_name": "éééééééééééééééééééééééééééééééé",
+      "public_key_hex": "3343825b4a5d948f7b57538a65650edf52aa272f0deea30d6078921045f1b4b4",
+      "node_id_input_hex": "a201010258203343825b4a5d948f7b57538a65650edf52aa272f0deea30d6078921045f1b4b4",
+      "node_id_hex": "f6d0b84f9299495574659e00986cca2a61e15797c2a59e330572ca23adf377b5",
+      "identity_wire_hex": "a401010258203343825b4a5d948f7b57538a65650edf52aa272f0deea30d6078921045f1b4b40300047840c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9",
+      "file_wire_hex": "a20158200d4a556833fe62409237b9d62ec775ae113decbb0e30b7e2cd6e9de040a0ce9f02a401010258203343825b4a5d948f7b57538a65650edf52aa272f0deea30d6078921045f1b4b40300047840c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9",
+      "payload_hex": "00",
+      "signature_hex": "c143880c49e5f613c1d21841ddf8a95fc82b7596a3f2f96454de1c2aa3f6b0e7b3bad883a81d657fcef6cbc0f57658e355c14d7f7098a980868d85b04c622d0f"
+    }
+  ]
+}

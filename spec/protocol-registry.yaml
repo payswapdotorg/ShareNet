@@ -10,7 +10,12 @@ rules:
 objects:
   - name: NodeIdentity
     class: wire
-    maturity: foundation
+    maturity: implemented
+    implementation: reference/crates/sharenet-protocol
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: public_key (32-byte bstr), 3: created_at_unix (uint), 4: display_name (optional text, <=64 bytes)}
+    id_derivation: node_id = SHA-256(canonical_cbor({1: scheme_version, 2: public_key})); caller-selected IDs forbidden
+    conformance_vectors: reference/crates/sharenet-protocol/tests/vectors/identity_vectors.json
+    status_note: implemented in Wave 1 (R1-001); schema recorded at Tech Lead integration from the verified implementation; cross-language vectors consumed by R1-003 in Wave 2
   - name: Advertisement
     class: wire
     maturity: foundation

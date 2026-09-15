@@ -150,6 +150,21 @@ pub struct CachedObservation {
 }
 
 impl CachedObservation {
+    /// Construct from parts — the durable-store seam (R5-003 rebuilds the
+    /// cached entry from persisted bytes).
+    ///
+    /// `fresh_until_unix` is normally `observed_at_unix +
+    /// freshness_window_secs` (the policy every cache in this crate
+    /// applies); it is stored and served verbatim so a reloaded entry keeps
+    /// its ORIGINAL freshness metadata — never re-anchored to the reload
+    /// time (the adcos.md no-fabrication law).
+    pub fn new(observation: ConnectivityObservation, fresh_until_unix: u64) -> Self {
+        Self {
+            observation,
+            fresh_until_unix,
+        }
+    }
+
     /// The cached (last accepted) observation.
     pub fn observation(&self) -> &ConnectivityObservation {
         &self.observation

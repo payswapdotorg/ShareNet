@@ -47,26 +47,43 @@
 //! and the caller-side caching policy type
 //! [`observation::ObservationCache`].
 //!
+//! # Durable state
+//!
+//! The [durable local health projection][store] (R5-003) is the one piece
+//! of durable state this crate owns: per `ConnectivityContractRef`, the
+//! accepted observation log, the re-derived `ContractState` projection and
+//! the ORIGINAL freshness metadata of the last accepted observation,
+//! persisted through a strict hand-rolled binary codec (no dependencies;
+//! refs stay opaque and are reconstructed through the kind-validated
+//! `from_parts` seam). On `wasm32-unknown-unknown` the pure codec is the
+//! HOST persistence seam (no std file I/O there); on native targets the
+//! file-backed `DurableProjectionStore` adds atomic flush + fail-closed
+//! reload.
+//!
 //! # Platform independence
 //!
 //! No dependencies at all (std only): no protocol-core import, no async
-//! runtime, no I/O, no wall clock (implementations supply unix timestamps —
-//! the fake uses a deterministic virtual clock). The crate therefore
-//! compiles for `wasm32-unknown-unknown` (the L007 discipline of the protocol
-//! core, applied to the boundary), keeping R5-001 independently freezable
-//! from the circuit implementation — which is exactly what
-//! `tools/architecture_check.py` enforces for this work item's dependency
-//! set.
+//! runtime, no I/O in the domain types, no wall clock (implementations
+//! supply unix timestamps — the fake uses a deterministic virtual clock,
+//! and the durable store takes its reload-time `now` from the caller).
+//! The crate therefore compiles for `wasm32-unknown-unknown` (the L007
+//! discipline of the protocol core, applied to the boundary), keeping
+//! R5-001 independently freezable from the circuit implementation — which
+//! is exactly what `tools/architecture_check.py` enforces for this work
+//! item's dependency set. The file-backed store is the only native-only
+//! piece (`#[cfg(not(target_family = "wasm"))]`).
 //!
 //! # What is deliberately NOT here
 //!
 //! - No canonical CBOR, no signatures, no wire encoding. The reference
 //!   objects here are opaque provider-assigned ids and local read-only
-//!   projections — NOT protocol wire objects (see [`refs`]). Signed
-//!   observations are R5-004.
-//! - No real ADCOS wire client (R5-002), no provider federation, no
-//!   persistence of projections (runtime state only; durable refs are
-//!   R5-003 scope).
+//!   projections — NOT protocol wire objects (see [`refs`]). The durable
+//!   store's binary format is node-LOCAL durable state, never a wire
+//!   object. Signed observations are R5-004.
+//! - No real ADCOS wire client (R5-002); no provider federation. The
+//!   durable store persists ONLY the local health projection — never a
+//!   second contract authority, and nothing that mutates ShareNet's
+//!   authoritative state (the observation read-only law).
 //! - [`memory::InMemoryConnectivityPort`] is a TEST VEHICLE (like
 //!   `MemoryTunPair` in `transport/linux`): a deterministic fake provider,
 //!   not an ADCOS implementation.
@@ -80,6 +97,8 @@
 //! - [`error`]: the typed [`PortError`].
 //! - [`port`]: the [`ConnectivityPort`] trait.
 //! - [`memory`]: the in-memory TEST VEHICLE provider.
+//! - [`store`]: the durable local health projection (R5-003) — pure model
+//!   + strict codec everywhere, atomic file store on native targets.
 
 #![forbid(unsafe_code)]
 
@@ -90,6 +109,7 @@ pub mod port;
 pub mod projection;
 pub mod refs;
 pub mod requirement;
+pub mod store;
 
 pub use error::PortError;
 pub use memory::{
@@ -111,3 +131,10 @@ pub use requirement::{
     ConnectivityRequirement, ServiceClass, MAX_REGION_HINT_BYTES, REQUIREMENT_VERSION,
     SERVICE_CLASSES,
 };
+pub use store::{
+    ContractHealth, DurableProjection, ProjectionFreshness, StoreError, StoreIoOp,
+    MAX_STORE_FILE_BYTES, STORE_FORMAT_VERSION, STORE_MAGIC,
+};
+
+#[cfg(not(target_family = "wasm"))]
+pub use store::DurableProjectionStore;

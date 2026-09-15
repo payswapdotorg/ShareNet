@@ -38,6 +38,7 @@ pub mod circuit;
 pub mod connectivity_evidence;
 pub mod identity;
 pub mod link;
+pub mod revocation;
 pub mod route;
 pub mod store;
 pub mod topology;
@@ -57,6 +58,13 @@ pub use circuit::{
     CircuitRegistry, CircuitSetup, CircuitSetupAck, CIRCUIT_MAX_PAYLOAD, CIRCUIT_MAX_PATH,
     CIRCUIT_MAX_WINDOW, CIRCUIT_SCHEME_VERSION, DESTROY_REASONS, DIRECTION_EXIT_TO_INITIATOR,
     DIRECTION_INITIATOR_TO_EXIT,
+};
+pub use revocation::{
+    CircuitRevocation, EvidenceValue, FailureDetector, FailureDetectorConfig, FailureVerdict,
+    RevocationAdmitOutcome, RevocationError, RevocationLedger, RevocationReason,
+    SignedCircuitRevocation, EVIDENCE_FAILURE_KIND, EVIDENCE_MAX_FIELDS, EVIDENCE_MAX_KEY_BYTES,
+    EVIDENCE_MAX_TEXT_BYTES, REVOCATION_REASONS, REVOCATION_SCHEME_VERSION,
+    REVOCATION_SNAPSHOT_VERSION,
 };
 pub use route::{
     derive_proposal_id, derive_route_id, merkle_root, RouteAcceptance, RouteCommitment,

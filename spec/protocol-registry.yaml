@@ -70,12 +70,13 @@ objects:
     derivation_rule: commitment_root = Merkle root (SHA-256, duplicate-the-last-leaf for odd counts, single leaf hashed as its own pair with itself) over the canonical acceptance bytes ordered by position; route_id = SHA-256("sharenet-route-id-v1" || commitment_root) — commitment-derived, caller-selected route IDs are FORBIDDEN (L013); the proposal is bound through proposal_id inside every acceptance
     verification_rule: receivers verify the proposal (signature, invariants), then every acceptance (signature, position < path length, accepting identity node_id == path[position], proposal_id match, freshness), that positions 0..len-1 are covered exactly once, re-derive the Merkle root and route_id, and reject any mismatch (fail-closed)
     status_note: implemented in Wave 6 (R3-004); replacement routes get fresh nonces -> fresh proposals -> fresh acceptance sets -> fresh roots -> fresh route ids (L014 replay-namespace rule); recovery/revocation of committed routes is R7 scope
-  - name: RouteAcceptance
-    class: wire
-    maturity: foundation
-  - name: RouteCommitment
-    class: wire
-    maturity: foundation
+  - name: QuicTunnelTransport
+    class: transport
+    maturity: implemented
+    implementation: transport/quic (sharenet-transport-quic)
+    binding_rule: the advertisement transport kind "quic" means QUIC + TLS 1.3 (quinn + rustls, ALPN "sharenet-tunnel-v1", Ed25519-only certificate signatures, TLS 1.2 refused) where each endpoint presents a SELF-SIGNED Ed25519 certificate whose private key IS the node identity key (R1-001); the pinned node identity is derived from the certificate's public key by the R1-001 rule, so TLS possession proof + pin = node authentication without a CA; clients MUST pin the server's node_id (the advertisement's announcer); servers MAY pin client node_ids (refusing unpinned clients at the handshake); an unpinned server entry is an unauthenticated transport — ShareNet-level authentication (R3-001 links, R4-002 circuits) rides INSIDE the tunnel and MUST NOT be assumed by the tunnel alone
+    frame_rule: tunnel payloads are opaque length-prefixed frames (u32 big-endian, MAX_FRAME = 2 MiB, enforced on both send and receive; a receiver rejects an oversized length prefix with FrameTooLarge instead of buffering it); the frame content is not a registry object — relays forward opaque tunnel traffic (L012) and end-to-end circuit objects are R4-002 scope
+    status_note: implemented in Wave 6 (R4-001); no new cryptographic primitives (ADR-002: the TLS layer supplies transport security, the identity layer supplies node authentication); the tunnel is runtime state — durable circuit state is R4-002/R7 scope; ICE/STUN/TURN traversal and relay fallback are R4-005 scope (L011)
   - name: ConnectivityIntentRef
     class: integration
     maturity: planned

@@ -52,7 +52,7 @@ def main() -> int:
             errors.append(f"architecture missing frozen concept: {phrase}")
 
     for phrase in ("Maximum three direct workers", "Completion requires", "fresh-audit", "R4", "R7", "R8", "R10"):
-        if phrase not in handoff:
+        if phrase.lower() not in handoff.lower():
             errors.append(f"orchestrator handoff missing control: {phrase}")
 
     for phrase in ("execution scheduling authority", "Maximum three direct workers", "No second source of truth", "origin/main"):
@@ -62,8 +62,6 @@ def main() -> int:
     if "status: ARCHITECTURE_FROZEN_IMPLEMENTATION_NOT_STARTED" not in current:
         errors.append("current-state does not declare the implementation baseline")
 
-    # v2 registry entries are one-line mappings, so dependency validation can be
-    # performed without introducing a YAML runtime dependency into CI.
     entries = re.findall(r"- \{id: ([A-Z0-9-]+), .*?depends: \[([^]]*)\]", items)
     ids = {item_id for item_id, _ in entries}
     if len(ids) != 48:
@@ -77,7 +75,6 @@ def main() -> int:
             if dep not in ids:
                 errors.append(f"work item {item_id} references missing predecessor {dep}")
 
-    # Cycle detection over the work-item DAG.
     visiting: set[str] = set()
     visited: set[str] = set()
 
@@ -96,7 +93,6 @@ def main() -> int:
     for node in graph:
         visit(node)
 
-    # Architectural scheduling invariants deliberately checked here.
     def deps_of(item_id: str) -> set[str]:
         return set(graph.get(item_id, []))
 

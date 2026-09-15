@@ -31,6 +31,14 @@ import {
   proposalIdOf,
 } from "./route.ts";
 import {
+  buildSetup as circuitBuildSetup,
+  buildAck as circuitBuildAck,
+  buildFrame as circuitBuildFrame,
+  buildDestroy as circuitBuildDestroy,
+  deriveCircuitId,
+  setupDigest as circuitSetupDigest,
+} from "./circuit.ts";
+import {
   buildMsg1,
   buildMsg2,
   buildMsg2Content,
@@ -467,6 +475,146 @@ function loadJson(name: string): any {
     const { createHash } = require("node:crypto");
     return new Uint8Array(createHash("sha256").update(data).digest());
   }
+}
+
+// ---------------- circuit vectors ----------------
+{
+  const file = loadJson("circuit_vectors.json");
+  for (const c of file.cases) {
+    const proposerKey = new Ed25519Key(fromHex(c.proposer_seed_hex));
+    const hopKeys = c.hop_seed_hexes.map((s: string) => new Ed25519Key(fromHex(s)));
+    const path = [
+      ...hopKeys.map((k: Ed25519Key) => deriveNodeId(k.publicKey)),
+      deriveNodeId(proposerKey.publicKey),
+    ];
+    const sortedPath = [...path].sort((a, b) =>
+      Buffer.compare(Buffer.from(a), Buffer.from(b)),
+    );
+    const proposal = buildProposal({
+      publicKey: proposerKey.publicKey,
+      createdAtUnix: BigInt(c.proposer_created_at_unix),
+      path: sortedPath,
+      serviceClass: c.service_class,
+      proposedAtUnix: BigInt(c.proposed_at_unix),
+      validitySecs: BigInt(c.validity_secs),
+      nonce: fromHex(c.proposal_nonce_hex),
+    });
+    const proposalSig = proposerKey.signDetached(proposal);
+    const proposalEnv = routeEnvelope(proposal, proposalSig);
+    const pid = proposalIdOf(proposal);
+    const members = [
+      ...hopKeys.map((k: Ed25519Key) => ({
+        pk: k.publicKey,
+        created: BigInt(c.hop_created_at_unix),
+        key: k,
+        nodeId: deriveNodeId(k.publicKey),
+      })),
+      {
+        pk: proposerKey.publicKey,
+        created: BigInt(c.proposer_created_at_unix),
+        key: proposerKey,
+        nodeId: deriveNodeId(proposerKey.publicKey),
+      },
+    ];
+    members.sort((a, b) =>
+      Buffer.compare(Buffer.from(a.nodeId), Buffer.from(b.nodeId)),
+    );
+    const acceptanceEnvs = members.map((m, pos) => {
+      const acc = buildAcceptance({
+        proposalId: pid,
+        publicKey: m.pk,
+        createdAtUnix: m.created,
+        position: BigInt(pos),
+        acceptedAtUnix: BigInt(c.accepted_at_unix),
+        validitySecs: BigInt(c.acceptance_validity_secs),
+      });
+      const sig = m.key.signDetached(acc);
+      return routeEnvelope(acc, sig);
+    });
+    const leaves = members.map((_, pos) => {
+      const v = decode(acceptanceEnvs[pos]!) as any;
+      return circuitSetupDigest(v.v[0][1].v as Uint8Array);
+    });
+    const root = merkleRoot(leaves)!;
+    const routeId = deriveRouteId(root);
+    // ---- circuit objects on top of the commitment ----
+    const setupNonce = fromHex(c.setup_nonce_hex);
+    const setupInner = commitmentWire(proposalEnv, acceptanceEnvs, root, routeId);
+    const setup = circuitBuildSetup({
+      commitmentWire: setupInner,
+      setupNonce,
+      publicKey: proposerKey.publicKey,
+      createdAtUnix: BigInt(c.proposer_created_at_unix),
+      issuedAtUnix: BigInt(c.setup_issued_at_unix),
+      validitySecs: BigInt(c.setup_validity_secs),
+    });
+    const setupSig = proposerKey.signDetached(setup);
+    const setupEnv = routeEnvelope(setup, setupSig);
+    const circuitId = deriveCircuitId(routeId, setupNonce);
+    const acks = members.map((m, pos) => {
+      const ack = circuitBuildAck({
+        circuitId,
+        setupEnvelope: setup,
+        publicKey: m.pk,
+        createdAtUnix: m.created,
+        position: BigInt(pos),
+        acceptedAtUnix: BigInt(c.ack_accepted_at_unix),
+        validitySecs: BigInt(c.ack_validity_secs),
+      });
+      const sig = m.key.signDetached(ack);
+      return routeEnvelope(ack, sig);
+    });
+    const frames = (c.frames as Array<{ direction: number; seq: number; payload_hex: string }>).map(
+      (f) =>
+        circuitBuildFrame({
+          circuitId,
+          direction: BigInt(f.direction),
+          seq: BigInt(f.seq),
+          payload: fromHex(f.payload_hex),
+        }),
+    );
+    const destroySender = members[Number(c.destroy_sender_position)]!;
+    const destroy = circuitBuildDestroy({
+      circuitId,
+      publicKey: destroySender.pk,
+      createdAtUnix: destroySender.created,
+      reason: c.destroy_reason,
+      destroyedAtUnix: BigInt(c.destroyed_at_unix),
+    });
+    const destroySig = destroySender.key.signDetached(destroy);
+    const destroyEnv = routeEnvelope(destroy, destroySig);
+    console.log(
+      `CIRCUIT ${file.cases.indexOf(c)} setup=${toHex(setupEnv)} acks=${acks
+        .map((e: Uint8Array) => toHex(e))
+        .join(",")} frames=${frames
+        .map((e: Uint8Array) => toHex(e))
+        .join(",")} destroy=${toHex(destroyEnv)} id=${toHex(circuitId)}`,
+    );
+  }
+  for (let i = 0; i < file.rejects.length; i++) {
+    console.log(`CIRCUIT_REJ ${i} ${file.rejects[i].error}`);
+  }
+}
+
+/** RouteCommitment wire: {1: scheme, 2: proposal env, 3: acceptance envs, 4: root, 5: route_id}. */
+function commitmentWire(
+  proposalEnv: Uint8Array,
+  acceptanceEnvs: Uint8Array[],
+  root: Uint8Array,
+  routeId: Uint8Array,
+): Uint8Array {
+  const int = (n: bigint): Value => ({ t: "int", v: n });
+  const bytes = (b: Uint8Array): Value => ({ t: "bytes", v: b });
+  return encode({
+    t: "map",
+    v: [
+      [int(1n), int(1n)],
+      [int(2n), bytes(proposalEnv)],
+      [int(3n), { t: "array", v: acceptanceEnvs.map((e) => bytes(e)) }],
+      [int(4n), bytes(root)],
+      [int(5n), bytes(routeId)],
+    ],
+  });
 }
 
 // order-insensitive value equality (byte-stability lines catch ordering)

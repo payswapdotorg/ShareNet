@@ -719,15 +719,153 @@ Architect decision — see Open Architect Decisions).
   :vpn:testDebugUnitTest 67/0 + :vpn:assembleDebug AAR, governance
   PASS. (Full sweep performed post-merge — see audit log below.)
 
+### R4-006 — Restrictive-network fallback — COMPLETE (Wave 9)
+
+- `transport/ice/src/agent.rs`: the ICE agent nomination (RFC 8445
+  controlling-agent subset) — gather host (+srflx), walk ALL pairs in
+  pair-priority order (direct first by construction) with connectivity
+  checks, nominate the FIRST working pair; when every host/srflx base
+  fails and a relay is configured, allocate a LOCAL relayed candidate
+  (authenticated when credentialed) and complete the walk through it.
+  Open networks never touch the relay (local_relay_used == false is a
+  tested outcome); per-pair typed failures never poison the walk; no
+  path → AgentNoPath with the FULL attempt transcript. Deliberately
+  not implemented (documented): role negotiation/conflicts, consent
+  freshness §11, triggered checks, peer-reflexive candidates,
+  multi-component (the remote is an ICE-lite responder).
+- `transport/ice/src/relay.rs`: long-term-credential allocation auth
+  (RFC 5389 §10.2 / RFC 8489 §9 model over the SN control framing;
+  HMAC-SHA-256 message integrity over exact request bytes — hmac+sha2
+  were already in the dependency tree, zero new crates): 401 challenge
+  (nonce + realm) → keyed response; wrong credential typed
+  RelayAuthRejected; replayed nonce typed refusal; adversarial auth
+  never harms the relay. turn_relay gained --auth/--realm; new ice_peer
+  binary (ICE-lite peer, RFC 7983-style STUN/data demux).
+- Verification achieved: unit (6 new: classification, fail-fast,
+  direct-vs-live-responder, lying-candidate fails closed, dead-remote
+  NoPath typed, stalled timeout) + integration/adversarial (5 new
+  multiprocess vs REAL ice_peer/turn_relay processes: direct
+  nomination + tunnel through the nominated pair; relay-only target →
+  relayed pair + tunnel through the relay; dead hostile direct
+  candidate fails typed while the relayed pair wins; agent phase-2
+  wrong-credential → typed refusal + relay survives; authenticated
+  relay serves the agent path end-to-end) — 62/62 total (46 unit + 16
+  multiprocess). Governance PASS.
+- Honest gaps (documented): client-side local-relay data plane needs
+  real NAT shapes (R4-007/R10); SN control framing not wire-interop
+  with production TURN servers (future adapter work).
+- Implemented by a dispatched subagent that died at its context
+  deadline after writing the library + binaries + unit tests; Tech
+  Lead completed (added the 5 multiprocess evidence tests, fixed the
+  ice_peer READY line to carry the node id, rewrote the README known
+  limits), verified, committed 874ef2d.
+
+### R4-007 — Mission gate real Internet bridge — COMPLETE (Wave 9)
+
+- `transport/linux/tests/mission_gate.rs` + `MISSION-GATE.md` (the
+  evidence report) + the `probe-uplink` subcommand. Tech Lead direct
+  work.
+- mission_gate_full_stack: the COMPLETE control-plane chain on real
+  sockets — identity → signed capability → advertisement discovery
+  with capability admission → authenticated link (sealed frames) to the
+  ADVERTISED udp endpoint → route commitment + circuit admission inside
+  the pinned QUIC tunnel → data plane (5 packets cross, responses
+  return). The participant learns the gateway identity + BOTH
+  transport endpoints from the SIGNED advertisement (nothing
+  hardcoded); rediscovery idempotent (Duplicate); link_id equality
+  cross-side asserted.
+- mission_gate_real_internet_crossing: the REAL-NETWORK leg — the
+  gateway uplink at a real public resolver (8.8.8.8:53 with 9.9.9.9 /
+  1.1.1.1 / 8.8.4.4 fallbacks); the participant's DNS query for
+  example.com. returns as a REAL response (txid echo + QR bit +
+  question echo; 61 bytes observed) THROUGH THE ENTIRE SHARENET
+  STACK. Live-egress-gated (tun_gated discipline: prints
+  REAL_INTERNET_UNAVAILABLE and skips on fully restrictive networks —
+  never a false pass).
+- mission_gate_refuses_tampered_capability_on_ramp: tampered
+  capability envelope in the advertisement fails discovery closed.
+- GATEWAY FIX found by the real leg: the uplink socket was
+  loopback-bound (EINVAL on real destinations) — now wildcard-bound
+  (the Internet side); all prior gateway tests still green.
+- Measured environment policy (probe-uplink evidence): UDP/53 open to
+  public resolvers (6/6 answered); other UDP ports + raw TCP blocked;
+  HTTPS allowlisted. The DNS-based crossing is the strongest
+  real-network verification achievable from this host; exit codes
+  typed (0 reachable / 3 unreachable / 2 usage).
+- Verification achieved: linux 61/61 (58 + 3 mission), quic 9/9
+  no-regression, governance PASS. Honest gaps recorded in
+  MISSION-GATE.md: Android device leg (R10-002 JNI bridge + device),
+  non-DNS destinations (need open-UDP network), real NAT shapes,
+  endurance (R10-003).
+
+### R5-003 — Contract projection — COMPLETE (Wave 9)
+
+- `connectivity/src/store.rs`: the durable local health projection per
+  adcos.md — persistence INSIDE the zero-dependency connectivity crate
+  (std file I/O only; the pure model+codec compiles on wasm32, the
+  file-backed store is gated non-wasm with the host seam documented).
+  Private node-local binary image v1 ("SNCP" magic, version+flags,
+  freshness window, records sorted by opaque id, 17 bytes/observation,
+  CRC-32/IEEE trailer; 4 MiB cap; atomic flush = temp+fsync+rename;
+  create never clobbers).
+- Restart semantics as code: load re-DERIVES every state by folding
+  the event mapping over the persisted log (a disagreeing persisted
+  summary → typed SummaryDisagrees, whole store refused); freshness
+  re-validated against caller-supplied CURRENT time (typed
+  ProjectionFreshness::{NoObservation,Fresh,Stale} — stale is
+  needs-refresh, never fresh); no-fabrication (reload serves the last
+  accepted observation with ORIGINAL freshness metadata, never
+  re-anchored); fail-closed corruption handling (every truncation and
+  every single-byte mutation of a valid image rejected — including
+  tamperers who recompute the CRC); no sequence regression across
+  restarts.
+- Integration with the real R5-002 stack: projection_store_probe
+  binary (REAL new process: inspect/accept; machine-parsable stdout)
+  + tests/durable_restart.rs — epoch 1 in-process (real AdcosClient +
+  real adcos_test_server over loopback TCP), dead-provider probe
+  (typed ProviderUnavailable, nothing fabricated), epoch 2/3 child
+  processes reload/continue across the boundary (terminate idempotence
+  preserved), epoch 4 verifies the child's durable write + redelivery
+  dedup; second test = 503 outage prelude, provider killed, full
+  teardown, reload shows last-accepted with original freshness, typed
+  stale.
+- Verification achieved: connectivity 50/50 (38 unit incl. 21 store
+  tests + 12 conformance), connectivity-client 42/42, wasm32 green,
+  zero warnings, governance PASS. Independently re-verified by the
+  Tech Lead at integration.
+- Honest gaps (documented): single-writer no locking, no parent-dir
+  fsync, full-image rewrite per flush, 4 MiB cap; production caller =
+  the future daemon wiring get_assurance → store; observations remain
+  provider-asserted until R5-004 signs them.
+
+## Wave 9 integration record (2026-09-15)
+
+- R4-006 on `work/wave9-a-ice-fallback` (874ef2d): subagent died at
+  context deadline mid-work; Tech Lead completed (5 multiprocess
+  evidence tests, ice_peer READY node-id fix, README), merged 7b35182.
+- R4-007 direct on main (c10e9bc): mission-gate composition + the
+  verified real-Internet crossing + the gateway wildcard-bind fix +
+  probe-uplink + MISSION-GATE.md.
+- R5-003 on `work/wave9-b-contract-projection` (b5788fa): subagent,
+  one clean run; Tech Lead independently re-verified; merged c5b61d8.
+- Registry: NO registry change — R4-006/R4-007 are transport-layer
+  runtime behavior over registered objects; R5-003's store image is
+  node-local durable state, never a wire object (documented in its
+  record).
+- Fresh audit on merged main: reference 148/0, connectivity 50/0,
+  connectivity-client 42/0, linux 61/61 (incl. 3 mission-gate tests
+  and the real-Internet leg), quic 9/9, ice 62/62, telemetry 35/0,
+  wasm32 protocol check green, conformance harness PASS (177 lines),
+  Android :vpn 67/67 + AAR, governance PASS.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 9 (all READY): R4-006 (restrictive-network fallback — predecessor
-  R4-005 COMPLETE), R4-007 (mission gate real Internet bridge —
-  predecessors R4-003, R4-004, R4-005 all COMPLETE; NOTE verify levels
-  are real-device/real-network — the sandbox can only deliver the
-  build/harness portions; the Tech Lead will record what was actually
-  verified and mark the rest as explicit gaps for the operator), R5-003
-  (contract projection — predecessor R5-002 COMPLETE).
+- Wave 10 (READY): R5-004 (signed observations — predecessors R5-002,
+  R5-003 COMPLETE).
+- Wave 11 becomes READY next: R5-005 (gateway admission/backhaul
+  policy — R3-003 ✓, R5-003 ✓, R5-004 pending), R6-001 (content
+  addressing — R3-004 ✓, R4-002 ✓), R7-001 (failure detector —
+  R4-002 ✓).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

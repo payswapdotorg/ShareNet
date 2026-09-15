@@ -1,0 +1,15 @@
+[package]
+name = "sharenet-conformance"
+description = "Rust leg of the ShareNet cross-language conformance harness (R1-003): replays the committed protocol vectors and emits canonical lines for the three-language byte-exact diff."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sharenet-protocol = { path = "../sharenet-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "sharenet-conformance"
+path = "src/main.rs"

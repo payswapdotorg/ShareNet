@@ -1,0 +1,192 @@
+"""Python leg of the ShareNet cross-language conformance harness (R1-003).
+
+Reads the committed vector files and prints byte-identical canonical lines to
+the Rust and TypeScript legs. Run:
+
+    python3 -m sharenet_conformance.runner [VECTORS_DIR]
+
+Exit code 0 only when every in-language check passes.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+from . import ed25519
+from .capability import admit, build_statement, CapabilityError  # noqa: F401
+from .cbor import decode, encode, value_eq, value_from_json
+from .identity import derive_node_id, node_identity_wire, public_key, verify_detached
+
+DEFAULT_VECTORS = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "..",
+    "..",
+    "crates",
+    "sharenet-protocol",
+    "tests",
+    "vectors",
+)
+
+failures = 0
+
+
+def fail(msg: str) -> None:
+    global failures
+    print(f"FAIL {msg}", file=sys.stderr)
+    failures += 1
+
+
+def load_json(vectors_dir: str, name: str) -> dict:
+    with open(os.path.join(vectors_dir, name), "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def to_hex(b: bytes) -> str:
+    return b.hex()
+
+
+def run(vectors_dir: str) -> int:
+    # ---------------- CBOR vectors ----------------
+    cbor_file = load_json(vectors_dir, "cbor_vectors.json")
+    for i, case in enumerate(cbor_file["roundtrip"]):
+        try:
+            data = bytes.fromhex(case["hex"])
+            v = decode(data)
+            if not value_eq(v, value_from_json(case["value"])):
+                fail(f"cbor roundtrip {i}: value mismatch")
+            re = encode(v)
+            if re != data:
+                fail(f"cbor roundtrip {i}: byte-stability broken")
+            print(f"CBOR_RT {i} {to_hex(re)}")
+        except Exception as e:  # noqa: BLE001
+            fail(f"cbor roundtrip {i}: {e}")
+    for i, case in enumerate(cbor_file["reject"]):
+        try:
+            decode(bytes.fromhex(case["hex"]))
+            fail(f"cbor reject {i}: unexpectedly decoded")
+        except Exception as e:  # noqa: BLE001
+            code = getattr(e, "code", None)
+            if code is None:
+                fail(f"cbor reject {i}: non-typed error {e}")
+                continue
+            if code != case["error"]:
+                fail(f"cbor reject {i}: {code} != {case['error']}")
+            print(f"CBOR_REJ {i} {code}")
+
+    # ---------------- identity vectors ----------------
+    ident = load_json(vectors_dir, "identity_vectors.json")
+    for i, case in enumerate(ident["cases"]):
+        try:
+            seed = bytes.fromhex(case["seed_hex"])
+            pk = public_key(seed)
+            node_id = derive_node_id(pk)
+            wire = node_identity_wire(
+                pk, case["created_at_unix"], case.get("display_name")
+            )
+            payload = bytes.fromhex(case["payload_hex"])
+            sig = bytes.fromhex(case["signature_hex"])
+            sig_ok = verify_detached(pk, payload, sig)
+            if not sig_ok:
+                fail(f"identity {i}: signature did not verify")
+            resign = ed25519.sign(seed, payload)
+            if to_hex(resign) != case["signature_hex"]:
+                fail(f"identity {i}: deterministic re-signature mismatch")
+            print(
+                f"IDENT {i} pk={to_hex(pk)} id={to_hex(node_id)} "
+                f"wire={to_hex(wire)} sig={'ok' if sig_ok else 'fail'}"
+            )
+        except Exception as e:  # noqa: BLE001
+            fail(f"identity {i}: {e}")
+
+    # ---------------- capability vectors ----------------
+    caps = load_json(vectors_dir, "capability_vectors.json")
+    for i, case in enumerate(caps["cases"]):
+        try:
+            seed = bytes.fromhex(case["seed_hex"])
+            pk = public_key(seed)
+            node_id = derive_node_id(pk)
+            limits = (
+                {k: int(v) for k, v in case["limits"].items()}
+                if case.get("limits") is not None
+                else None
+            )
+            wire = build_statement(
+                node_id,
+                list(case["capabilities"]),
+                case["issued_at_unix"],
+                case["expires_at_unix"],
+                limits,
+            )
+            sig = ed25519.sign(seed, wire)
+            print(
+                f"CAP {i} pk={to_hex(pk)} id={to_hex(node_id)} "
+                f"wire={to_hex(wire)} sig={to_hex(sig)}"
+            )
+        except Exception as e:  # noqa: BLE001
+            fail(f"capability {i}: {e}")
+    for i, a in enumerate(caps["admit"]):
+        try:
+            case = caps["cases"][a["case"]]
+            seed = bytes.fromhex(case["seed_hex"])
+            pk = public_key(seed)
+            if a.get("verify_key") == "next":
+                other = caps["cases"][(a["case"] + 1) % len(caps["cases"])]
+                verifier_pk = public_key(bytes.fromhex(other["seed_hex"]))
+            else:
+                verifier_pk = pk
+            node_id = derive_node_id(pk)
+            limits = (
+                {k: int(v) for k, v in case["limits"].items()}
+                if case.get("limits") is not None
+                else None
+            )
+            wire = build_statement(
+                node_id,
+                list(case["capabilities"]),
+                case["issued_at_unix"],
+                case["expires_at_unix"],
+                limits,
+            )
+            sig = ed25519.sign(seed, wire)
+            try:
+                admit(wire, sig, verifier_pk, a["now_unix"], list(a["require"]))
+                outcome = "ok"
+            except Exception as e:  # noqa: BLE001
+                outcome = getattr(e, "code", f"untyped:{e}")
+            print(f"ADMIT {i} now={a['now_unix']} require={','.join(a['require'])} {outcome}")
+        except Exception as e:  # noqa: BLE001
+            fail(f"admit {i}: {e}")
+    for i, r in enumerate(caps["parse_reject"]):
+        try:
+            try:
+                decode(bytes.fromhex(r["hex"]))
+                # decoded fine as raw CBOR; the statement-level parse may
+                # still reject — fall through to the statement parse
+            except Exception as e:  # noqa: BLE001
+                code = getattr(e, "code", "Unknown")
+                print(f"CAP_REJ {i} cbor:{code}")
+                continue
+            from .capability import parse_statement
+
+            parse_statement(bytes.fromhex(r["hex"]))
+            fail(f"capability parse_reject {i}: unexpectedly parsed")
+        except Exception as e:  # noqa: BLE001
+            code = getattr(e, "code", f"untyped:{e}")
+            print(f"CAP_REJ {i} {code}")
+
+    return 0 if failures == 0 else 1
+
+
+def main() -> int:
+    vectors_dir = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_VECTORS
+    rc = run(os.path.abspath(vectors_dir))
+    if rc != 0:
+        print(f"{failures} conformance check(s) failed", file=sys.stderr)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

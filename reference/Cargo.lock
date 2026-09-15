@@ -271,6 +271,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharenet-conformance"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sharenet-protocol",
+]
+
+[[package]]
 name = "sharenet-protocol"
 version = "0.1.0"
 dependencies = [

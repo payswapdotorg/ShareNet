@@ -72,6 +72,16 @@ pub const NODE_ID_LEN: usize = 32;
 pub struct NodeId([u8; NODE_ID_LEN]);
 
 impl NodeId {
+    /// Wrap 32 raw bytes as a node identifier.
+    ///
+    /// Callers normally obtain a `NodeId` by DERIVING it from a public key
+    /// ([`derive_node_id`]); this constructor exists for consumers that hold
+    /// an already-derived identifier (e.g. the node bound inside a parsed
+    /// `CapabilityStatement`) and does not validate provenance.
+    pub fn from_bytes(bytes: [u8; NODE_ID_LEN]) -> Self {
+        NodeId(bytes)
+    }
+
     /// The raw 32 bytes.
     pub fn as_bytes(&self) -> &[u8; NODE_ID_LEN] {
         &self.0

@@ -34,6 +34,7 @@
 pub mod advertisement;
 pub mod cbor;
 pub mod capability;
+pub mod circuit;
 pub mod identity;
 pub mod link;
 pub mod route;
@@ -49,6 +50,12 @@ pub use cbor::{decode, encode, DecodeError, EncodeError, Value};
 pub use capability::{
     admit, Admitted, AdmissionError, Capability, CapabilityError, CapabilityStatement,
     SignedCapabilityStatement, CAP_SCHEME_VERSION, MAX_LIMITS_ENTRIES, MAX_LIMIT_KEY_BYTES,
+};
+pub use circuit::{
+    derive_circuit_id, setup_digest, AckOutcome, CircuitDestroy, CircuitError, CircuitFrame,
+    CircuitRegistry, CircuitSetup, CircuitSetupAck, CIRCUIT_MAX_PAYLOAD, CIRCUIT_MAX_PATH,
+    CIRCUIT_MAX_WINDOW, CIRCUIT_SCHEME_VERSION, DESTROY_REASONS, DIRECTION_EXIT_TO_INITIATOR,
+    DIRECTION_INITIATOR_TO_EXIT,
 };
 pub use route::{
     derive_proposal_id, derive_route_id, merkle_root, RouteAcceptance, RouteCommitment,

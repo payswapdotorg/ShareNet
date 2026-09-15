@@ -30,6 +30,9 @@ use std::process::ExitCode;
 use serde::Deserialize;
 
 use sharenet_protocol::cbor::{decode, encode, Value};
+use sharenet_protocol::circuit::{
+    CircuitDestroy, CircuitFrame, CircuitRegistry, CircuitSetup, CircuitSetupAck,
+};
 use sharenet_protocol::route::{RouteAcceptance, RouteCommitment, RouteProposal};
 use sharenet_protocol::topology::{
     LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence, TopologyEvidence,
@@ -629,6 +632,223 @@ fn main() -> ExitCode {
             Ok(_) => "ok".to_string(),
         };
         println!("ROUTE_REJ {i} {outcome}");
+    }
+
+    // ---------------- circuit vectors (R4-002) ----------------
+    #[derive(Deserialize)]
+    struct CircuitFile {
+        cases: Vec<CircuitCaseV>,
+        rejects: Vec<CircuitRejectV>,
+    }
+    #[derive(Deserialize)]
+    struct CircuitCaseV {
+        proposer_seed_hex: String,
+        proposer_created_at_unix: u64,
+        hop_seed_hexes: Vec<String>,
+        hop_created_at_unix: u64,
+        service_class: String,
+        proposed_at_unix: u64,
+        validity_secs: u64,
+        proposal_nonce_hex: String,
+        accepted_at_unix: u64,
+        acceptance_validity_secs: u64,
+        setup_nonce_hex: String,
+        setup_issued_at_unix: u64,
+        setup_validity_secs: u64,
+        ack_accepted_at_unix: u64,
+        ack_validity_secs: u64,
+        frames: Vec<CircuitFrameV>,
+        destroy_sender_position: u64,
+        destroy_reason: String,
+        destroyed_at_unix: u64,
+        admission_now_unix: u64,
+    }
+    #[derive(Deserialize)]
+    struct CircuitFrameV {
+        direction: u64,
+        seq: u64,
+        payload_hex: String,
+    }
+    #[derive(Deserialize)]
+    struct CircuitRejectV {
+        kind: String,
+        hex: String,
+        error: String,
+    }
+    let circuit_file: CircuitFile = load_json(&vectors_dir.join("circuit_vectors.json"));
+    for (i, c) in circuit_file.cases.iter().enumerate() {
+        let seed: [u8; 32] = from_hex(&c.proposer_seed_hex).try_into().expect("seed");
+        let proposer = Identity::from_seed(seed, c.proposer_created_at_unix, None).expect("id");
+        let hops: Vec<Identity> = c
+            .hop_seed_hexes
+            .iter()
+            .map(|s| {
+                let seed: [u8; 32] = from_hex(s).try_into().expect("seed");
+                Identity::from_seed(seed, c.hop_created_at_unix, None).expect("id")
+            })
+            .collect();
+        let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
+        path.push(*proposer.node_id().as_bytes());
+        let nonce: [u8; 32] = from_hex(&c.proposal_nonce_hex).try_into().unwrap();
+        let proposal = RouteProposal::new(
+            &proposer,
+            path,
+            c.service_class.clone(),
+            c.proposed_at_unix,
+            c.validity_secs,
+            nonce,
+        )
+        .expect("proposal");
+        let proposal_env = proposal.sign(&proposer).expect("sign");
+        let proposal_id = sharenet_protocol::route::derive_proposal_id(proposal_env.bytes());
+        let mut members: Vec<&Identity> = hops.iter().collect();
+        members.push(&proposer);
+        members.sort_by_key(|m| *m.node_id().as_bytes());
+        let acceptance_envs: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(pos, m)| {
+                let a = RouteAcceptance::new(
+                    m,
+                    proposal_id,
+                    pos as u64,
+                    c.accepted_at_unix,
+                    c.acceptance_validity_secs,
+                )
+                .expect("acceptance");
+                a.sign(m).expect("sign")
+            })
+            .collect();
+        let commitment =
+            RouteCommitment::build(1_100, proposal_env, acceptance_envs).expect("commit");
+        let setup_nonce: [u8; 32] = from_hex(&c.setup_nonce_hex).try_into().unwrap();
+        let setup =
+            CircuitSetup::new(&commitment, &proposer, setup_nonce, c.setup_issued_at_unix, c.setup_validity_secs)
+                .expect("setup");
+        let setup_env = setup.sign(&proposer).expect("sign");
+        let circuit_id =
+            sharenet_protocol::circuit::derive_circuit_id(commitment.route_id(), &setup_nonce);
+        let acks: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(pos, m)| {
+                let a = CircuitSetupAck::new(
+                    circuit_id,
+                    &setup_env,
+                    m,
+                    pos as u64,
+                    c.ack_accepted_at_unix,
+                    c.ack_validity_secs,
+                )
+                .expect("ack");
+                a.sign(m).expect("sign")
+            })
+            .collect();
+        let mut seqs = [0u64; 3];
+        let frame_objs: Vec<_> = c
+            .frames
+            .iter()
+            .map(|f| {
+                let obj = CircuitFrame::new(
+                    circuit_id,
+                    f.direction,
+                    seqs[f.direction as usize],
+                    from_hex(&f.payload_hex),
+                )
+                .expect("frame");
+                seqs[f.direction as usize] += 1;
+                obj
+            })
+            .collect();
+        let destroy_sender = members[c.destroy_sender_position as usize];
+        let destroy =
+            CircuitDestroy::new(circuit_id, destroy_sender, c.destroy_reason.clone(), c.destroyed_at_unix)
+                .expect("destroy");
+        let destroy_env = destroy.sign(destroy_sender).expect("sign");
+        // admission replay at the recorded time
+        let mut registry = CircuitRegistry::new();
+        let admitted = registry.admit_setup(c.admission_now_unix, &setup_env).expect("admit");
+        assert_eq!(admitted, circuit_id);
+        for ack in &acks {
+            registry.admit_ack(c.admission_now_unix, ack).expect("ack admit");
+        }
+        for frame in &frame_objs {
+            registry.admit_frame(frame).expect("frame admit");
+        }
+        registry.admit_destroy(&destroy_env).expect("destroy admit");
+        assert!(registry.circuit(&circuit_id).unwrap().destroyed());
+        let ack_hexes: Vec<String> = acks
+            .iter()
+            .map(|e| to_hex(&e.to_envelope_bytes()))
+            .collect();
+        let frame_hexes: Vec<String> = frame_objs
+            .iter()
+            .map(|f| to_hex(&f.to_wire_bytes()))
+            .collect();
+        println!(
+            "CIRCUIT {i} setup={} acks={} frames={} destroy={} id={}",
+            to_hex(&setup_env.to_envelope_bytes()),
+            ack_hexes.join(","),
+            frame_hexes.join(","),
+            to_hex(&destroy_env.to_envelope_bytes()),
+            to_hex(&circuit_id),
+        );
+    }
+    for (i, r) in circuit_file.rejects.iter().enumerate() {
+        let bytes = from_hex(&r.hex);
+        let outcome = match r.kind.as_str() {
+            "frame" => match CircuitFrame::from_wire_bytes(&bytes) {
+                Err(e) => e.name().to_string(),
+                Ok(_) => "ok".to_string(),
+            },
+            "setup" => {
+                match sharenet_protocol::route::SignedEnvelope::from_envelope_bytes(&bytes) {
+                    Ok(env) => match CircuitSetup::from_wire_bytes(env.bytes()) {
+                        Err(e) => e.name().to_string(),
+                        Ok(setup) => match setup
+                            .initiator_identity()
+                            .verify_detached(env.bytes(), env.signature())
+                        {
+                            Err(_) => "setup_signature_invalid".to_string(),
+                            Ok(()) => "ok".to_string(),
+                        },
+                    },
+                    Err(e) => e.to_string(),
+                }
+            }
+            "ack" => {
+                match sharenet_protocol::route::SignedEnvelope::from_envelope_bytes(&bytes) {
+                    Ok(env) => match CircuitSetupAck::from_wire_bytes(env.bytes()) {
+                        Err(e) => e.name().to_string(),
+                        Ok(ack) => match ack
+                            .accepting_identity()
+                            .verify_detached(env.bytes(), env.signature())
+                        {
+                            Err(_) => "ack_signature_invalid".to_string(),
+                            Ok(()) => "ok".to_string(),
+                        },
+                    },
+                    Err(e) => e.to_string(),
+                }
+            }
+            "destroy" => {
+                match sharenet_protocol::route::SignedEnvelope::from_envelope_bytes(&bytes) {
+                    Ok(env) => match CircuitDestroy::from_wire_bytes(env.bytes()) {
+                        Err(e) => e.name().to_string(),
+                        Ok(destroy) => match destroy
+                            .sender_identity()
+                            .verify_detached(env.bytes(), env.signature())
+                        {
+                            Err(_) => "destroy_signature_invalid".to_string(),
+                            Ok(()) => "ok".to_string(),
+                        },
+                    },
+                    Err(e) => e.to_string(),
+                }
+            }
+            other => panic!("unknown reject kind {other:?}"),
+        };
+        println!("CIRCUIT_REJ {i} {outcome}");
     }
 
     // ---------------- NodeIdentity decode spot check ----------------

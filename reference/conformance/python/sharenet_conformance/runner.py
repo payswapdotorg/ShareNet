@@ -17,6 +17,7 @@ import os
 import sys
 
 from . import advertisement as admod
+from . import circuit as circuitmod
 from . import route as routemod
 from . import topology as topomod
 from . import ed25519
@@ -419,6 +420,108 @@ def run(vectors_dir: str) -> int:
             fail(f"route {i}: {e}")
     for i, r in enumerate(route_file["rejects"]):
         print(f"ROUTE_REJ {i} {r['error']}")
+
+    # ---------------- circuit vectors (R4-002) ----------------
+    circuit_file = load_json(vectors_dir, "circuit_vectors.json")
+    for i, c in enumerate(circuit_file["cases"]):
+        try:
+            proposer_pk = public_key(bytes.fromhex(c["proposer_seed_hex"]))
+            hop_pks = [public_key(bytes.fromhex(s)) for s in c["hop_seed_hexes"]]
+            path = [derive_node_id(pk) for pk in hop_pks] + [derive_node_id(proposer_pk)]
+            sorted_path = sorted(path)
+            proposal = routemod.build_proposal(
+                proposer_pk,
+                c["proposer_created_at_unix"],
+                sorted_path,
+                c["service_class"],
+                c["proposed_at_unix"],
+                c["validity_secs"],
+                bytes.fromhex(c["proposal_nonce_hex"]),
+            )
+            from . import ed25519 as ed
+
+            proposal_sig = ed.sign(bytes.fromhex(c["proposer_seed_hex"]), proposal)
+            proposal_env = routemod.envelope(proposal, proposal_sig)
+            pid = routemod.proposal_id_of(proposal)
+            members = [
+                (pk, c["hop_created_at_unix"], seed)
+                for pk, seed in zip(hop_pks, c["hop_seed_hexes"])
+            ] + [
+                (
+                    proposer_pk,
+                    c["proposer_created_at_unix"],
+                    c["proposer_seed_hex"],
+                )
+            ]
+            members.sort(key=lambda m: derive_node_id(m[0]))
+            acceptance_envs = []
+            for pos, (pk, created, seed) in enumerate(members):
+                acc = routemod.build_acceptance(
+                    pid, pk, created, pos, c["accepted_at_unix"], c["acceptance_validity_secs"]
+                )
+                sig = ed.sign(bytes.fromhex(seed), acc)
+                acceptance_envs.append(routemod.envelope(acc, sig))
+            from .cbor import decode as cbor_decode
+
+            leaves = []
+            for env in acceptance_envs:
+                v = cbor_decode(env)
+                leaves.append(hashlib.sha256(v[0][1]).digest())
+            root = routemod.merkle_root(leaves)
+            route_id = routemod.derive_route_id(root)
+            # ---- circuit objects on top of the commitment ----
+            setup_nonce = bytes.fromhex(c["setup_nonce_hex"])
+            commitment = circuitmod.commitment_wire(proposal_env, acceptance_envs, root, route_id)
+            setup = circuitmod.build_setup(
+                commitment,
+                setup_nonce,
+                proposer_pk,
+                c["proposer_created_at_unix"],
+                c["setup_issued_at_unix"],
+                c["setup_validity_secs"],
+            )
+            setup_sig = ed.sign(bytes.fromhex(c["proposer_seed_hex"]), setup)
+            setup_env = routemod.envelope(setup, setup_sig)
+            circuit_id = circuitmod.derive_circuit_id(route_id, setup_nonce)
+            ack_envs = []
+            for pos, (pk, created, seed) in enumerate(members):
+                ack = circuitmod.build_ack(
+                    circuit_id,
+                    setup,
+                    pk,
+                    created,
+                    pos,
+                    c["ack_accepted_at_unix"],
+                    c["ack_validity_secs"],
+                )
+                sig = ed.sign(bytes.fromhex(seed), ack)
+                ack_envs.append(routemod.envelope(ack, sig))
+            frame_wires = [
+                circuitmod.build_frame(
+                    circuit_id, f["direction"], f["seq"], bytes.fromhex(f["payload_hex"])
+                )
+                for f in c["frames"]
+            ]
+            sender_pk, sender_created, sender_seed = members[c["destroy_sender_position"]]
+            destroy = circuitmod.build_destroy(
+                circuit_id,
+                sender_pk,
+                sender_created,
+                c["destroy_reason"],
+                c["destroyed_at_unix"],
+            )
+            destroy_sig = ed.sign(bytes.fromhex(sender_seed), destroy)
+            destroy_env = routemod.envelope(destroy, destroy_sig)
+            print(
+                f"CIRCUIT {i} setup={setup_env.hex()} "
+                f"acks={','.join(e.hex() for e in ack_envs)} "
+                f"frames={','.join(f.hex() for f in frame_wires)} "
+                f"destroy={destroy_env.hex()} id={circuit_id.hex()}"
+            )
+        except Exception as e:  # noqa: BLE001
+            fail(f"circuit {i}: {e}")
+    for i, r in enumerate(circuit_file["rejects"]):
+        print(f"CIRCUIT_REJ {i} {r['error']}")
 
     return 0 if failures == 0 else 1
 

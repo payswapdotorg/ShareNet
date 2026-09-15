@@ -329,6 +329,68 @@ struct RouteReject {
 }
 
 #[derive(Serialize, Deserialize)]
+struct CircuitVectorsFile {
+    scheme: String,
+    description: String,
+    cases: Vec<CircuitCase>,
+    rejects: Vec<CircuitReject>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CircuitCase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    proposer_seed_hex: String,
+    proposer_created_at_unix: u64,
+    hop_seed_hexes: Vec<String>,
+    hop_created_at_unix: u64,
+    service_class: String,
+    proposed_at_unix: u64,
+    validity_secs: u64,
+    proposal_nonce_hex: String,
+    accepted_at_unix: u64,
+    acceptance_validity_secs: u64,
+    setup_nonce_hex: String,
+    setup_issued_at_unix: u64,
+    setup_validity_secs: u64,
+    ack_accepted_at_unix: u64,
+    ack_validity_secs: u64,
+    frames: Vec<CircuitFrameCase>,
+    destroy_sender_position: u64,
+    destroy_reason: String,
+    destroyed_at_unix: u64,
+    admission_now_unix: u64,
+    proposal_envelope_hex: String,
+    acceptance_envelope_hexes: Vec<String>,
+    commitment_wire_hex: String,
+    route_id_hex: String,
+    setup_envelope_hex: String,
+    circuit_id_hex: String,
+    ack_envelope_hexes: Vec<String>,
+    frame_wire_hexes: Vec<String>,
+    destroy_envelope_hex: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CircuitFrameCase {
+    direction: u64,
+    seq: u64,
+    payload_hex: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CircuitReject {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    /// Which object the bytes are: setup | ack | frame | destroy
+    /// (setups/acks/destroys arrive as carrying envelopes {1: obj, 2:
+    /// signature}; frames arrive bare).
+    kind: String,
+    hex: String,
+    error: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct CborVectorsFile {
     profile: String,
     description: String,
@@ -1554,6 +1616,361 @@ verification with the named typed error (verification at the recorded times).".i
 }
 
 // ---------------------------------------------------------------------------
+// Circuit vectors (R4-002)
+// ---------------------------------------------------------------------------
+
+fn crate_bytes(v: &Value) -> Vec<u8> {
+    use sharenet_protocol::cbor::encode;
+    encode(v).expect("in-profile")
+}
+
+fn frame_wire(circuit_id: [u8; 32], direction: u64, seq: u64, payload: &[u8]) -> Vec<u8> {
+    crate_bytes(&Value::Map(vec![
+        (Value::Int(1), Value::Int(1)),
+        (Value::Int(2), Value::Bytes(circuit_id.to_vec())),
+        (Value::Int(3), Value::Int(direction as i64)),
+        (Value::Int(4), Value::Int(seq as i64)),
+        (Value::Int(5), Value::Bytes(payload.to_vec())),
+    ]))
+}
+
+fn circuit_vectors() -> CircuitVectorsFile {
+    use sharenet_protocol::circuit::{
+        derive_circuit_id, CircuitDestroy, CircuitFrame, CircuitRegistry, CircuitSetup,
+        CircuitSetupAck,
+    };
+    use sharenet_protocol::route::{derive_proposal_id, RouteAcceptance, RouteCommitment, RouteProposal};
+    let mk = |seed_hex: &str, created: u64| -> Identity {
+        let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
+        Identity::from_seed(seed, created, None).unwrap()
+    };
+    struct In<'a> {
+        note: &'a str,
+        proposer_seed: &'a str,
+        hop_seeds: Vec<&'a str>,
+        service: &'a str,
+        setup_nonce_hex: &'a str,
+        frames: Vec<(u64, &'a str)>,
+        destroy_sender_position: u64,
+        destroy_reason: &'a str,
+    }
+    let cases_in = vec![
+        In {
+            note: "two-hop live circuit: setup, full acks, frames both directions, destroy by hop",
+            proposer_seed: "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            hop_seeds: vec![
+                "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+                "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            ],
+            service: "live",
+            setup_nonce_hex: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            frames: vec![
+                (1, "667272616d652d302d64617461"),
+                (1, "667272616d652d31"),
+                (2, "7265706c792d30"),
+            ],
+            destroy_sender_position: 2,
+            destroy_reason: "link_failure",
+        },
+        In {
+            note: "same membership, fresh setup nonce -> fresh circuit_id (L014 replacement)",
+            proposer_seed: "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            hop_seeds: vec![
+                "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+                "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            ],
+            service: "opportunistic",
+            setup_nonce_hex: "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+            frames: vec![(1, "7265706c6163656d656e742d6672616d65")],
+            destroy_sender_position: 0,
+            destroy_reason: "replaced",
+        },
+        In {
+            note: "single-hop dtn circuit destroyed by the proposer",
+            proposer_seed: "f67e23f4c2f7b0e6b1d54d1e8a3c9b0f6e2d4c5b8a7f6e5d4c3b2a1908f7e6d5",
+            hop_seeds: vec!["8d3d3a3a9b9b7c7c6d6d5e5e4f4f303021212222323434555667778899aabbcc"],
+            service: "dtn",
+            setup_nonce_hex: "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+            frames: vec![(1, "64746e2d7061796c6f6164"), (2, "64746e2d7265706c79")],
+            destroy_sender_position: 0,
+            destroy_reason: "completed",
+        },
+    ];
+    let proposal_nonce_hex = "0101010101010101010101010101010101010101010101010101010101010101";
+    let mut cases = Vec::new();
+    for cin in &cases_in {
+        let proposer = mk(cin.proposer_seed, 0);
+        let hops: Vec<Identity> = cin.hop_seeds.iter().map(|s| mk(s, 1)).collect();
+        let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
+        path.push(*proposer.node_id().as_bytes());
+        let proposal_nonce: [u8; 32] = from_hex(proposal_nonce_hex).try_into().unwrap();
+        let proposal =
+            RouteProposal::new(&proposer, path.clone(), cin.service, 1_000, 600, proposal_nonce)
+                .unwrap();
+        let proposal_env = proposal.sign(&proposer).unwrap();
+        let proposal_id = derive_proposal_id(proposal_env.bytes());
+        let mut members: Vec<&Identity> = hops.iter().collect();
+        members.push(&proposer);
+        members.sort_by_key(|i| *i.node_id().as_bytes());
+        let acceptance_envs: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let a = RouteAcceptance::new(m, proposal_id, i as u64, 1_001, 600).unwrap();
+                a.sign(m).unwrap()
+            })
+            .collect();
+        let commitment =
+            RouteCommitment::build(1_100, proposal_env.clone(), acceptance_envs.clone()).unwrap();
+        let setup_nonce: [u8; 32] = from_hex(cin.setup_nonce_hex).try_into().unwrap();
+        let setup = CircuitSetup::new(&commitment, &proposer, setup_nonce, 1_100, 600).unwrap();
+        let setup_env = setup.sign(&proposer).unwrap();
+        let circuit_id = derive_circuit_id(commitment.route_id(), &setup_nonce);
+        let acks: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let a = CircuitSetupAck::new(circuit_id, &setup_env, m, i as u64, 1_101, 500)
+                    .unwrap();
+                a.sign(m).unwrap()
+            })
+            .collect();
+        let mut seqs = [0u64; 3];
+        let frame_objs: Vec<_> = cin
+            .frames
+            .iter()
+            .map(|(direction, payload_hex)| {
+                let obj = CircuitFrame::new(
+                    circuit_id,
+                    *direction,
+                    seqs[*direction as usize],
+                    from_hex(payload_hex),
+                )
+                .unwrap();
+                seqs[*direction as usize] += 1;
+                obj
+            })
+            .collect();
+        let destroy_sender = members[cin.destroy_sender_position as usize];
+        let destroy =
+            CircuitDestroy::new(circuit_id, destroy_sender, cin.destroy_reason, 1_300).unwrap();
+        let destroy_env = destroy.sign(destroy_sender).unwrap();
+        // admission replay at the recorded time: everything must pass
+        let mut registry = CircuitRegistry::new();
+        let admitted = registry.admit_setup(1_150, &setup_env).unwrap();
+        assert_eq!(admitted, circuit_id);
+        for (i, ack) in acks.iter().enumerate() {
+            let outcome = registry.admit_ack(1_150, ack).unwrap();
+            assert_eq!(outcome.established(), i == acks.len() - 1);
+        }
+        for frame in &frame_objs {
+            registry.admit_frame(frame).unwrap();
+        }
+        registry.admit_destroy(&destroy_env).unwrap();
+        assert!(registry.circuit(&circuit_id).unwrap().destroyed());
+        cases.push(CircuitCase {
+            note: Some(cin.note.to_string()),
+            proposer_seed_hex: cin.proposer_seed.to_string(),
+            proposer_created_at_unix: 0,
+            hop_seed_hexes: cin.hop_seeds.iter().map(|s| s.to_string()).collect(),
+            hop_created_at_unix: 1,
+            service_class: cin.service.to_string(),
+            proposed_at_unix: 1_000,
+            validity_secs: 600,
+            proposal_nonce_hex: proposal_nonce_hex.into(),
+            accepted_at_unix: 1_001,
+            acceptance_validity_secs: 600,
+            setup_nonce_hex: cin.setup_nonce_hex.to_string(),
+            setup_issued_at_unix: 1_100,
+            setup_validity_secs: 600,
+            ack_accepted_at_unix: 1_101,
+            ack_validity_secs: 500,
+            frames: frame_objs
+                .iter()
+                .map(|f| CircuitFrameCase {
+                    direction: f.direction(),
+                    seq: f.seq(),
+                    payload_hex: common_hex(f.payload()),
+                })
+                .collect(),
+            destroy_sender_position: cin.destroy_sender_position,
+            destroy_reason: cin.destroy_reason.to_string(),
+            destroyed_at_unix: 1_300,
+            admission_now_unix: 1_150,
+            proposal_envelope_hex: common_hex(&proposal_env.to_envelope_bytes()),
+            acceptance_envelope_hexes: acceptance_envs
+                .iter()
+                .map(|e| common_hex(&e.to_envelope_bytes()))
+                .collect(),
+            commitment_wire_hex: common_hex(&commitment.to_wire_bytes()),
+            route_id_hex: common_hex(commitment.route_id()),
+            setup_envelope_hex: common_hex(&setup_env.to_envelope_bytes()),
+            circuit_id_hex: common_hex(&circuit_id),
+            ack_envelope_hexes: acks
+                .iter()
+                .map(|e| common_hex(&e.to_envelope_bytes()))
+                .collect(),
+            frame_wire_hexes: frame_objs
+                .iter()
+                .map(|f| common_hex(&f.to_wire_bytes()))
+                .collect(),
+            destroy_envelope_hex: common_hex(&destroy_env.to_envelope_bytes()),
+        });
+    }
+    // rejects: self-contained wire/verification failures
+    let mut rejects = Vec::new();
+    {
+        use sharenet_protocol::route::SignedEnvelope;
+        let proposer = mk(
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            0,
+        );
+        let hop = mk(
+            "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+            1,
+        );
+        let mut path: Vec<[u8; 32]> = vec![*hop.node_id().as_bytes()];
+        path.push(*proposer.node_id().as_bytes());
+        let proposal = RouteProposal::new(&proposer, path, "live", 1_000, 600, [0x42; 32]).unwrap();
+        let proposal_env = proposal.sign(&proposer).unwrap();
+        let proposal_id = derive_proposal_id(proposal_env.bytes());
+        let mut members: Vec<&Identity> = vec![&hop, &proposer];
+        members.sort_by_key(|i| *i.node_id().as_bytes());
+        let acceptance_envs: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let a = RouteAcceptance::new(m, proposal_id, i as u64, 1_001, 600).unwrap();
+                a.sign(m).unwrap()
+            })
+            .collect();
+        let commitment = RouteCommitment::build(1_100, proposal_env, acceptance_envs).unwrap();
+        let setup = CircuitSetup::new(&commitment, &proposer, [0x77; 32], 1_100, 600).unwrap();
+        let setup_env = setup.sign(&proposer).unwrap();
+        let circuit_id = derive_circuit_id(commitment.route_id(), &[0x77; 32]);
+
+        // 1. tampered setup bytes -> signature invalid
+        let mut tampered = setup_env.to_envelope_bytes();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        rejects.push(CircuitReject {
+            note: Some("tampered setup bytes (signature invalid)".into()),
+            kind: "setup".into(),
+            hex: common_hex(&tampered),
+            error: "setup_signature_invalid".into(),
+        });
+
+        // 2. setup nonce wrong length (hand-built wire)
+        {
+            let mut wire = setup.to_wire();
+            if let Value::Map(ref mut entries) = wire {
+                for (k, v) in entries.iter_mut() {
+                    if let Value::Int(3) = k {
+                        *v = Value::Bytes(vec![0x77; 31]);
+                    }
+                }
+            }
+            let bytes = crate_bytes(&wire);
+            let env = SignedEnvelope::new(bytes.clone(), proposer.sign_detached(&bytes));
+            rejects.push(CircuitReject {
+                note: Some("setup nonce of 31 bytes".into()),
+                kind: "setup".into(),
+                hex: common_hex(&env.to_envelope_bytes()),
+                error: "nonce_wrong_length".into(),
+            });
+        }
+
+        // 3. frame with unknown direction
+        rejects.push(CircuitReject {
+            note: Some("frame with direction 3".into()),
+            kind: "frame".into(),
+            hex: common_hex(&frame_wire(circuit_id, 3, 0, b"x")),
+            error: "direction_unknown".into(),
+        });
+
+        // 4. frame with empty payload
+        rejects.push(CircuitReject {
+            note: Some("frame with empty payload".into()),
+            kind: "frame".into(),
+            hex: common_hex(&frame_wire(circuit_id, 1, 0, b"")),
+            error: "payload_empty".into(),
+        });
+
+        // 5. destroy with unknown reason
+        {
+            let wire = Value::Map(vec![
+                (Value::Int(1), Value::Int(1)),
+                (Value::Int(2), Value::Bytes(circuit_id.to_vec())),
+                (Value::Int(3), proposer.node_identity().to_wire()),
+                (Value::Int(4), Value::Text("because".into())),
+                (Value::Int(5), Value::Int(1_300)),
+            ]);
+            let bytes = crate_bytes(&wire);
+            let env = SignedEnvelope::new(bytes.clone(), proposer.sign_detached(&bytes));
+            rejects.push(CircuitReject {
+                note: Some("destroy with reason outside the frozen set".into()),
+                kind: "destroy".into(),
+                hex: common_hex(&env.to_envelope_bytes()),
+                error: "reason_unknown".into(),
+            });
+        }
+
+        // 6. setup with a window exceeding the maximum
+        {
+            let mut wire = setup.to_wire();
+            if let Value::Map(ref mut entries) = wire {
+                for (k, v) in entries.iter_mut() {
+                    if let Value::Int(6) = k {
+                        *v = Value::Int((1_100 + 3_601) as i64);
+                    }
+                }
+            }
+            let bytes = crate_bytes(&wire);
+            let env = SignedEnvelope::new(bytes.clone(), proposer.sign_detached(&bytes));
+            rejects.push(CircuitReject {
+                note: Some("setup window of 3601s".into()),
+                kind: "setup".into(),
+                hex: common_hex(&env.to_envelope_bytes()),
+                error: "setup_window_exceeded".into(),
+            });
+        }
+
+        // 7. tampered ack bytes -> signature invalid
+        {
+            let position = members
+                .iter()
+                .position(|m| m.node_id() == hop.node_id())
+                .unwrap() as u64;
+            let ack =
+                CircuitSetupAck::new(circuit_id, &setup_env, &hop, position, 1_101, 500).unwrap();
+            let ack_env = ack.sign(&hop).unwrap();
+            let mut tampered = ack_env.to_envelope_bytes();
+            let last = tampered.len() - 1;
+            tampered[last] ^= 0x01;
+            rejects.push(CircuitReject {
+                note: Some("tampered ack bytes (signature invalid)".into()),
+                kind: "ack".into(),
+                hex: common_hex(&tampered),
+                error: "ack_signature_invalid".into(),
+            });
+        }
+    }
+    CircuitVectorsFile {
+        scheme: "sharenet-circuit-v1".into(),
+        description: "Route-to-circuit binding vectors (R4-002). For every case the harness \
+MUST: rebuild the proposer + hops from seeds, rebuild the route proposal + \
+acceptances + commitment (R3-004 chain) byte-exactly, then the setup envelope, \
+derive circuit_id = SHA-256(context || route_id || setup_nonce), reproduce every \
+ack envelope, every frame wire, and the destroy envelope byte-exactly, and replay \
+the admission sequence at admission_now_unix (setup admitted, acks -> established, \
+frames accepted, destroy terminal). rejects[] are full envelope/frame wire bytes \
+that MUST fail at the named step with the named typed error.".into(),
+        cases,
+        rejects,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2404,6 +2821,215 @@ fn vectors_conformance() {
         };
         assert_eq!(err.name(), r.error, "route reject {}", r.hex);
     }
+
+    // ---- circuit binding vectors (R4-002) ----
+    let circuit_file: CircuitVectorsFile = serde_json::from_str(
+        &std::fs::read_to_string(vectors_path("circuit_vectors.json"))
+            .expect("circuit_vectors.json must exist"),
+    )
+    .expect("circuit_vectors.json parses");
+    assert_eq!(circuit_file.scheme, "sharenet-circuit-v1");
+    use sharenet_protocol::circuit::{
+        CircuitDestroy as CDest, CircuitFrame as CFrm, CircuitRegistry as CReg,
+        CircuitSetup as CSetup, CircuitSetupAck as CAck,
+    };
+    use sharenet_protocol::route::{
+        RouteAcceptance as CAcc, RouteCommitment as CCom, RouteProposal as CProp,
+        SignedEnvelope as CEnv,
+    };
+    for (i, c) in circuit_file.cases.iter().enumerate() {
+        let proposer = {
+            let seed: [u8; SEED_LEN] = from_hex(&c.proposer_seed_hex).try_into().unwrap();
+            Identity::from_seed(seed, c.proposer_created_at_unix, None).unwrap()
+        };
+        let hops: Vec<Identity> = c
+            .hop_seed_hexes
+            .iter()
+            .map(|s| {
+                let seed: [u8; SEED_LEN] = from_hex(s).try_into().unwrap();
+                Identity::from_seed(seed, c.hop_created_at_unix, None).unwrap()
+            })
+            .collect();
+        let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
+        path.push(*proposer.node_id().as_bytes());
+        let proposal_nonce: [u8; 32] = from_hex(&c.proposal_nonce_hex).try_into().unwrap();
+        let proposal = CProp::new(
+            &proposer,
+            path,
+            c.service_class.clone(),
+            c.proposed_at_unix,
+            c.validity_secs,
+            proposal_nonce,
+        )
+        .unwrap();
+        let proposal_env = proposal.sign(&proposer).unwrap();
+        assert_eq!(
+            common_hex(&proposal_env.to_envelope_bytes()),
+            c.proposal_envelope_hex,
+            "proposal envelope mismatch in circuit case {i}"
+        );
+        let proposal_id = sharenet_protocol::route::derive_proposal_id(proposal_env.bytes());
+        let mut members: Vec<&Identity> = hops.iter().collect();
+        members.push(&proposer);
+        members.sort_by_key(|m| *m.node_id().as_bytes());
+        let acceptance_envs: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(pos, m)| {
+                let a = CAcc::new(m, proposal_id, pos as u64, c.accepted_at_unix, c.acceptance_validity_secs)
+                    .unwrap();
+                a.sign(m).unwrap()
+            })
+            .collect();
+        for (j, e) in acceptance_envs.iter().enumerate() {
+            assert_eq!(
+                common_hex(&e.to_envelope_bytes()),
+                c.acceptance_envelope_hexes[j],
+                "acceptance {j} mismatch in circuit case {i}"
+            );
+        }
+        let commitment = CCom::build(1_100, proposal_env, acceptance_envs).unwrap();
+        assert_eq!(common_hex(&commitment.to_wire_bytes()), c.commitment_wire_hex, "circuit case {i}");
+        assert_eq!(common_hex(commitment.route_id()), c.route_id_hex, "circuit case {i}");
+        // circuit objects
+        let setup_nonce: [u8; 32] = from_hex(&c.setup_nonce_hex).try_into().unwrap();
+        let setup = CSetup::new(&commitment, &proposer, setup_nonce, c.setup_issued_at_unix, c.setup_validity_secs)
+            .unwrap();
+        let setup_env = setup.sign(&proposer).unwrap();
+        assert_eq!(
+            common_hex(&setup_env.to_envelope_bytes()),
+            c.setup_envelope_hex,
+            "setup envelope mismatch in circuit case {i}"
+        );
+        let circuit_id =
+            sharenet_protocol::circuit::derive_circuit_id(commitment.route_id(), &setup_nonce);
+        assert_eq!(common_hex(&circuit_id), c.circuit_id_hex, "circuit case {i}");
+        let acks: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(pos, m)| {
+                let a = CAck::new(
+                    circuit_id,
+                    &setup_env,
+                    m,
+                    pos as u64,
+                    c.ack_accepted_at_unix,
+                    c.ack_validity_secs,
+                )
+                .unwrap();
+                a.sign(m).unwrap()
+            })
+            .collect();
+        for (j, e) in acks.iter().enumerate() {
+            assert_eq!(
+                common_hex(&e.to_envelope_bytes()),
+                c.ack_envelope_hexes[j],
+                "ack {j} mismatch in circuit case {i}"
+            );
+        }
+        for (j, f) in c.frames.iter().enumerate() {
+            let frame = CFrm::new(
+                circuit_id,
+                f.direction,
+                f.seq,
+                from_hex(&f.payload_hex),
+            )
+            .unwrap();
+            assert_eq!(
+                common_hex(&frame.to_wire_bytes()),
+                c.frame_wire_hexes[j],
+                "frame {j} mismatch in circuit case {i}"
+            );
+        }
+        let destroy_sender = members[c.destroy_sender_position as usize];
+        let destroy =
+            CDest::new(circuit_id, destroy_sender, c.destroy_reason.clone(), c.destroyed_at_unix)
+                .unwrap();
+        let destroy_env = destroy.sign(destroy_sender).unwrap();
+        assert_eq!(
+            common_hex(&destroy_env.to_envelope_bytes()),
+            c.destroy_envelope_hex,
+            "destroy envelope mismatch in circuit case {i}"
+        );
+        // admission replay at the recorded time
+        let mut registry = CReg::new();
+        let admitted = registry.admit_setup(c.admission_now_unix, &setup_env).unwrap();
+        assert_eq!(admitted, circuit_id);
+        for (j, ack) in acks.iter().enumerate() {
+            let outcome = registry.admit_ack(c.admission_now_unix, ack).unwrap();
+            assert_eq!(outcome.established(), j == acks.len() - 1, "circuit case {i}");
+        }
+        for f in c.frames.iter() {
+            let frame =
+                CFrm::new(circuit_id, f.direction, f.seq, from_hex(&f.payload_hex)).unwrap();
+            registry.admit_frame(&frame).unwrap_or_else(|e| {
+                panic!("frame admission failed in circuit case {i}: {e}")
+            });
+        }
+        registry.admit_destroy(&destroy_env).unwrap();
+        assert!(registry.circuit(&circuit_id).unwrap().destroyed());
+        assert!(
+            !registry.is_established(&circuit_id) || registry.circuit(&circuit_id).unwrap().destroyed()
+        );
+    }
+    // unique circuit ids across cases with identical memberships but fresh setup nonces
+    let cids: Vec<&String> = circuit_file.cases.iter().map(|c| &c.circuit_id_hex).collect();
+    let cunique: std::collections::HashSet<&String> = cids.iter().cloned().collect();
+    assert_eq!(cids.len(), cunique.len(), "fresh setup nonces must yield fresh circuit ids");
+    for r in &circuit_file.rejects {
+        let bytes = from_hex(&r.hex);
+        let err: sharenet_protocol::circuit::CircuitError =
+            match circuit_reject_check(&r.kind, &bytes) {
+                Ok(()) => panic!("circuit reject {} was accepted", r.hex),
+                Err(e) => e,
+            };
+        assert_eq!(err.name(), r.error, "circuit reject {}", r.hex);
+    }
+}
+
+/// Object-level reject check by kind: setups/acks/destroys arrive as
+/// carrying envelopes (parse + signature); frames arrive bare.
+fn circuit_reject_check(
+    kind: &str,
+    bytes: &[u8],
+) -> Result<(), sharenet_protocol::circuit::CircuitError> {
+    use sharenet_protocol::circuit::{
+        CircuitDestroy, CircuitFrame, CircuitSetup, CircuitSetupAck,
+    };
+    use sharenet_protocol::route::SignedEnvelope;
+    match kind {
+        "frame" => {
+            let _ = CircuitFrame::from_wire_bytes(bytes)?;
+            Ok(())
+        }
+        "setup" => {
+            let env = SignedEnvelope::from_envelope_bytes(bytes)?;
+            let setup = CircuitSetup::from_wire_bytes(env.bytes())?;
+            setup
+                .initiator_identity()
+                .verify_detached(env.bytes(), env.signature())
+                .map_err(|_| sharenet_protocol::circuit::CircuitError::SetupSignatureInvalid)?;
+            Ok(())
+        }
+        "ack" => {
+            let env = SignedEnvelope::from_envelope_bytes(bytes)?;
+            let ack = CircuitSetupAck::from_wire_bytes(env.bytes())?;
+            ack.accepting_identity()
+                .verify_detached(env.bytes(), env.signature())
+                .map_err(|_| sharenet_protocol::circuit::CircuitError::AckSignatureInvalid)?;
+            Ok(())
+        }
+        "destroy" => {
+            let env = SignedEnvelope::from_envelope_bytes(bytes)?;
+            let destroy = CircuitDestroy::from_wire_bytes(env.bytes())?;
+            destroy
+                .sender_identity()
+                .verify_detached(env.bytes(), env.signature())
+                .map_err(|_| sharenet_protocol::circuit::CircuitError::DestroySignatureInvalid)?;
+            Ok(())
+        }
+        other => panic!("unknown reject kind {other:?}"),
+    }
 }
 
 #[test]
@@ -2428,6 +3054,9 @@ fn regenerate_vectors() {
     let route_json = serde_json::to_string_pretty(&route_vectors()).unwrap() + "\n";
     std::fs::write(vectors_path("route_vectors.json"), route_json)
         .expect("write route vectors");
+    let circuit_json = serde_json::to_string_pretty(&circuit_vectors()).unwrap() + "\n";
+    std::fs::write(vectors_path("circuit_vectors.json"), circuit_json)
+        .expect("write circuit vectors");
     eprintln!("vectors regenerated under {VECTORS_DIR}");
 }
 

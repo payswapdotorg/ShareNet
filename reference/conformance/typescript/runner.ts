@@ -23,6 +23,14 @@ import { deriveNodeId, Ed25519Key, nodeIdentityWire } from "./identity.ts";
 import { advertisementId, buildAdvertisement, buildEnvelope } from "./advertisement.ts";
 import { buildEnvelope as buildTopoEnvelope, buildEvidence, evidenceId } from "./topology.ts";
 import {
+  buildAcceptance,
+  buildProposal,
+  deriveRouteId,
+  envelope as routeEnvelope,
+  merkleRoot,
+  proposalIdOf,
+} from "./route.ts";
+import {
   buildMsg1,
   buildMsg2,
   buildMsg2Content,
@@ -379,6 +387,85 @@ function loadJson(name: string): any {
   }
   for (let i = 0; i < file.parse_reject.length; i++) {
     console.log(`TOPO_REJ ${i} ${file.parse_reject[i].error}`);
+  }
+}
+
+// ---------------- route vectors ----------------
+{
+  const file = loadJson("route_vectors.json");
+  for (const c of file.cases) {
+    const proposerKey = new Ed25519Key(fromHex(c.proposer_seed_hex));
+    const hopKeys = c.hop_seed_hexes.map((s: string) => new Ed25519Key(fromHex(s)));
+    const path = [
+      ...hopKeys.map((k: Ed25519Key) => deriveNodeId(k.publicKey)),
+      deriveNodeId(proposerKey.publicKey),
+    ];
+    const sortedPath = [...path].sort((a, b) =>
+      Buffer.compare(Buffer.from(a), Buffer.from(b)),
+    );
+    const proposal = buildProposal({
+      publicKey: proposerKey.publicKey,
+      createdAtUnix: BigInt(c.proposer_created_at_unix),
+      path: sortedPath,
+      serviceClass: c.service_class,
+      proposedAtUnix: BigInt(c.proposed_at_unix),
+      validitySecs: BigInt(c.validity_secs),
+      nonce: fromHex(c.proposal_nonce_hex),
+    });
+    const proposalSig = proposerKey.signDetached(proposal);
+    const proposalEnv = routeEnvelope(proposal, proposalSig);
+    const pid = proposalIdOf(proposal);
+    // members in sorted-path order
+    const members = [
+      ...hopKeys.map((k: Ed25519Key) => ({
+        pk: k.publicKey,
+        created: BigInt(c.hop_created_at_unix),
+        key: k,
+        nodeId: deriveNodeId(k.publicKey),
+      })),
+      {
+        pk: proposerKey.publicKey,
+        created: BigInt(c.proposer_created_at_unix),
+        key: proposerKey,
+        nodeId: deriveNodeId(proposerKey.publicKey),
+      },
+    ];
+    // sort members by node id to align positions with sortedPath
+    members.sort((a, b) =>
+      Buffer.compare(Buffer.from(a.nodeId), Buffer.from(b.nodeId)),
+    );
+    const acceptanceEnvs = members.map((m, pos) => {
+      const acc = buildAcceptance({
+        proposalId: pid,
+        publicKey: m.pk,
+        createdAtUnix: m.created,
+        position: BigInt(pos),
+        acceptedAtUnix: BigInt(c.accepted_at_unix),
+        validitySecs: BigInt(c.acceptance_validity_secs),
+      });
+      const sig = m.key.signDetached(acc);
+      return routeEnvelope(acc, sig);
+    });
+    // Merkle root over acceptance inner bytes ordered by position
+    const leaves = members.map((_, pos) => {
+      // decode the envelope back to the inner bytes
+      const v = decode(acceptanceEnvs[pos]!) as any;
+      return sha256Of(v.v[0][1].v as Uint8Array);
+    });
+    const root = merkleRoot(leaves)!;
+    const routeId = deriveRouteId(root);
+    console.log(
+      `ROUTE ${file.cases.indexOf(c)} proposal=${toHex(proposalEnv)} acceptances=${acceptanceEnvs
+        .map((e: Uint8Array) => toHex(e))
+        .join(",")} root=${toHex(root)} id=${toHex(routeId)}`,
+    );
+  }
+  for (let i = 0; i < file.rejects.length; i++) {
+    console.log(`ROUTE_REJ ${i} ${file.rejects[i].error}`);
+  }
+  function sha256Of(data: Uint8Array): Uint8Array {
+    const { createHash } = require("node:crypto");
+    return new Uint8Array(createHash("sha256").update(data).digest());
   }
 }
 

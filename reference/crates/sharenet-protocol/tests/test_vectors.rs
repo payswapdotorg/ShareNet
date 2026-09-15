@@ -294,6 +294,41 @@ struct TopoReject {
 }
 
 #[derive(Serialize, Deserialize)]
+struct RouteVectorsFile {
+    scheme: String,
+    description: String,
+    cases: Vec<RouteCase>,
+    rejects: Vec<RouteReject>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RouteCase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    proposer_seed_hex: String,
+    proposer_created_at_unix: u64,
+    hop_seed_hexes: Vec<String>,
+    hop_created_at_unix: u64,
+    service_class: String,
+    proposed_at_unix: u64,
+    validity_secs: u64,
+    proposal_nonce_hex: String,
+    accepted_at_unix: u64,
+    acceptance_validity_secs: u64,
+    proposal_envelope_hex: String,
+    acceptance_envelope_hexes: Vec<String>,
+    commitment_wire_hex: String,
+    commitment_root_hex: String,
+    route_id_hex: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RouteReject {
+    hex: String,
+    error: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct CborVectorsFile {
     profile: String,
     description: String,
@@ -1343,6 +1378,182 @@ error.".into(),
 }
 
 // ---------------------------------------------------------------------------
+// Route vectors (R3-004)
+// ---------------------------------------------------------------------------
+
+fn route_vectors() -> RouteVectorsFile {
+    use sharenet_protocol::route::{
+        derive_proposal_id, derive_route_id, merkle_root, RouteAcceptance, RouteCommitment,
+        RouteProposal,
+    };
+    let mk = |seed_hex: &str, created: u64| -> Identity {
+        let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
+        Identity::from_seed(seed, created, None).unwrap()
+    };
+    let cases_in: Vec<(&str, &str, u64, Vec<&str>, u64, &str, &str)> = vec![
+        (
+            "two-hop live route",
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            0,
+            vec![
+                "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+                "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            ],
+            1_700_000_000,
+            "live",
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        ),
+        (
+            "single-hop dtn route, different nonce",
+            "f67e23f4c2f7b0e6b1d54d1e8a3c9b0f6e2d4c5b8a7f6e5d4c3b2a1908f7e6d5",
+            42,
+            vec![
+                "8d3d3a3a9b9b7c7c6d6d5e5e4f4f303021212222323434555667778899aabbcc",
+            ],
+            42,
+            "dtn",
+            "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        ),
+        (
+            "two-hop opportunistic route (same identities as case 0, fresh nonce -> fresh route_id)",
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            0,
+            vec![
+                "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+                "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            ],
+            1_700_000_000,
+            "opportunistic",
+            "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        ),
+    ];
+    let mut cases = Vec::new();
+    for (note, proposer_seed, proposer_created, hop_seeds, hop_created, service, nonce_hex) in
+        &cases_in
+    {
+        let proposer = mk(proposer_seed, *proposer_created);
+        let hops: Vec<Identity> = hop_seeds.iter().map(|s| mk(s, *hop_created)).collect();
+        let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
+        path.push(*proposer.node_id().as_bytes());
+        let nonce: [u8; 32] = from_hex(nonce_hex).try_into().unwrap();
+        let proposal = RouteProposal::new(&proposer, path.clone(), *service, 1_000, 600, nonce)
+            .unwrap();
+        let proposal_env = proposal.sign(&proposer).unwrap();
+        let proposal_id = derive_proposal_id(proposal_env.bytes());
+        // acceptances for every path member (positions follow the SORTED path)
+        let mut members: Vec<&Identity> = hops.iter().collect();
+        members.push(&proposer);
+        members.sort_by_key(|i| *i.node_id().as_bytes());
+        let acceptance_envs: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let a = RouteAcceptance::new(m, proposal_id, i as u64, 1_001, 300).unwrap();
+                a.sign(m).unwrap()
+            })
+            .collect();
+        let commitment = RouteCommitment::build(
+            1_200,
+            proposal_env.clone(),
+            acceptance_envs.iter().cloned().collect(),
+        )
+        .unwrap();
+        cases.push(RouteCase {
+            note: Some(note.to_string()),
+            proposer_seed_hex: proposer_seed.to_string(),
+            proposer_created_at_unix: *proposer_created,
+            hop_seed_hexes: hop_seeds.iter().map(|s| s.to_string()).collect(),
+            hop_created_at_unix: *hop_created,
+            service_class: service.to_string(),
+            proposed_at_unix: 1_000,
+            validity_secs: 600,
+            proposal_nonce_hex: nonce_hex.to_string(),
+            accepted_at_unix: 1_001,
+            acceptance_validity_secs: 300,
+            proposal_envelope_hex: common_hex(&proposal_env.to_envelope_bytes()),
+            acceptance_envelope_hexes: acceptance_envs
+                .iter()
+                .map(|e| common_hex(&e.to_envelope_bytes()))
+                .collect(),
+            commitment_wire_hex: common_hex(&commitment.to_wire_bytes()),
+            commitment_root_hex: common_hex(commitment.commitment_root()),
+            route_id_hex: common_hex(commitment.route_id()),
+        });
+        // determinism check: same inputs -> same root
+        let rebuilt = RouteCommitment::build(
+            1_200,
+            proposal_env,
+            acceptance_envs.iter().cloned().collect(),
+        )
+        .unwrap();
+        assert_eq!(rebuilt.route_id(), commitment.route_id());
+        let _ = merkle_root;
+    }
+    // rejects: build a two-hop route and corrupt the commitment's route_id
+    let mut rejects = Vec::new();
+    {
+        let proposer = mk(
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            0,
+        );
+        let hop = mk(
+            "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+            1_700_000_000,
+        );
+        let mut path: Vec<[u8; 32]> = vec![*hop.node_id().as_bytes()];
+        path.push(*proposer.node_id().as_bytes());
+        let proposal = RouteProposal::new(&proposer, path, "live", 1_000, 600, [0x42; 32]).unwrap();
+        let proposal_env = proposal.sign(&proposer).unwrap();
+        let proposal_id = derive_proposal_id(proposal_env.bytes());
+        let mut members: Vec<&Identity> = vec![&hop, &proposer];
+        members.sort_by_key(|i| *i.node_id().as_bytes());
+        let acceptance_envs: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let a = RouteAcceptance::new(m, proposal_id, i as u64, 1_001, 300).unwrap();
+                a.sign(m).unwrap()
+            })
+            .collect();
+        let commitment = RouteCommitment::build(1_200, proposal_env, acceptance_envs).unwrap();
+        // tamper route_id (caller-selected) -> verification rejects
+        let bad = sharenet_protocol::route::RouteCommitment::from_parts(
+            commitment.proposal_envelope().clone(),
+            commitment.acceptance_envelopes().to_vec(),
+            *commitment.commitment_root(),
+            [0xEE; 32],
+        );
+        rejects.push(RouteReject {
+            hex: common_hex(&bad.to_wire_bytes()),
+            error: "route_id_mismatch".into(),
+        });
+        // tamper commitment_root
+        let bad2 = sharenet_protocol::route::RouteCommitment::from_parts(
+            commitment.proposal_envelope().clone(),
+            commitment.acceptance_envelopes().to_vec(),
+            [0xDD; 32],
+            *commitment.route_id(),
+        );
+        rejects.push(RouteReject {
+            hex: common_hex(&bad2.to_wire_bytes()),
+            error: "commitment_root_mismatch".into(),
+        });
+    }
+    RouteVectorsFile {
+        scheme: "sharenet-route-v1".into(),
+        description: "Route commitment vectors (R3-004). For every case the harness MUST: \
+rebuild the proposer + hops from seeds, rebuild the proposal (path = proposer \
++ hops, canonically sorted), reproduce the proposal envelope byte-exactly, \
+reproduce every acceptance envelope, rebuild the commitment (Merkle root \
+over the acceptance bytes ordered by position, route_id = SHA-256(context || \
+root)) byte-exactly. rejects[] are full commitment wire bytes that MUST fail \
+verification with the named typed error (verification at the recorded times).".into(),
+        cases,
+        rejects,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2112,6 +2323,87 @@ fn vectors_conformance() {
         };
         assert_eq!(err.name(), r.error, "topo parse_reject {}", r.hex);
     }
+
+    // ---- route commitment vectors ----
+    let route_file: RouteVectorsFile = serde_json::from_str(
+        &std::fs::read_to_string(vectors_path("route_vectors.json"))
+            .expect("route_vectors.json must exist"),
+    )
+    .expect("route_vectors.json parses");
+    assert_eq!(route_file.scheme, "sharenet-route-v1");
+    use sharenet_protocol::route::{
+        derive_proposal_id, RouteAcceptance as RAcc, RouteCommitment as RCom, RouteProposal as RProp,
+        SignedEnvelope as REnv,
+    };
+    for (i, c) in route_file.cases.iter().enumerate() {
+        let proposer = {
+            let seed: [u8; SEED_LEN] = from_hex(&c.proposer_seed_hex).try_into().unwrap();
+            Identity::from_seed(seed, c.proposer_created_at_unix, None).unwrap()
+        };
+        let hops: Vec<Identity> = c
+            .hop_seed_hexes
+            .iter()
+            .map(|s| {
+                let seed: [u8; SEED_LEN] = from_hex(s).try_into().unwrap();
+                Identity::from_seed(seed, c.hop_created_at_unix, None).unwrap()
+            })
+            .collect();
+        let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
+        path.push(*proposer.node_id().as_bytes());
+        let nonce: [u8; 32] = from_hex(&c.proposal_nonce_hex).try_into().unwrap();
+        let proposal = RProp::new(
+            &proposer,
+            path,
+            c.service_class.clone(),
+            c.proposed_at_unix,
+            c.validity_secs,
+            nonce,
+        )
+        .unwrap();
+        let env = proposal.sign(&proposer).unwrap();
+        assert_eq!(
+            common_hex(&env.to_envelope_bytes()),
+            c.proposal_envelope_hex,
+            "proposal envelope mismatch in route case {i}"
+        );
+        let proposal_id = derive_proposal_id(env.bytes());
+        let mut members: Vec<&Identity> = hops.iter().collect();
+        members.push(&proposer);
+        members.sort_by_key(|m| *m.node_id().as_bytes());
+        let acceptance_envs: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(pos, m)| {
+                let a = RAcc::new(m, proposal_id, pos as u64, c.accepted_at_unix, c.acceptance_validity_secs)
+                    .unwrap();
+                a.sign(m).unwrap()
+            })
+            .collect();
+        for (j, e) in acceptance_envs.iter().enumerate() {
+            assert_eq!(
+                common_hex(&e.to_envelope_bytes()),
+                c.acceptance_envelope_hexes[j],
+                "acceptance {j} mismatch in route case {i}"
+            );
+        }
+        let commitment = RCom::build(1_200, env, acceptance_envs).unwrap();
+        assert_eq!(common_hex(&commitment.to_wire_bytes()), c.commitment_wire_hex, "route case {i}");
+        assert_eq!(common_hex(commitment.commitment_root()), c.commitment_root_hex, "route case {i}");
+        assert_eq!(common_hex(commitment.route_id()), c.route_id_hex, "route case {i}");
+    }
+    // unique route ids across cases with identical memberships but fresh nonces
+    let ids: Vec<&String> = route_file.cases.iter().map(|c| &c.route_id_hex).collect();
+    let unique: std::collections::HashSet<&String> = ids.iter().cloned().collect();
+    assert_eq!(ids.len(), unique.len(), "fresh nonces must yield fresh route ids");
+    for r in &route_file.rejects {
+        let bytes = from_hex(&r.hex);
+        let commitment = RCom::from_wire_bytes(&bytes).expect("parse");
+        let err = match commitment.verify(1_200) {
+            Err(e) => e,
+            Ok(_) => panic!("route reject {} verified", r.hex),
+        };
+        assert_eq!(err.name(), r.error, "route reject {}", r.hex);
+    }
 }
 
 #[test]
@@ -2133,6 +2425,9 @@ fn regenerate_vectors() {
     let topo_json = serde_json::to_string_pretty(&topology_vectors()).unwrap() + "\n";
     std::fs::write(vectors_path("topology_vectors.json"), topo_json)
         .expect("write topology vectors");
+    let route_json = serde_json::to_string_pretty(&route_vectors()).unwrap() + "\n";
+    std::fs::write(vectors_path("route_vectors.json"), route_json)
+        .expect("write route vectors");
     eprintln!("vectors regenerated under {VECTORS_DIR}");
 }
 

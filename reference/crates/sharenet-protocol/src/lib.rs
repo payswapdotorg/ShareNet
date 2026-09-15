@@ -36,6 +36,7 @@ pub mod cbor;
 pub mod capability;
 pub mod identity;
 pub mod link;
+pub mod route;
 pub mod store;
 pub mod topology;
 
@@ -48,6 +49,11 @@ pub use cbor::{decode, encode, DecodeError, EncodeError, Value};
 pub use capability::{
     admit, Admitted, AdmissionError, Capability, CapabilityError, CapabilityStatement,
     SignedCapabilityStatement, CAP_SCHEME_VERSION, MAX_LIMITS_ENTRIES, MAX_LIMIT_KEY_BYTES,
+};
+pub use route::{
+    derive_proposal_id, derive_route_id, merkle_root, RouteAcceptance, RouteCommitment,
+    RouteError, RouteProposal, SignedEnvelope, VerifiedRoute, ROUTE_MAX_PATH, ROUTE_MAX_WINDOW,
+    ROUTE_SCHEME_VERSION, SERVICE_CLASSES,
 };
 pub use topology::{
     BilateralLink, LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence,

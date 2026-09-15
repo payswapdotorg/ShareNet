@@ -575,6 +575,89 @@ impl TunnelStream {
     }
 }
 
+impl TunnelStream {
+    /// Split into independent sender/receiver halves.
+    ///
+    /// R4-003's gateway data plane needs one thread forwarding uplink
+    /// responses while another blocks on the next incoming frame — the
+    /// single-stream API cannot express that. The halves share the
+    /// runtime (and therefore the connection driver lifetime); the
+    /// original QUIC connection handle lives on in the receiver, so
+    /// dropping BOTH halves closes the tunnel (the same close
+    /// semantics as dropping a TunnelStream).
+    pub fn split(self) -> (TunnelSender, TunnelReceiver) {
+        let TunnelStream {
+            conn,
+            send,
+            recv,
+            runtime,
+        } = self;
+        (
+            TunnelSender {
+                send,
+                runtime: runtime.clone(),
+            },
+            TunnelReceiver {
+                conn: Some(conn),
+                recv,
+                runtime,
+            },
+        )
+    }
+}
+
+/// The sending half of a split tunnel stream.
+pub struct TunnelSender {
+    send: quinn::SendStream,
+    runtime: Arc<tokio::runtime::Runtime>,
+}
+
+impl TunnelSender {
+    /// Send one frame (length-prefixed, u32 big-endian) — same
+    /// semantics as [`TunnelStream::send_frame`].
+    pub fn send_frame(&mut self, frame: &[u8]) -> Result<(), TunnelError> {
+        check_frame_limit(frame.len())?;
+        let mut buf = Vec::with_capacity(4 + frame.len());
+        buf.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+        buf.extend_from_slice(frame);
+        self.runtime
+            .block_on(async { self.send.write_all(&buf).await })
+            .map_err(|e| TunnelError::Io(e.to_string()))
+    }
+
+    /// Graceful close of the sending half.
+    pub fn finish(&mut self) -> Result<(), TunnelError> {
+        self.send
+            .finish()
+            .map_err(|e| TunnelError::Io(e.to_string()))
+    }
+}
+
+/// The receiving half of a split tunnel stream (owns the connection
+/// handle: dropping it together with the sender closes the tunnel).
+pub struct TunnelReceiver {
+    /// Owning connection handle: DROPPING it (together with the
+    /// sender) closes the tunnel — held, never read.
+    #[allow(dead_code)]
+    conn: Option<quinn::Connection>,
+    recv: quinn::RecvStream,
+    runtime: Arc<tokio::runtime::Runtime>,
+}
+
+impl TunnelReceiver {
+    /// Receive one frame (blocking) — same semantics as
+    /// [`TunnelStream::recv_frame`].
+    pub fn recv_frame(&mut self) -> Result<Vec<u8>, TunnelError> {
+        let mut len_buf = [0u8; 4];
+        read_exact(&self.runtime, &mut self.recv, &mut len_buf)?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+        check_frame_limit(len)?;
+        let mut frame = vec![0u8; len];
+        read_exact(&self.runtime, &mut self.recv, &mut frame)?;
+        Ok(frame)
+    }
+}
+
 fn read_exact(
     runtime: &tokio::runtime::Runtime,
     recv: &mut quinn::RecvStream,

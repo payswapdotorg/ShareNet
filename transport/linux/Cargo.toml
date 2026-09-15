@@ -17,6 +17,8 @@ path = "src/bin/sharenet_transport_linux.rs"
 
 [dependencies]
 libc = "0.2"
+sharenet-protocol = { path = "../../reference/crates/sharenet-protocol" }
+sharenet-transport-quic = { path = "../quic" }
 sharenet-transport-telemetry = { path = "../telemetry" }
 
 [dev-dependencies]

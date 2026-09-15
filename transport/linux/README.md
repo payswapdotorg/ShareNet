@@ -1,4 +1,4 @@
-# sharenet-transport-linux — R2-003 + R2-004 (telemetry bridge)
+# sharenet-transport-linux — R2-003 + R2-004 (telemetry bridge) + R4-003 (gateway forwarding)
 
 ShareNet Linux transport/TUN foundation. **Platform adapter layer** per
 `spec/architecture-lock.md` L009 and `spec/adrs/002-standard-transport-stack.md`:
@@ -19,7 +19,8 @@ bridge**: the concrete `FrameTransport` implementation that lets the
 | `probe_tun()` | `src/probe.rs` | Honest runtime capability probe: `Available \| Absent(reason) \| Forbidden`. Opens the device and runs `TUNSETIFF` with a kernel-assigned name, then closes (ephemeral, side-effect free). |
 | `UdpTransport` | `src/udp.rs` | Raw local UDP with length-framed datagrams (`u32be len \|\| payload`), one frame per datagram, non-blocking + `WouldBlock` typed, read timeout, `poll`-based readiness, `MSG_TRUNC` truncation detection via `recvmsg(2)`. |
 | `telemetry_bridge` | `src/telemetry_bridge.rs` | **R2-004**: implements `sharenet_transport_telemetry::probe::FrameTransport` for `UdpTransport` (sends/receives go through the REAL frame codec; `EAGAIN`→`TransportWouldBlock`, `Closed`→`TransportClosed`), plus `udp_prober(peer, config)` — the one-call prober constructor. |
-| binary | `src/bin/…` | `probe` (exit 0 available / 2 not), `echo --bind ADDR [--max-frames N] [--drop-every N]` (UDP frame echo server; `--drop-every` is the honest R2-004 test affordance for induced loss), and `probe-rtt --peer ADDR [--count N] [--interval-ms M]` (R2-004 active RTT/loss measurement printing a `LinkQualitySummary`; exit 0 on any completed run — measured loss is evidence, not failure). |
+| `gateway` (R4-003) | `src/gateway.rs` | The Linux gateway forwarding data plane: `GatewayServer` accepts a node-pinned QUIC tunnel (R4-001), runs the full R3-004 route-commitment + R4-002 circuit admission pipeline fail-closed (setup → BOTH acks → established), forwards admitted circuit frames' payloads to a configured per-circuit uplink UDP socket (the Internet side), and turns uplink responses into direction-2 frames; `GatewayClient`/`ParticipantSession` are the participant side with the admission mirrored locally. Control protocol documented in the module docs (runtime state, not registry wire objects). |
+| binary | `src/bin/…` | `probe` (exit 0 available / 2 not), `echo --bind ADDR [--max-frames N] [--drop-every N]` (UDP frame echo server; `--drop-every` is the honest R2-004 test affordance for induced loss), and `probe-rtt --peer ADDR [--count N] [--interval-ms M]` (R2-004 active RTT/loss measurement printing a `LinkQualitySummary`; exit 0 on any completed run — measured loss is evidence, not failure), and (R4-003) `gateway --seed-hex <64hex> --bind ADDR --uplink ADDR [--pin <64hex>]...` (prints `READY <addr> <node-id-hex>`, serves ONE participant, prints `GATEWAY_DONE <forwarded> <reason>`) and `participant --seed-hex <64hex> --gateway ADDR --gateway-node <64hex> [--packets N]` (full flow; prints `PARTICIPANT_DONE <sent> <received>`). |
 
 ## Documented policies
 
@@ -45,6 +46,9 @@ bridge**: the concrete `FrameTransport` implementation that lets the
   for its real-socket tests (the serde/serde_json dev-cycle shape). The
   `FrameTransport` impl lives HERE because cargo forbids the reverse
   regular dependency (orphan rule: this crate owns `UdpTransport`).
+
+- **Gateway timestamp discipline (R4-003)**: the gateway's route acceptance anchors its `accepted_at` to the PROPOSAL's `proposed_at`, and its circuit ack anchors to the SETUP's `issued_at` — cross-process wall-clock skew (even milliseconds forward) can never break admission; every admission/verification uses a fresh clock read.
+- **Gateway data plane (R4-003)**: per-circuit uplink UDP sockets; the tunnel stream is SPLIT (sender/receiver halves — added to the R4-001 crate) so the frame loop can block on the participant while a dedicated thread returns uplink responses; the destroy is application-level acknowledged (BYE) before teardown — process exit never races in-flight frames (the QUIC close-semantics rule).
 
 ## Seams and production callers
 
@@ -93,8 +97,10 @@ cargo run --bin sharenet_transport_linux -- probe-rtt --peer 127.0.0.1:9000 --co
 
 - No async runtime wrappers (R4-001 scope).
 - No packet interpretation whatsoever — including no fragmentation/reassembly.
-- `SystemTunDevice` live data path (packets actually traversing the interface)
-  requires a host with TUN + `CAP_NET_ADMIN`; validated at R4-003 on real
-  gateway hosts, not in this foundation.
+- The R4-003 gateway data plane forwards to a configured per-circuit
+  uplink UDP socket; full Internet-facing forwarding (address parsing,
+  NAT, routing) is R4-007's mission gate. No live /dev/net/tun run in
+  evidence (sandbox has none — the R2-003 probe discipline; the packet
+  source seam accepts any byte producer).
 - `probe-rtt` measures over loopback in CI-like environments; real-network
   RTT distributions are R4-003/R10-001 scope.

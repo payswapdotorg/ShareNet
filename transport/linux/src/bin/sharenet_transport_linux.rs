@@ -43,6 +43,8 @@ fn main() -> ExitCode {
         Some("probe") => cmd_probe(),
         Some("echo") => cmd_echo(&args[1..]),
         Some("probe-rtt") => cmd_probe_rtt(&args[1..]),
+        Some("gateway") => cmd_gateway(&args[1..]),
+        Some("participant") => cmd_participant(&args[1..]),
         Some("--help") | Some("-h") | Some("help") | None => {
             print_usage();
             ExitCode::SUCCESS
@@ -375,5 +377,212 @@ fn cmd_probe_rtt(args: &[String]) -> ExitCode {
     println!("jitter_mad_micros={}", summary.jitter_mad_micros);
     println!("loss_ratio={:.6}", summary.loss_ratio);
     println!("throughput_bps={}", summary.throughput_bps);
+    ExitCode::SUCCESS
+}
+
+
+// ---------------------------------------------------------------------------
+// gateway / participant (R4-003) — TEST/DEMO entrypoints for the Linux
+// gateway forwarding data plane; the same gateway module the future
+// sharenet daemon will embed.
+// ---------------------------------------------------------------------------
+
+fn parse_hex_seed(s: &str) -> Result<[u8; 32], String> {
+    if s.len() != 64 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("--seed-hex expects 64 hex chars, got {s:?}"));
+    }
+    let mut seed = [0u8; 32];
+    for (i, b) in seed.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).map_err(|e| e.to_string())?;
+    }
+    Ok(seed)
+}
+
+fn parse_hex_id(s: &str) -> Result<[u8; 32], String> {
+    parse_hex_seed(s)
+}
+
+/// `gateway --seed-hex <64hex> --bind ADDR --uplink ADDR [--pin <64hex>]...`
+///
+/// Prints `READY <tunnel-addr> <gateway-node-id-hex>`, then serves ONE
+/// participant connection (route acceptance, circuit setup/ack, frame
+/// forwarding to the uplink, destroy) and prints
+/// `GATEWAY_DONE <forwarded-up> <reason-or-bye>` on exit 0.
+fn cmd_gateway(args: &[String]) -> ExitCode {
+    let mut seed_hex: Option<String> = None;
+    let mut bind: SocketAddr = "127.0.0.1:0".parse().expect("static");
+    let mut uplink: Option<SocketAddr> = None;
+    let mut pins: Vec<[u8; 32]> = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--seed-hex" => seed_hex = it.next().cloned(),
+            "--bind" => match it.next().and_then(|a| a.parse().ok()) {
+                Some(a) => bind = a,
+                None => {
+                    eprintln!("error: --bind needs a socket address");
+                    return ExitCode::from(2);
+                }
+            },
+            "--uplink" => match it.next().and_then(|a| a.parse().ok()) {
+                Some(a) => uplink = Some(a),
+                None => {
+                    eprintln!("error: --uplink needs a socket address");
+                    return ExitCode::from(2);
+                }
+            },
+            "--pin" => match it.next().and_then(|a| parse_hex_id(a).ok()) {
+                Some(id) => pins.push(id),
+                None => {
+                    eprintln!("error: --pin needs 64 hex chars");
+                    return ExitCode::from(2);
+                }
+            },
+            other => {
+                eprintln!("error: unknown gateway argument {other:?}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let seed = match seed_hex.as_deref().map(parse_hex_seed) {
+        Some(Ok(s)) => s,
+        _ => {
+            eprintln!("error: gateway needs --seed-hex <64 hex>");
+            return ExitCode::from(2);
+        }
+    };
+    let Some(uplink) = uplink else {
+        eprintln!("error: gateway needs --uplink ADDR (the Internet-side target)");
+        return ExitCode::from(2);
+    };
+    let gateway = match sharenet_transport_linux::gateway::GatewayServer::new(
+        seed,
+        bind,
+        if pins.is_empty() { None } else { Some(pins) },
+        uplink,
+    ) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("error: gateway bind: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let addr = match gateway.local_addr() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: local addr: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let node_hex: String = gateway
+        .node_id()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    println!("READY {addr} {node_hex}");
+    let stats = match gateway.serve_once() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: gateway serve: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let reason = stats
+        .destroy_reason
+        .clone()
+        .unwrap_or_else(|| if stats.bye { "bye".into() } else { "-".into() });
+    println!(
+        "GATEWAY_DONE {} {}",
+        stats.forwarded_up, reason
+    );
+    ExitCode::SUCCESS
+}
+
+/// `participant --seed-hex <64hex> --gateway ADDR --gateway-node <64hex>
+/// [--packets N] [--payload BYTES]`
+///
+/// Connects (node-pinned), establishes the circuit, sends N packets,
+/// receives N responses, destroys the circuit (reason "completed") and
+/// prints `PARTICIPANT_DONE <sent> <received>`.
+fn cmd_participant(args: &[String]) -> ExitCode {
+    let mut seed_hex: Option<String> = None;
+    let mut gateway_addr: Option<SocketAddr> = None;
+    let mut gateway_node: Option<[u8; 32]> = None;
+    let mut packets: usize = 3;
+    let mut payload: Vec<u8> = b"sharenet-gateway-packet".to_vec();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--seed-hex" => seed_hex = it.next().cloned(),
+            "--gateway" => gateway_addr = it.next().and_then(|a| a.parse().ok()),
+            "--gateway-node" => gateway_node = it.next().and_then(|a| parse_hex_id(a).ok()),
+            "--packets" => packets = it.next().and_then(|a| a.parse().ok()).unwrap_or(3),
+            "--payload" => {
+                if let Some(p) = it.next() {
+                    payload = p.as_bytes().to_vec();
+                }
+            }
+            other => {
+                eprintln!("error: unknown participant argument {other:?}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let seed = match seed_hex.as_deref().map(parse_hex_seed) {
+        Some(Ok(s)) => s,
+        _ => {
+            eprintln!("error: participant needs --seed-hex <64 hex>");
+            return ExitCode::from(2);
+        }
+    };
+    let Some(gateway_addr) = gateway_addr else {
+        eprintln!("error: participant needs --gateway ADDR");
+        return ExitCode::from(2);
+    };
+    let Some(gateway_node) = gateway_node else {
+        eprintln!("error: participant needs --gateway-node <64 hex>");
+        return ExitCode::from(2);
+    };
+    let client = sharenet_transport_linux::gateway::GatewayClient::new(
+        seed,
+        gateway_addr,
+        gateway_node,
+    );
+    let mut session = match client.connect() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: connect: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let identity =
+        sharenet_protocol::identity::Identity::from_seed(seed, 0, None).expect("identity");
+    let mut received = 0usize;
+    for i in 0..packets {
+        let mut packet = format!("{}-{}", String::from_utf8_lossy(&payload), i).into_bytes();
+        packet.truncate(sharenet_transport_linux::gateway::GATEWAY_MAX_PACKET);
+        if let Err(e) = session.send_packet(&packet) {
+            eprintln!("error: send {i}: {e}");
+            return ExitCode::from(1);
+        }
+        match session.recv_response() {
+            Ok(response) => {
+                if response != packet {
+                    eprintln!("error: unexpected response {response:?}");
+                    return ExitCode::from(1);
+                }
+                received += 1;
+            }
+            Err(e) => {
+                eprintln!("error: recv {i}: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+    if let Err(e) = session.destroy(&identity, "completed") {
+        eprintln!("error: destroy: {e}");
+        return ExitCode::from(1);
+    }
+    println!("PARTICIPANT_DONE {packets} {received}");
     ExitCode::SUCCESS
 }

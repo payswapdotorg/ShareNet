@@ -274,8 +274,13 @@ impl GatewayServer {
         //    the connection lifetime).
         let (sender, mut receiver) = stream.split();
         let sender = Arc::new(Mutex::new(sender));
+        // Wildcard bind: the uplink is the INTERNET side — it must be
+        // able to reach real external destinations, not only loopback
+        // (R4-007: a loopback-bound socket cannot route to the real
+        // Internet and fails with EINVAL on send_to). Wildcard also
+        // covers the loopback echo stand-ins the tests use.
         let uplink_socket = Arc::new(
-            std::net::UdpSocket::bind("127.0.0.1:0")
+            std::net::UdpSocket::bind("0.0.0.0:0")
                 .map_err(|e| GatewayError::Setup(format!("uplink socket: {e}")))?,
         );
         uplink_socket

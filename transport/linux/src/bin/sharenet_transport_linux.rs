@@ -43,6 +43,7 @@ fn main() -> ExitCode {
         Some("probe") => cmd_probe(),
         Some("echo") => cmd_echo(&args[1..]),
         Some("probe-rtt") => cmd_probe_rtt(&args[1..]),
+        Some("probe-uplink") => cmd_probe_uplink(&args[1..]),
         Some("gateway") => cmd_gateway(&args[1..]),
         Some("participant") => cmd_participant(&args[1..]),
         Some("--help") | Some("-h") | Some("help") | None => {
@@ -79,6 +80,15 @@ fn print_usage() {
     println!("      --peer ADDR       peer address, e.g. 127.0.0.1:9000");
     println!("      --count N         number of probes (default 10)");
     println!("      --interval-ms M   pacing between probe starts (default 10)");
+    println!("  sharenet_transport_linux probe-uplink --dest ADDR [--count N] [--timeout-ms M]");
+    println!("      Real-Internet UDP egress probe (R4-007 mission-gate evidence): send N");
+    println!("      probe datagrams to a REAL external destination and await any response.");
+    println!("      Prints a typed outcome + machine-readable line. Exit 0 = egress confirmed");
+    println!("      (a response returned); exit 3 = no response within the window (the host");
+    println!("      network is restrictive for UDP — evidence, not a bug); exit 2 = usage.");
+    println!("      --dest ADDR       real destination, e.g. 8.8.8.8:53");
+    println!("      --count N         datagrams (default 3)");
+    println!("      --timeout-ms M    per-datagram wait (default 1000)");
 }
 
 fn cmd_probe() -> ExitCode {
@@ -241,6 +251,119 @@ fn cmd_echo(args: &[String]) -> ExitCode {
         "ECHO_DONE frames={echoed} bytes={bytes} malformed={malformed} dropped={dropped} received={received} status=ok"
     );
     ExitCode::SUCCESS
+}
+
+/// Real-Internet UDP egress probe (R4-007 mission-gate evidence): the
+/// honest companion to the loopback mission-gate composition. Sends
+/// small probe datagrams to a REAL external destination and awaits any
+/// response with a bounded timeout — whatever the network does is the
+/// evidence (this sandbox's network is expected to be restrictive:
+/// allowlisted HTTP(S) only, no UDP egress; on an open network a DNS
+/// or STUN destination responds and the exit code flips to 0).
+fn cmd_probe_uplink(args: &[String]) -> ExitCode {
+    let mut dest: Option<String> = None;
+    let mut count: u32 = 3;
+    let mut timeout_ms: u64 = 1_000;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--dest" => {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => dest = Some(v.clone()),
+                    None => {
+                        eprintln!("error: --dest requires a value (e.g. 8.8.8.8:53)");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            "--count" => {
+                i += 1;
+                match args.get(i).and_then(|v| v.parse::<u32>().ok()) {
+                    Some(v) if v >= 1 => count = v,
+                    _ => {
+                        eprintln!("error: --count expects a number >= 1");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            "--timeout-ms" => {
+                i += 1;
+                match args.get(i).and_then(|v| v.parse::<u64>().ok()) {
+                    Some(v) if v >= 1 => timeout_ms = v,
+                    _ => {
+                        eprintln!("error: --timeout-ms expects a number >= 1");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            other => {
+                eprintln!("error: unknown probe-uplink argument {other:?}");
+                return ExitCode::from(2);
+            }
+        }
+        i += 1;
+    }
+    let dest = match dest.and_then(|d| d.parse::<SocketAddr>().ok()) {
+        Some(d) => d,
+        None => {
+            eprintln!("error: probe-uplink requires --dest ADDR (e.g. 8.8.8.8:53)");
+            return ExitCode::from(2);
+        }
+    };
+
+    let socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: bind: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(timeout_ms))) {
+        eprintln!("error: timeout: {e}");
+        return ExitCode::from(1);
+    }
+
+    // A DNS-shaped probe payload (a minimal A query for "sharenet.")
+    // — well-formed UDP application data any resolver answers.
+    let probe: [u8; 31] = [
+        0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, b's',
+        b'h', b'a', b'r', b'e', b'n', b'e', b't', 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+        0x29, 0x04, 0xd0,
+    ];
+
+    let mut buf = [0u8; 1_500];
+    for attempt in 1..=count {
+        if let Err(e) = socket.send_to(&probe, dest) {
+            println!("uplink_probe:attempt={attempt} outcome=send_error error={e:?}");
+            println!("UPLINK send error (typed): {e}");
+            continue;
+        }
+        match socket.recv_from(&mut buf) {
+            Ok((n, from)) => {
+                println!(
+                    "uplink_probe:attempt={attempt} outcome=reachable from={from} bytes={n}"
+                );
+                println!(
+                    "UPLINK reachable: {n} bytes from {from} — real Internet UDP egress CONFIRMED"
+                );
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                println!("uplink_probe:attempt={attempt} outcome=no_response error_kind={:?} wait_ms={timeout_ms}", e.kind());
+            }
+        }
+    }
+    println!(
+        "uplink_probe:outcome=unreachable dest={dest} attempts={count} wait_ms={timeout_ms}"
+    );
+    println!(
+        "UPLINK unreachable: no response within {timeout_ms}ms x {count} — this host's network \
+         is restrictive for UDP egress (evidence, not a failure: the mission gate's real-network \
+         crossing must run on an open-UDP network; see transport/linux/MISSION-GATE.md)"
+    );
+    ExitCode::from(3)
 }
 
 fn cmd_probe_rtt(args: &[String]) -> ExitCode {

@@ -92,15 +92,29 @@ cargo run --bin sharenet_transport_linux -- probe-rtt --peer 127.0.0.1:9000 --co
   `probe_tun() == Available`. On hosts without `/dev/net/tun` (common in
   sandboxes) the tests **SKIP with a printed reason** — that is correct
   probe behavior, not a failure. Live TUN data-path verification is R4-003.
+- `tests/mission_gate.rs` (R4-007): the FULL mission composition —
+  identity → capability → advertisement discovery → authenticated link
+  to the advertised endpoint → route commitment + circuit admission →
+  gateway data plane (loopback stand-in Internet) — plus the
+  REAL-INTERNET leg (a real DNS response from a real public resolver
+  returns through the entire stack; gated by a live egress probe that
+  skips with a typed reason on fully restrictive networks). See
+  [MISSION-GATE.md](MISSION-GATE.md) for the full evidence report,
+  including the `probe-uplink` subcommand and this environment's
+  measured egress policy (UDP/53 open to public resolvers, other UDP
+  ports blocked).
 
 ## Known limits (honest)
 
 - No async runtime wrappers (R4-001 scope).
 - No packet interpretation whatsoever — including no fragmentation/reassembly.
-- The R4-003 gateway data plane forwards to a configured per-circuit
-  uplink UDP socket; full Internet-facing forwarding (address parsing,
-  NAT, routing) is R4-007's mission gate. No live /dev/net/tun run in
-  evidence (sandbox has none — the R2-003 probe discipline; the packet
-  source seam accepts any byte producer).
+- The gateway data plane forwards to a configured per-circuit uplink UDP
+  socket (wildcard-bound since R4-007 — the Internet side must be able
+  to reach real external destinations). What it does NOT do: DNS
+  resolution of uplink names, address rewriting/NAT of participant
+  packets, or fragmentation — the mission evidence carries whole
+  datagrams to whole servers (see MISSION-GATE.md for the scope).
+- No live /dev/net/tun run in evidence (sandbox has none — the R2-003
+  probe discipline; the packet source seam accepts any byte producer).
 - `probe-rtt` measures over loopback in CI-like environments; real-network
   RTT distributions are R4-003/R10-001 scope.

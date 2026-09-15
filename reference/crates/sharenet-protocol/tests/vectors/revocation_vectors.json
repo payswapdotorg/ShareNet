@@ -1,0 +1,277 @@
+{
+  "scheme": "sharenet-circuit-revocation-v1",
+  "description": "Circuit revocation vectors (R7-001). For every case the harness MUST: rebuild the proposer + hops from seeds, rebuild the route proposal + acceptances + commitment (R3-004 chain) byte-exactly, the setup envelope, derive circuit_id = SHA-256(context || route_id || setup_nonce), establish the circuit in a registry, then rebuild the revocation from (revoker_position, reason, evidence, revoked_at_unix) and pin the canonical wire + carrying envelope bytes. receive[] replays ONE shared ledger in order: revoker primary = the case's revoker_position member; second = member at (revoker_position + 1) % path_len revoking with reason \"policy\", no evidence, at the case's revoked_at_unix; outsider = the fixed foreign seed 0xEE*32, same shape; registry \"empty\" = a fresh registry with no circuits. parse_reject[] and envelope_reject[] are full carrying-envelope bytes that MUST fail with the named typed error.",
+  "cases": [
+    {
+      "note": "link_failure revocation by a mid-path hop with missed-ack evidence",
+      "proposer_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "proposer_created_at_unix": 0,
+      "hop_seed_hexes": [
+        "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+        "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573"
+      ],
+      "hop_created_at_unix": 1,
+      "service_class": "live",
+      "proposed_at_unix": 1000,
+      "validity_secs": 600,
+      "proposal_nonce_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "accepted_at_unix": 1001,
+      "acceptance_validity_secs": 600,
+      "setup_nonce_hex": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "setup_issued_at_unix": 1100,
+      "setup_validity_secs": 600,
+      "ack_accepted_at_unix": 1101,
+      "ack_validity_secs": 500,
+      "revoker_position": 1,
+      "reason": "link_failure",
+      "evidence": {
+        "failure_kind": "ack_gap",
+        "missed_acks": 3
+      },
+      "revoked_at_unix": 1200,
+      "admission_now_unix": 1150,
+      "circuit_id_hex": "adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf21789",
+      "revocation_wire_hex": "a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a26b6d69737365645f61636b73036c6661696c7572655f6b696e646761636b5f676170061904b0",
+      "revocation_envelope_hex": "a2015885a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a26b6d69737365645f61636b73036c6661696c7572655f6b696e646761636b5f676170061904b002584063d94c84cc8e46c16b37d9475e6c9681b6ecd9f480d2f5b2069ea014dc12d656a5c3a913a8f53e5efdcb20c7677d86d93d64404ad53531732b11fa636e34b206"
+    },
+    {
+      "note": "evidence_timeout revocation with the stale-evidence timestamp",
+      "proposer_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "proposer_created_at_unix": 0,
+      "hop_seed_hexes": [
+        "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+        "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573"
+      ],
+      "hop_created_at_unix": 1,
+      "service_class": "live",
+      "proposed_at_unix": 1000,
+      "validity_secs": 600,
+      "proposal_nonce_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "accepted_at_unix": 1001,
+      "acceptance_validity_secs": 600,
+      "setup_nonce_hex": "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2",
+      "setup_issued_at_unix": 1100,
+      "setup_validity_secs": 600,
+      "ack_accepted_at_unix": 1101,
+      "ack_validity_secs": 500,
+      "revoker_position": 0,
+      "reason": "evidence_timeout",
+      "evidence": {
+        "failure_kind": "evidence_stale",
+        "stale_since_unix": 1140
+      },
+      "revoked_at_unix": 1200,
+      "admission_now_unix": 1150,
+      "circuit_id_hex": "9e5091437f8dc767985c10f26f57c813c493a4a13ee3c2f216cd71966dcadb1b",
+      "revocation_wire_hex": "a601010258209e5091437f8dc767985c10f26f57c813c493a4a13ee3c2f216cd71966dcadb1b03a30101025820e7b441bfa3cdaf05a07fbd04dd8d3a83bf1d545d82436d04ac68f32a0bd09c600301047065766964656e63655f74696d656f757405a26c6661696c7572655f6b696e646e65766964656e63655f7374616c65707374616c655f73696e63655f756e6978190474061904b0",
+      "revocation_envelope_hex": "a2015897a601010258209e5091437f8dc767985c10f26f57c813c493a4a13ee3c2f216cd71966dcadb1b03a30101025820e7b441bfa3cdaf05a07fbd04dd8d3a83bf1d545d82436d04ac68f32a0bd09c600301047065766964656e63655f74696d656f757405a26c6661696c7572655f6b696e646e65766964656e63655f7374616c65707374616c655f73696e63655f756e6978190474061904b002584092c99f9d67ba7e97e5ca7a5eb6ea6726686e6de2f73d923a35e48083719e623d9a6df88d382c685f86f9ef949f971cc27cd6ac58023b0c2cc24862222ef66108"
+    },
+    {
+      "note": "policy revocation with no telemetry (the absent-evidence legal form)",
+      "proposer_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "proposer_created_at_unix": 0,
+      "hop_seed_hexes": [
+        "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+        "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573"
+      ],
+      "hop_created_at_unix": 1,
+      "service_class": "opportunistic",
+      "proposed_at_unix": 1000,
+      "validity_secs": 600,
+      "proposal_nonce_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "accepted_at_unix": 1001,
+      "acceptance_validity_secs": 600,
+      "setup_nonce_hex": "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3",
+      "setup_issued_at_unix": 1100,
+      "setup_validity_secs": 600,
+      "ack_accepted_at_unix": 1101,
+      "ack_validity_secs": 500,
+      "revoker_position": 2,
+      "reason": "policy",
+      "evidence": null,
+      "revoked_at_unix": 1250,
+      "admission_now_unix": 1150,
+      "circuit_id_hex": "55662b7a30b47e22929479a781c7cbe1fcc8abee610f50864b3c66f20a74d8d6",
+      "revocation_wire_hex": "a5010102582055662b7a30b47e22929479a781c7cbe1fcc8abee610f50864b3c66f20a74d8d603a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c03010466706f6c696379061904e2",
+      "revocation_envelope_hex": "a201585ba5010102582055662b7a30b47e22929479a781c7cbe1fcc8abee610f50864b3c66f20a74d8d603a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c03010466706f6c696379061904e20258405cc3f7bc2d67784550a8f8596f89460670624fe728a67609cfda0b00892807325e46d0b65b575e82a36d5652995774a77806334afc375b75cde2622038a88f0e"
+    },
+    {
+      "note": "operator revocation with a text evidence field",
+      "proposer_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "proposer_created_at_unix": 0,
+      "hop_seed_hexes": [
+        "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+        "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573"
+      ],
+      "hop_created_at_unix": 1,
+      "service_class": "dtn",
+      "proposed_at_unix": 1000,
+      "validity_secs": 600,
+      "proposal_nonce_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "accepted_at_unix": 1001,
+      "acceptance_validity_secs": 600,
+      "setup_nonce_hex": "e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4",
+      "setup_issued_at_unix": 1100,
+      "setup_validity_secs": 600,
+      "ack_accepted_at_unix": 1101,
+      "ack_validity_secs": 500,
+      "revoker_position": 2,
+      "reason": "operator",
+      "evidence": {
+        "failure_kind": "operator_command",
+        "operator": "node-operator-7"
+      },
+      "revoked_at_unix": 1250,
+      "admission_now_unix": 1150,
+      "circuit_id_hex": "da79b0bcffc191327c41d7f88daa7a2a349d1387cb4c8362dee15b1748922c89",
+      "revocation_wire_hex": "a60101025820da79b0bcffc191327c41d7f88daa7a2a349d1387cb4c8362dee15b1748922c8903a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c030104686f70657261746f7205a2686f70657261746f726f6e6f64652d6f70657261746f722d376c6661696c7572655f6b696e64706f70657261746f725f636f6d6d616e64061904e2",
+      "revocation_envelope_hex": "a2015896a60101025820da79b0bcffc191327c41d7f88daa7a2a349d1387cb4c8362dee15b1748922c8903a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c030104686f70657261746f7205a2686f70657261746f726f6e6f64652d6f70657261746f722d376c6661696c7572655f6b696e64706f70657261746f725f636f6d6d616e64061904e2025840c24d9065eb4ae71f2843ddb5d3f4f0691b5cb2cb7eff8f9a3375905f85cfe2f1bf78343f9aa6db92b38a065d96cd35e1ea67f28c81057a5530cc715a7a2b2e00"
+    }
+  ],
+  "receive": [
+    {
+      "case": 0,
+      "revoker": "primary",
+      "now_unix": 1200,
+      "expect": "first"
+    },
+    {
+      "case": 0,
+      "revoker": "primary",
+      "now_unix": 1201,
+      "expect": "duplicate"
+    },
+    {
+      "case": 0,
+      "revoker": "second",
+      "now_unix": 1202,
+      "expect": "additional"
+    },
+    {
+      "case": 1,
+      "revoker": "primary",
+      "now_unix": 1200,
+      "expect": "first"
+    },
+    {
+      "case": 2,
+      "revoker": "primary",
+      "now_unix": 1250,
+      "expect": "first"
+    },
+    {
+      "case": 3,
+      "revoker": "primary",
+      "now_unix": 1250,
+      "expect": "first"
+    },
+    {
+      "case": 0,
+      "revoker": "outsider",
+      "now_unix": 1200,
+      "expect": "revoker_not_on_path"
+    },
+    {
+      "case": 0,
+      "revoker": "primary",
+      "now_unix": 1100,
+      "expect": "revoked_at_in_future"
+    },
+    {
+      "case": 0,
+      "revoker": "primary",
+      "now_unix": 1200,
+      "registry": "empty",
+      "expect": "circuit_unknown"
+    }
+  ],
+  "parse_reject": [
+    {
+      "note": "tampered revocation bytes (signature invalid)",
+      "hex": "a2015885a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a26b6d69737365645f61636b73036c6661696c7572655f6b696e646761636b5f676170061904b002584063d94c84cc8e46c16b37d9475e6c9681b6ecd9f480d2f5b2069ea014dc12d656a5c3a913a8f53e5efdcb20c7677d86d93d64404ad53531732b11fa636e34b207",
+      "error": "signature_invalid"
+    },
+    {
+      "note": "reason outside the frozen set",
+      "hex": "a2015880a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a030004676265636175736505a26b6d69737365645f61636b73036c6661696c7572655f6b696e646761636b5f676170061904b0025840783f1871a0f0a8b847abdafda952739807e89669e97a314cc2eec5621796e0244e6c9d4d0394256417701bf9150bf32e3d7229d95929b6195be6adfa0fe3540c",
+      "error": "reason_unknown"
+    },
+    {
+      "note": "evidence map with 9 fields beyond failure_kind",
+      "hex": "a2015896a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505aa6266300062663101626632026266330362663404626635056266360662663707626638086c6661696c7572655f6b696e646178061904b00258402ed37ff54148213b51a63e236b34a7f0af13ba2a098e82b5792ba3224992441ce6ed93370187a0d4e237b2ccc796581cf292b268811af62570167df7bb154f0f",
+      "error": "evidence_too_many_fields"
+    },
+    {
+      "note": "evidence map without failure_kind",
+      "hex": "a2015870a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a16b6d69737365645f61636b7301061904b002584050b76342700ffd66e36ba74e3a2542716e0dff79eb4ad7eddb21ee21e69c60d78998e3ddd328576718813c522a9807f5672ebaf031490f37e914d7958dbb2c06",
+      "error": "failure_kind_missing"
+    },
+    {
+      "note": "evidence failure_kind as an integer",
+      "hex": "a2015871a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a16c6661696c7572655f6b696e6405061904b0025840bc627872cdc2a37a999ae02861f80a3940b46af6d898547eed01c1f8ce549cf3db486e18e02e28ab123be9bb5c90bffa9cca4b47dc1222e68338fc0f69036e07",
+      "error": "failure_kind_not_text"
+    },
+    {
+      "note": "evidence key of 65 bytes",
+      "hex": "a20158b6a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a26c6661696c7572655f6b696e64617878416b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b01061904b00258409850a0f0222ad89920fb9acf31348d833de52f0b566455163fb27f078c479a64c262268feb1e27b95d18c53a9d9a365930a49976598b7c5e990808e107b6e40e",
+      "error": "evidence_key_invalid"
+    },
+    {
+      "note": "evidence text value of 129 bytes",
+      "hex": "a20158faa60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a2646e6f746578817979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979796c6661696c7572655f6b696e646178061904b002584082c85fe61f391215e450bc3e0cdf276939e0a02ae3fa3d0f65b855c456f24ef387ea8493622c097b9500cc1fc05a53582d6f2d4eb66a32526820b5122543a306",
+      "error": "evidence_text_too_long"
+    },
+    {
+      "note": "evidence entry with a bytes value",
+      "hex": "a201587ca60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a264626c6f6244000000006c6661696c7572655f6b696e646178061904b0025840f6e894a0dc1f0e64e93e158eab1979c224863644c456980591683325c0992cf4e894dc82df793c9da2854eea450b58b144cea3bae90184dea22c1f307199b306",
+      "error": "evidence_entry_malformed"
+    },
+    {
+      "note": "scheme version 2",
+      "hex": "a2015885a60102025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a26b6d69737365645f61636b73036c6661696c7572655f6b696e646761636b5f676170061904b00258401bff061bf42e59dadbf0ead56113d847da35b298a1640653a9a341810a2967145dd63ffd977dde0b522e49d02639ec60bb476f8146f09ecf7c555f9fd196b00a",
+      "error": "scheme_version_unsupported"
+    },
+    {
+      "note": "circuit_id of 31 bytes",
+      "hex": "a2015884a6010102581f0000000000000000000000000000000000000000000000000000000000000003a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a26b6d69737365645f61636b73036c6661696c7572655f6b696e646761636b5f676170061904b00258405ee96a7ae30911f7b7ba12272dd00c8cb8c774e549b6bfc1f41c380056243b923f34fbd9a48d1811515b25242b6acd2af7300380a17b008bcb772759c333810e",
+      "error": "circuit_id_wrong_length"
+    },
+    {
+      "note": "missing revoked_at (field 6)",
+      "hex": "a2015881a50101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a26b6d69737365645f61636b73036c6661696c7572655f6b696e646761636b5f67617002584097fb1ac8e32b87ffc9de76dc5f9920ac83f55700670748997647b3e811d5ea7fb41dc646e057c38d8da4c45cdbc28bc77f4b6e34898b9a85ed101ca7face1509",
+      "error": "missing_field"
+    },
+    {
+      "note": "negative revoked_at",
+      "hex": "a2015883a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a26b6d69737365645f61636b73036c6661696c7572655f6b696e646761636b5f676170062002584008441dc57a3f3625605c52186d8c6a538a8b60d38dd5721723b6d7bb3819e7377675cadc09447cae319f5fcd1baa3b92944b908bc6b4fe5e820f05cf4ac3ea09",
+      "error": "timestamp_out_of_range"
+    },
+    {
+      "note": "a CircuitDestroy envelope fed to the revocation path",
+      "hex": "a2015861a50101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c757265051904b00258408ba0f8347a62781c2b2a77a8b9841b245a7873473e9dc3157725bab729a35863cdbea90f8b2a97324e250ffcb7f9780fcfd39492f84959d0209874adc1de6301",
+      "error": "field_not_expected_type"
+    }
+  ],
+  "envelope_reject": [
+    {
+      "note": "envelope signature of 63 bytes",
+      "hex": "a2015885a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a26b6d69737365645f61636b73036c6661696c7572655f6b696e646761636b5f676170061904b002583f63d94c84cc8e46c16b37d9475e6c9681b6ecd9f480d2f5b2069ea014dc12d656a5c3a913a8f53e5efdcb20c7677d86d93d64404ad53531732b11fa636e34b2",
+      "error": "signature_wrong_length"
+    },
+    {
+      "note": "envelope with one entry",
+      "hex": "a1015885a60101025820adb0f0fe621b8f3012aa0d32c317d29658f9e3439479648feba706a5bcf2178903a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a0300046c6c696e6b5f6661696c75726505a26b6d69737365645f61636b73036c6661696c7572655f6b696e646761636b5f676170061904b0",
+      "error": "envelope_wrong_entry_count"
+    },
+    {
+      "note": "envelope payload field not bytes",
+      "hex": "a2010502584063d94c84cc8e46c16b37d9475e6c9681b6ecd9f480d2f5b2069ea014dc12d656a5c3a913a8f53e5efdcb20c7677d86d93d64404ad53531732b11fa636e34b206",
+      "error": "field_not_expected_type"
+    },
+    {
+      "note": "envelope not a map",
+      "hex": "8101",
+      "error": "not_a_map"
+    }
+  ]
+}

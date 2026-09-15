@@ -58,6 +58,7 @@ import {
   reassemble as contentReassemble,
   type MetadataValue,
 } from "./content.ts";
+import { buildRevocation, revocationEnvelope } from "./revocation.ts";
 
 const vectorsDir =
   process.argv[2] ??
@@ -600,6 +601,199 @@ function loadJson(name: string): any {
   }
   for (let i = 0; i < file.rejects.length; i++) {
     console.log(`CIRCUIT_REJ ${i} ${file.rejects[i].error}`);
+  }
+}
+
+// ---------------- circuit revocation vectors (R7-001) ----------------
+{
+  const file = loadJson("revocation_vectors.json");
+  // evidence JSON -> the leg builder's typed map (int | text values)
+  const evidenceOf = (c: any): Map<string, bigint | string> | null => {
+    if (c.evidence === null || c.evidence === undefined) return null;
+    return new Map(
+      Object.entries(c.evidence).map(([k, v]) => [
+        k,
+        typeof v === "number" ? BigInt(v) : (v as string),
+      ]),
+    );
+  };
+  // per-case established world: members in sorted-path (position) order,
+  // the derived circuit id, and the committed path (the registry
+  // stand-in — the only registry fact the receive replay consults).
+  const worlds: {
+    members: { pk: Uint8Array; created: bigint; key: Ed25519Key; nodeId: Uint8Array }[];
+    circuitId: Uint8Array;
+    path: Uint8Array[];
+  }[] = [];
+  for (const c of file.cases) {
+    const proposerKey = new Ed25519Key(fromHex(c.proposer_seed_hex));
+    const hopKeys = c.hop_seed_hexes.map((s: string) => new Ed25519Key(fromHex(s)));
+    const path = [
+      ...hopKeys.map((k: Ed25519Key) => deriveNodeId(k.publicKey)),
+      deriveNodeId(proposerKey.publicKey),
+    ];
+    const sortedPath = [...path].sort((a, b) =>
+      Buffer.compare(Buffer.from(a), Buffer.from(b)),
+    );
+    const proposal = buildProposal({
+      publicKey: proposerKey.publicKey,
+      createdAtUnix: BigInt(c.proposer_created_at_unix),
+      path: sortedPath,
+      serviceClass: c.service_class,
+      proposedAtUnix: BigInt(c.proposed_at_unix),
+      validitySecs: BigInt(c.validity_secs),
+      nonce: fromHex(c.proposal_nonce_hex),
+    });
+    const proposalSig = proposerKey.signDetached(proposal);
+    const proposalEnv = routeEnvelope(proposal, proposalSig);
+    const pid = proposalIdOf(proposal);
+    const members = [
+      ...hopKeys.map((k: Ed25519Key) => ({
+        pk: k.publicKey,
+        created: BigInt(c.hop_created_at_unix),
+        key: k,
+        nodeId: deriveNodeId(k.publicKey),
+      })),
+      {
+        pk: proposerKey.publicKey,
+        created: BigInt(c.proposer_created_at_unix),
+        key: proposerKey,
+        nodeId: deriveNodeId(proposerKey.publicKey),
+      },
+    ];
+    members.sort((a, b) =>
+      Buffer.compare(Buffer.from(a.nodeId), Buffer.from(b.nodeId)),
+    );
+    const acceptanceEnvs = members.map((m, pos) => {
+      const acc = buildAcceptance({
+        proposalId: pid,
+        publicKey: m.pk,
+        createdAtUnix: m.created,
+        position: BigInt(pos),
+        acceptedAtUnix: BigInt(c.accepted_at_unix),
+        validitySecs: BigInt(c.acceptance_validity_secs),
+      });
+      const sig = m.key.signDetached(acc);
+      return routeEnvelope(acc, sig);
+    });
+    const leaves = members.map((_, pos) => {
+      const v = decode(acceptanceEnvs[pos]!) as any;
+      return circuitSetupDigest(v.v[0][1].v as Uint8Array);
+    });
+    const root = merkleRoot(leaves)!;
+    const routeId = deriveRouteId(root);
+    const setupNonce = fromHex(c.setup_nonce_hex);
+    // circuit_id = SHA-256("sharenet-circuit-id-v1" || route_id || nonce)
+    const circuitId = deriveCircuitId(routeId, setupNonce);
+    if (toHex(circuitId) !== c.circuit_id_hex) {
+      fail(`revocation ${file.cases.indexOf(c)}: derived circuit id differs from the committed vector`);
+    }
+    worlds.push({ members, circuitId, path: sortedPath });
+    // the revocation itself, rebuilt from the vector inputs and pinned
+    const revoker = members[Number(c.revoker_position)]!;
+    const wire = buildRevocation({
+      circuitId,
+      publicKey: revoker.pk,
+      createdAtUnix: revoker.created,
+      reason: c.reason,
+      evidence: evidenceOf(c),
+      revokedAtUnix: BigInt(c.revoked_at_unix),
+    });
+    const sig = revoker.key.signDetached(wire);
+    const env = revocationEnvelope(wire, sig);
+    if (toHex(wire) !== c.revocation_wire_hex || toHex(env) !== c.revocation_envelope_hex) {
+      fail(`revocation ${file.cases.indexOf(c)}: re-derived image differs from the committed vector`);
+    }
+    console.log(
+      `REVOCATION ${file.cases.indexOf(c)} wire=${toHex(wire)} env=${toHex(env)} id=${toHex(circuitId)}`,
+    );
+  }
+  // receive: replay ONE shared ledger in vector order (the ledger state —
+  // idempotence per (circuit, revoker) and first/additional — is itself
+  // the test) against the per-case established circuits; "empty" = a
+  // fresh registry with no circuits. Admission order mirrors the Rust
+  // ledger: circuit_unknown -> revoker_not_on_path -> revoked_at_in_future
+  // -> duplicate -> first/additional.
+  const foreignSeed = new Uint8Array(32).fill(0xee);
+  const foreignKey = new Ed25519Key(foreignSeed);
+  const foreignNodeId = deriveNodeId(foreignKey.publicKey);
+  const seen = new Set<string>(); // (circuit_id, revoker node_id) keys
+  const revokedCircuits = new Set<string>();
+  for (const r of file.receive) {
+    const i = file.receive.indexOf(r);
+    const c = file.cases[r.case];
+    const world = worlds[r.case]!;
+    // primary = the case's revoker_position member (the case's
+    // reason/evidence/revoked_at); second = the member at
+    // (revoker_position + 1) % path_len revoking on policy with no
+    // evidence at the case's revoked_at; outsider = the fixed foreign
+    // seed, same shape as the second.
+    let revoker: { pk: Uint8Array; created: bigint; key: Ed25519Key; nodeId: Uint8Array };
+    let reason: string;
+    let evidence: Map<string, bigint | string> | null;
+    if (r.revoker === "primary") {
+      revoker = world.members[Number(c.revoker_position)]!;
+      reason = c.reason;
+      evidence = evidenceOf(c);
+    } else if (r.revoker === "second") {
+      revoker = world.members[(Number(c.revoker_position) + 1) % world.members.length]!;
+      reason = "policy";
+      evidence = null;
+    } else if (r.revoker === "outsider") {
+      revoker = {
+        pk: foreignKey.publicKey,
+        created: 1n,
+        key: foreignKey,
+        nodeId: foreignNodeId,
+      };
+      reason = "policy";
+      evidence = null;
+    } else {
+      throw new Error(`unknown revoker kind ${r.revoker}`);
+    }
+    const revokedAt = BigInt(c.revoked_at_unix);
+    const wire = buildRevocation({
+      circuitId: world.circuitId,
+      publicKey: revoker.pk,
+      createdAtUnix: revoker.created,
+      reason,
+      evidence,
+      revokedAtUnix: revokedAt,
+    });
+    const sig = revoker.key.signDetached(wire);
+    void revocationEnvelope(wire, sig); // the carrying envelope (exercised)
+    const now = BigInt(r.now_unix);
+    const cidKey = toHex(world.circuitId);
+    const revokerKey = toHex(revoker.nodeId);
+    let outcome: string;
+    if (r.registry === "empty") {
+      outcome = "circuit_unknown";
+    } else if (
+      !world.path.some((p) => Buffer.compare(Buffer.from(p), Buffer.from(revoker.nodeId)) === 0)
+    ) {
+      outcome = "revoker_not_on_path";
+    } else if (revokedAt > now) {
+      outcome = "revoked_at_in_future";
+    } else if (seen.has(`${cidKey}:${revokerKey}`)) {
+      outcome = "duplicate";
+    } else {
+      seen.add(`${cidKey}:${revokerKey}`);
+      outcome = revokedCircuits.has(cidKey) ? "additional" : "first";
+      revokedCircuits.add(cidKey);
+    }
+    if (outcome !== r.expect) {
+      fail(`revocation receive ${i}: ${outcome} != expected ${r.expect}`);
+    }
+    console.log(`REVOCATION_RECV ${i} now=${r.now_unix} ${outcome}`);
+  }
+  // strict envelope parse is Rust-core scope (documented in the
+  // conformance README); the wire lines above pin the encoder, these pin
+  // the taxonomy
+  for (let i = 0; i < file.parse_reject.length; i++) {
+    console.log(`REVOCATION_REJ ${i} ${file.parse_reject[i].error}`);
+  }
+  for (let i = 0; i < file.envelope_reject.length; i++) {
+    console.log(`REVOCATION_ENV_REJ ${i} ${file.envelope_reject[i].error}`);
   }
 }
 

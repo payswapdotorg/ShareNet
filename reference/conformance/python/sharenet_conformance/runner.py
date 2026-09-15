@@ -20,6 +20,7 @@ from . import advertisement as admod
 from . import circuit as circuitmod
 from . import connectivity_evidence as ce_mod
 from . import content as contentmod
+from . import revocation as revmod
 from . import route as routemod
 from . import topology as topomod
 from . import ed25519
@@ -524,6 +525,172 @@ def run(vectors_dir: str) -> int:
             fail(f"circuit {i}: {e}")
     for i, r in enumerate(circuit_file["rejects"]):
         print(f"CIRCUIT_REJ {i} {r['error']}")
+
+    # ---------------- circuit revocation vectors (R7-001) ----------------
+    rev_file = load_json(vectors_dir, "revocation_vectors.json")
+    # per-case established world: members in sorted-path (position) order,
+    # the derived circuit id, and the committed path (the registry
+    # stand-in — the only registry fact the receive replay consults).
+    rev_worlds = []
+    for i, c in enumerate(rev_file["cases"]):
+        try:
+            proposer_pk = public_key(bytes.fromhex(c["proposer_seed_hex"]))
+            hop_pks = [public_key(bytes.fromhex(s)) for s in c["hop_seed_hexes"]]
+            path = [derive_node_id(pk) for pk in hop_pks] + [derive_node_id(proposer_pk)]
+            sorted_path = sorted(path)
+            proposal = routemod.build_proposal(
+                proposer_pk,
+                c["proposer_created_at_unix"],
+                sorted_path,
+                c["service_class"],
+                c["proposed_at_unix"],
+                c["validity_secs"],
+                bytes.fromhex(c["proposal_nonce_hex"]),
+            )
+            from . import ed25519 as ed
+
+            proposal_sig = ed.sign(bytes.fromhex(c["proposer_seed_hex"]), proposal)
+            proposal_env = routemod.envelope(proposal, proposal_sig)
+            pid = routemod.proposal_id_of(proposal)
+            members = [
+                (pk, c["hop_created_at_unix"], seed)
+                for pk, seed in zip(hop_pks, c["hop_seed_hexes"])
+            ] + [
+                (
+                    proposer_pk,
+                    c["proposer_created_at_unix"],
+                    c["proposer_seed_hex"],
+                )
+            ]
+            members.sort(key=lambda m: derive_node_id(m[0]))
+            acceptance_envs = []
+            for pos, (pk, created, seed) in enumerate(members):
+                acc = routemod.build_acceptance(
+                    pid, pk, created, pos, c["accepted_at_unix"], c["acceptance_validity_secs"]
+                )
+                sig = ed.sign(bytes.fromhex(seed), acc)
+                acceptance_envs.append(routemod.envelope(acc, sig))
+            from .cbor import decode as cbor_decode
+
+            leaves = []
+            for env in acceptance_envs:
+                v = cbor_decode(env)
+                leaves.append(hashlib.sha256(v[0][1]).digest())
+            root = routemod.merkle_root(leaves)
+            route_id = routemod.derive_route_id(root)
+            setup_nonce = bytes.fromhex(c["setup_nonce_hex"])
+            # circuit_id = SHA-256("sharenet-circuit-id-v1" || route_id || nonce)
+            circuit_id = circuitmod.derive_circuit_id(route_id, setup_nonce)
+            if circuit_id.hex() != c["circuit_id_hex"]:
+                fail(
+                    f"revocation {i}: derived circuit id differs from the committed vector"
+                )
+            rev_worlds.append(
+                {"members": members, "circuit_id": circuit_id, "path": sorted_path}
+            )
+            # the revocation itself, rebuilt from the vector inputs and pinned
+            revoker_pk, revoker_created, revoker_seed = members[c["revoker_position"]]
+            wire = revmod.build_revocation(
+                circuit_id,
+                revoker_pk,
+                revoker_created,
+                c["reason"],
+                c.get("evidence"),
+                c["revoked_at_unix"],
+            )
+            sig = ed.sign(bytes.fromhex(revoker_seed), wire)
+            env = revmod.revocation_envelope(wire, sig)
+            if (
+                wire.hex() != c["revocation_wire_hex"]
+                or env.hex() != c["revocation_envelope_hex"]
+            ):
+                fail(
+                    f"revocation {i}: re-derived image differs from the committed vector"
+                )
+            print(
+                f"REVOCATION {i} wire={wire.hex()} env={env.hex()} id={circuit_id.hex()}"
+            )
+        except Exception as e:  # noqa: BLE001
+            fail(f"revocation {i}: {e}")
+    # receive: replay ONE shared ledger in vector order (the ledger state —
+    # idempotence per (circuit, revoker) and first/additional — is itself
+    # the test) against the per-case established circuits; "empty" = a
+    # fresh registry with no circuits. Admission order mirrors the Rust
+    # ledger: circuit_unknown -> revoker_not_on_path -> revoked_at_in_future
+    # -> duplicate -> first/additional.
+    foreign_seed = bytes([0xEE] * 32)
+    foreign_pk = public_key(foreign_seed)
+    foreign_node_id = derive_node_id(foreign_pk)
+    seen: set[tuple[str, str]] = set()  # (circuit_id, revoker node_id) keys
+    revoked_circuits: set[str] = set()
+    for i, r in enumerate(rev_file["receive"]):
+        try:
+            c = rev_file["cases"][r["case"]]
+            world = rev_worlds[r["case"]]
+            # primary = the case's revoker_position member (the case's
+            # reason/evidence/revoked_at); second = the member at
+            # (revoker_position + 1) % path_len revoking on policy with no
+            # evidence at the case's revoked_at; outsider = the fixed
+            # foreign seed, same shape as the second.
+            if r["revoker"] == "primary":
+                revoker_pk, revoker_created, revoker_seed = world["members"][
+                    c["revoker_position"]
+                ]
+                reason = c["reason"]
+                evidence = c.get("evidence")
+            elif r["revoker"] == "second":
+                pos = (c["revoker_position"] + 1) % len(world["members"])
+                revoker_pk, revoker_created, revoker_seed = world["members"][pos]
+                reason = "policy"
+                evidence = None
+            elif r["revoker"] == "outsider":
+                revoker_pk, revoker_created, revoker_seed = (
+                    foreign_pk,
+                    1,
+                    foreign_seed.hex(),
+                )
+                reason = "policy"
+                evidence = None
+            else:
+                raise ValueError(f"unknown revoker kind {r['revoker']}")
+            revoked_at = c["revoked_at_unix"]
+            wire = revmod.build_revocation(
+                world["circuit_id"],
+                revoker_pk,
+                revoker_created,
+                reason,
+                evidence,
+                revoked_at,
+            )
+            sig = ed25519.sign(bytes.fromhex(revoker_seed), wire)
+            env = revmod.revocation_envelope(wire, sig)  # noqa: F841 (exercised)
+            now = r["now_unix"]
+            cid_hex = world["circuit_id"].hex()
+            revoker_node_id = derive_node_id(revoker_pk)
+            if r.get("registry") == "empty":
+                outcome = "circuit_unknown"
+            elif revoker_node_id not in world["path"]:
+                outcome = "revoker_not_on_path"
+            elif revoked_at > now:
+                outcome = "revoked_at_in_future"
+            elif (cid_hex, revoker_node_id.hex()) in seen:
+                outcome = "duplicate"
+            else:
+                seen.add((cid_hex, revoker_node_id.hex()))
+                outcome = "additional" if cid_hex in revoked_circuits else "first"
+                revoked_circuits.add(cid_hex)
+            if "expect" in r and outcome != r["expect"]:
+                fail(f"revocation receive {i}: {outcome} != expected {r['expect']}")
+            print(f"REVOCATION_RECV {i} now={now} {outcome}")
+        except Exception as e:  # noqa: BLE001
+            fail(f"revocation receive {i}: {e}")
+    # strict envelope parse is Rust-core scope (documented in the
+    # conformance README); the wire lines above pin the encoder, these pin
+    # the taxonomy
+    for i, r in enumerate(rev_file["parse_reject"]):
+        print(f"REVOCATION_REJ {i} {r['error']}")
+    for i, r in enumerate(rev_file["envelope_reject"]):
+        print(f"REVOCATION_ENV_REJ {i} {r['error']}")
 
     # ---------------- signed connectivity observation vectors (R5-004) ----------------
     obs_file = load_json(vectors_dir, "connectivity_evidence_vectors.json")

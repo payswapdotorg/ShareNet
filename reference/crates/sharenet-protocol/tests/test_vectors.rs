@@ -390,6 +390,94 @@ struct CircuitReject {
     error: String,
 }
 
+// ---------------------------------------------------------------------------
+// Circuit revocation vectors (R7-001)
+// ---------------------------------------------------------------------------
+
+/// An evidence value in the vector JSON (int or text — untagged).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+enum JEvidenceValue {
+    Int(i64),
+    Text(String),
+}
+
+impl From<&JEvidenceValue> for sharenet_protocol::revocation::EvidenceValue {
+    fn from(j: &JEvidenceValue) -> Self {
+        match j {
+            JEvidenceValue::Int(v) => sharenet_protocol::revocation::EvidenceValue::Int(*v),
+            JEvidenceValue::Text(t) => {
+                sharenet_protocol::revocation::EvidenceValue::Text(t.clone())
+            }
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct RevocationVectorsFile {
+    scheme: String,
+    description: String,
+    cases: Vec<RevocationCase>,
+    receive: Vec<RevocationReceive>,
+    parse_reject: Vec<RevocationReject>,
+    envelope_reject: Vec<RevocationReject>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RevocationCase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    proposer_seed_hex: String,
+    proposer_created_at_unix: u64,
+    hop_seed_hexes: Vec<String>,
+    hop_created_at_unix: u64,
+    service_class: String,
+    proposed_at_unix: u64,
+    validity_secs: u64,
+    proposal_nonce_hex: String,
+    accepted_at_unix: u64,
+    acceptance_validity_secs: u64,
+    setup_nonce_hex: String,
+    setup_issued_at_unix: u64,
+    setup_validity_secs: u64,
+    ack_accepted_at_unix: u64,
+    ack_validity_secs: u64,
+    /// The primary revoker's position in the sorted member list.
+    revoker_position: u64,
+    reason: String,
+    /// Nullable evidence map (text -> int|text); null = absent field.
+    evidence: Option<std::collections::BTreeMap<String, JEvidenceValue>>,
+    revoked_at_unix: u64,
+    admission_now_unix: u64,
+    circuit_id_hex: String,
+    revocation_wire_hex: String,
+    revocation_envelope_hex: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RevocationReceive {
+    case: usize,
+    /// primary = the case's revoker_position member;
+    /// second = member at (revoker_position + 1) % path_len revoking with
+    ///   reason "policy", no evidence, at the case's revoked_at_unix;
+    /// outsider = the fixed foreign seed [0xEE; 32], same shape as second.
+    revoker: String,
+    now_unix: u64,
+    /// admitted (default) = the case's circuit is in the registry;
+    /// empty = a fresh registry with no circuits (path unverifiable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registry: Option<String>,
+    expect: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RevocationReject {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    hex: String,
+    error: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct ContentVectorsFile {
     scheme: String,
@@ -2015,6 +2103,558 @@ that MUST fail at the named step with the named typed error.".into(),
     }
 }
 
+fn revocation_vectors() -> RevocationVectorsFile {
+    use sharenet_protocol::circuit::{derive_circuit_id, CircuitRegistry, CircuitSetup, CircuitSetupAck};
+    use sharenet_protocol::revocation::{
+        CircuitRevocation, EvidenceValue, RevocationAdmitOutcome, RevocationLedger,
+        RevocationReason, SignedCircuitRevocation, EVIDENCE_FAILURE_KIND,
+    };
+    use sharenet_protocol::route::{derive_proposal_id, RouteAcceptance, RouteCommitment, RouteProposal};
+    let mk = |seed_hex: &str, created: u64| -> Identity {
+        let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
+        Identity::from_seed(seed, created, None).unwrap()
+    };
+    struct In<'a> {
+        note: &'a str,
+        hop_seeds: Vec<&'a str>,
+        service: &'a str,
+        setup_nonce_hex: &'a str,
+        revoker_position: u64,
+        reason: &'a str,
+        evidence: Option<Vec<(&'a str, JEvidenceValue)>>,
+        revoked_at_unix: u64,
+    }
+    let cases_in = vec![
+        In {
+            note: "link_failure revocation by a mid-path hop with missed-ack evidence",
+            hop_seeds: vec![
+                "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+                "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            ],
+            service: "live",
+            setup_nonce_hex: "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+            revoker_position: 1,
+            reason: "link_failure",
+            evidence: Some(vec![
+                ("failure_kind", JEvidenceValue::Text("ack_gap".into())),
+                ("missed_acks", JEvidenceValue::Int(3)),
+            ]),
+            revoked_at_unix: 1_200,
+        },
+        In {
+            note: "evidence_timeout revocation with the stale-evidence timestamp",
+            hop_seeds: vec![
+                "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+                "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            ],
+            service: "live",
+            setup_nonce_hex: "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2",
+            revoker_position: 0,
+            reason: "evidence_timeout",
+            evidence: Some(vec![
+                ("failure_kind", JEvidenceValue::Text("evidence_stale".into())),
+                ("stale_since_unix", JEvidenceValue::Int(1_140)),
+            ]),
+            revoked_at_unix: 1_200,
+        },
+        In {
+            note: "policy revocation with no telemetry (the absent-evidence legal form)",
+            hop_seeds: vec![
+                "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+                "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            ],
+            service: "opportunistic",
+            setup_nonce_hex: "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3",
+            revoker_position: 2,
+            reason: "policy",
+            evidence: None,
+            revoked_at_unix: 1_250,
+        },
+        In {
+            note: "operator revocation with a text evidence field",
+            hop_seeds: vec![
+                "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+                "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            ],
+            service: "dtn",
+            setup_nonce_hex: "e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4",
+            revoker_position: 2,
+            reason: "operator",
+            evidence: Some(vec![
+                ("failure_kind", JEvidenceValue::Text("operator_command".into())),
+                ("operator", JEvidenceValue::Text("node-operator-7".into())),
+            ]),
+            revoked_at_unix: 1_250,
+        },
+    ];
+    let proposer_seed = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+    let proposal_nonce_hex = "0101010101010101010101010101010101010101010101010101010101010101";
+
+    // Build one case: identities -> proposal -> acceptances -> commitment ->
+    // setup envelope -> established registry -> circuit_id.
+    let build_case = |cin: &In| {
+        let proposer = mk(proposer_seed, 0);
+        let hops: Vec<Identity> = cin.hop_seeds.iter().map(|s| mk(s, 1)).collect();
+        let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
+        path.push(*proposer.node_id().as_bytes());
+        let proposal_nonce: [u8; 32] = from_hex(proposal_nonce_hex).try_into().unwrap();
+        let proposal =
+            RouteProposal::new(&proposer, path.clone(), cin.service, 1_000, 600, proposal_nonce)
+                .unwrap();
+        let proposal_env = proposal.sign(&proposer).unwrap();
+        let proposal_id = derive_proposal_id(proposal_env.bytes());
+        let mut members: Vec<&Identity> = hops.iter().collect();
+        members.push(&proposer);
+        members.sort_by_key(|i| *i.node_id().as_bytes());
+        let acceptance_envs: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let a = RouteAcceptance::new(m, proposal_id, i as u64, 1_001, 600).unwrap();
+                a.sign(m).unwrap()
+            })
+            .collect();
+        let commitment =
+            RouteCommitment::build(1_100, proposal_env.clone(), acceptance_envs.clone()).unwrap();
+        let setup_nonce: [u8; 32] = from_hex(cin.setup_nonce_hex).try_into().unwrap();
+        let setup = CircuitSetup::new(&commitment, &proposer, setup_nonce, 1_100, 600).unwrap();
+        let setup_env = setup.sign(&proposer).unwrap();
+        let circuit_id = derive_circuit_id(commitment.route_id(), &setup_nonce);
+        // establish the circuit in a registry
+        let mut registry = CircuitRegistry::new();
+        registry.admit_setup(1_150, &setup_env).unwrap();
+        for (pos, member) in members.iter().enumerate() {
+            let ack =
+                CircuitSetupAck::new(circuit_id, &setup_env, member, pos as u64, 1_101, 500)
+                    .unwrap();
+            let env = ack.sign(member).unwrap();
+            registry.admit_ack(1_150, &env).unwrap();
+        }
+        // return OWNED identities in sorted-member (position) order
+        let owned: Vec<Identity> = members.into_iter().cloned().collect();
+        (owned, circuit_id, registry, commitment)
+    };
+
+    let mut cases = Vec::new();
+    for cin in &cases_in {
+        let (members, circuit_id, registry, _commitment) = build_case(cin);
+        let evidence: Option<std::collections::BTreeMap<String, EvidenceValue>> =
+            cin.evidence.as_ref().map(|ev| {
+                ev.iter()
+                    .map(|(k, v)| (k.to_string(), EvidenceValue::from(v)))
+                    .collect()
+            });
+        let reason = RevocationReason::from_name(cin.reason).expect("frozen reason");
+        let revoker = &members[cin.revoker_position as usize];
+        let revocation =
+            CircuitRevocation::new(revoker, circuit_id, reason, evidence.clone(), cin.revoked_at_unix)
+                .unwrap();
+        let signed = revocation.sign(revoker).unwrap();
+        // generation-time validation: the revocation must admit as First
+        let ledger = RevocationLedger::new();
+        assert_eq!(
+            ledger.admit(cin.revoked_at_unix, &signed, &registry).unwrap(),
+            RevocationAdmitOutcome::First
+        );
+        cases.push(RevocationCase {
+            note: Some(cin.note.to_string()),
+            proposer_seed_hex: proposer_seed.to_string(),
+            proposer_created_at_unix: 0,
+            hop_seed_hexes: cin.hop_seeds.iter().map(|s| s.to_string()).collect(),
+            hop_created_at_unix: 1,
+            service_class: cin.service.to_string(),
+            proposed_at_unix: 1_000,
+            validity_secs: 600,
+            proposal_nonce_hex: proposal_nonce_hex.into(),
+            accepted_at_unix: 1_001,
+            acceptance_validity_secs: 600,
+            setup_nonce_hex: cin.setup_nonce_hex.to_string(),
+            setup_issued_at_unix: 1_100,
+            setup_validity_secs: 600,
+            ack_accepted_at_unix: 1_101,
+            ack_validity_secs: 500,
+            revoker_position: cin.revoker_position,
+            reason: cin.reason.to_string(),
+            evidence: cin
+                .evidence
+                .as_ref()
+                .map(|ev| ev.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()),
+            revoked_at_unix: cin.revoked_at_unix,
+            admission_now_unix: 1_150,
+            circuit_id_hex: common_hex(&circuit_id),
+            revocation_wire_hex: common_hex(&signed.revocation_bytes().to_vec()),
+            revocation_envelope_hex: common_hex(&signed.to_envelope_bytes()),
+        });
+    }
+
+    // receive: replay the ledger-admission sequence against ONE shared
+    // ledger (the same model the harness legs use) and assert every
+    // expected outcome through the real API.
+    let receive_in: Vec<(usize, &str, u64, Option<&str>, &str)> = vec![
+        (0, "primary", 1_200, None, "first"),
+        (0, "primary", 1_201, None, "duplicate"),
+        (0, "second", 1_202, None, "additional"),
+        (1, "primary", 1_200, None, "first"),
+        (2, "primary", 1_250, None, "first"),
+        (3, "primary", 1_250, None, "first"),
+        (0, "outsider", 1_200, None, "revoker_not_on_path"),
+        (0, "primary", 1_100, None, "revoked_at_in_future"),
+        (0, "primary", 1_200, Some("empty"), "circuit_unknown"),
+    ];
+    let receive: Vec<RevocationReceive> = receive_in
+        .iter()
+        .map(|(case, revoker, now, registry, expect)| RevocationReceive {
+            case: *case,
+            revoker: revoker.to_string(),
+            now_unix: *now,
+            registry: registry.map(|s| s.to_string()),
+            expect: expect.to_string(),
+        })
+        .collect();
+    {
+        let shared_ledger = RevocationLedger::new();
+        let empty_registry = CircuitRegistry::new();
+        for (i, r) in receive.iter().enumerate() {
+            let cin = &cases_in[r.case];
+            let (members, _circuit_id, registry, _commitment) = build_case(cin);
+            let revoker = match r.revoker.as_str() {
+                "primary" => &members[cin.revoker_position as usize],
+                "second" => &members
+                    [((cin.revoker_position + 1) % members.len() as u64) as usize],
+                "outsider" => {
+                    &Identity::from_seed([0xEE; 32], 1, None).unwrap()
+                }
+                other => panic!("unknown revoker kind {other:?}"),
+            };
+            let (reason, evidence, revoked_at) = if r.revoker == "primary" {
+                (
+                    RevocationReason::from_name(&cin.reason).unwrap(),
+                    cin.evidence.as_ref().map(|ev| {
+                        ev.iter()
+                            .map(|(k, v)| (k.to_string(), EvidenceValue::from(v)))
+                            .collect()
+                    }),
+                    cin.revoked_at_unix,
+                )
+            } else {
+                (RevocationReason::Policy, None, cin.revoked_at_unix)
+            };
+            let circuit_id: [u8; 32] = from_hex(&cases[r.case].circuit_id_hex)
+                .try_into()
+                .unwrap();
+            let revocation = CircuitRevocation::new(revoker, circuit_id, reason, evidence, revoked_at)
+                .unwrap();
+            let signed = revocation.sign(revoker).unwrap();
+            let target = if r.registry.as_deref() == Some("empty") {
+                &empty_registry
+            } else {
+                &registry
+            };
+            let outcome = match shared_ledger.admit(r.now_unix, &signed, target) {
+                Ok(o) => o.as_str().to_string(),
+                Err(e) => e.name().to_string(),
+            };
+            assert_eq!(
+                outcome, r.expect,
+                "generation-time receive replay {i} diverged"
+            );
+        }
+    }
+
+    // parse_reject: full carrying envelopes that MUST fail at parse or
+    // signature verification with the named typed error.
+    let mut parse_reject = Vec::new();
+    {
+        let cin = &cases_in[0];
+        let (members, circuit_id, _registry, _commitment) = build_case(cin);
+        let revoker = &members[cin.revoker_position as usize];
+        let base_evidence: std::collections::BTreeMap<String, EvidenceValue> = cin
+            .evidence
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.to_string(), EvidenceValue::from(v)))
+            .collect();
+        let base =
+            CircuitRevocation::new(revoker, circuit_id, RevocationReason::LinkFailure, Some(base_evidence), 1_200)
+                .unwrap();
+        let base_signed = base.sign(revoker).unwrap();
+
+        // helper: mutate the base wire, re-sign with the revoker (the
+        // failure must be the invariant, not the signature), pin the envelope
+        fn reject_with(
+            parse_reject: &mut Vec<RevocationReject>,
+            base_bytes: &[u8],
+            revoker: &Identity,
+            note: &str,
+            error: &str,
+            mutate: &dyn Fn(&mut Value),
+        ) {
+            let mut wire = decode(base_bytes).unwrap();
+            mutate(&mut wire);
+            let bytes = crate_bytes(&wire);
+            let env = SignedEnvelopeLike {
+                bytes: bytes.clone(),
+                signature: revoker.sign_detached(&bytes),
+            };
+            parse_reject.push(RevocationReject {
+                note: Some(note.into()),
+                hex: common_hex(&env.to_envelope_bytes()),
+                error: error.into(),
+            });
+        }
+
+        // 1. tampered signature bit
+        {
+            let mut tampered = base_signed.to_envelope_bytes();
+            let last = tampered.len() - 1;
+            tampered[last] ^= 0x01;
+            parse_reject.push(RevocationReject {
+                note: Some("tampered revocation bytes (signature invalid)".into()),
+                hex: common_hex(&tampered),
+                error: "signature_invalid".into(),
+            });
+        }
+        // 2. unknown reason
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "reason outside the frozen set", "reason_unknown", &|wire| {
+                set_field(wire, 4, Value::Text("because".into()));
+            },
+        );
+        // 3. evidence with 9 fields beyond failure_kind
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence map with 9 fields beyond failure_kind", "evidence_too_many_fields", &|wire| {
+                let mut entries: Vec<(Value, Value)> = (0..9)
+                    .map(|i| (Value::Text(format!("f{i}")), Value::Int(i as i64)))
+                    .collect();
+                entries.push((
+                    Value::Text(EVIDENCE_FAILURE_KIND.into()),
+                    Value::Text("x".into()),
+                ));
+                entries.sort_by(|a, b| match (&a.0, &b.0) {
+                    (Value::Text(x), Value::Text(y)) => x.cmp(y),
+                    _ => unreachable!("text keys"),
+                });
+                set_field(wire, 5, Value::Map(entries));
+            },
+        );
+        // 4. evidence without failure_kind
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence map without failure_kind", "failure_kind_missing", &|wire| {
+                set_field(
+                    wire,
+                    5,
+                    Value::Map(vec![(Value::Text("missed_acks".into()), Value::Int(1))]),
+                );
+            },
+        );
+        // 5. failure_kind not text
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence failure_kind as an integer", "failure_kind_not_text", &|wire| {
+                set_field(
+                    wire,
+                    5,
+                    Value::Map(vec![(Value::Text("failure_kind".into()), Value::Int(5))]),
+                );
+            },
+        );
+        // 6. oversized evidence key (65 bytes)
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence key of 65 bytes", "evidence_key_invalid", &|wire| {
+                set_field(
+                    wire,
+                    5,
+                    Value::Map(vec![
+                        (Value::Text("failure_kind".into()), Value::Text("x".into())),
+                        (Value::Text("k".repeat(65)), Value::Int(1)),
+                    ]),
+                );
+            },
+        );
+        // 7. oversized text evidence value (129 bytes)
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence text value of 129 bytes", "evidence_text_too_long", &|wire| {
+                set_field(
+                    wire,
+                    5,
+                    Value::Map(vec![
+                        (Value::Text("failure_kind".into()), Value::Text("x".into())),
+                        (Value::Text("note".into()), Value::Text("y".repeat(129))),
+                    ]),
+                );
+            },
+        );
+        // 8. non-int/text evidence entry (bytes value)
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence entry with a bytes value", "evidence_entry_malformed", &|wire| {
+                set_field(
+                    wire,
+                    5,
+                    Value::Map(vec![
+                        (Value::Text("failure_kind".into()), Value::Text("x".into())),
+                        (Value::Text("blob".into()), Value::Bytes(vec![0u8; 4])),
+                    ]),
+                );
+            },
+        );
+        // 9. scheme version 2
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "scheme version 2", "scheme_version_unsupported", &|wire| {
+                set_field(wire, 1, Value::Int(2));
+            },
+        );
+        // 10. circuit_id of 31 bytes
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "circuit_id of 31 bytes", "circuit_id_wrong_length", &|wire| {
+                set_field(wire, 2, Value::Bytes(vec![0u8; 31]));
+            },
+        );
+        // 11. missing revoked_at
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "missing revoked_at (field 6)", "missing_field", &|wire| {
+                if let Value::Map(ref mut entries) = wire {
+                    entries.retain(|(k, _)| !matches!(k, Value::Int(6)));
+                }
+            },
+        );
+        // 12. negative revoked_at
+        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "negative revoked_at", "timestamp_out_of_range", &|wire| {
+                set_field(wire, 6, Value::Int(-1));
+            },
+        );
+        // 13. envelope confusion: a CircuitDestroy envelope fed to the
+        // revocation path (destroy field 5 = integer destroyed_at)
+        {
+            let destroy =
+                sharenet_protocol::circuit::CircuitDestroy::new(circuit_id, revoker, "link_failure", 1_200)
+                    .unwrap();
+            let destroy_env = destroy.sign(revoker).unwrap();
+            parse_reject.push(RevocationReject {
+                note: Some("a CircuitDestroy envelope fed to the revocation path".into()),
+                hex: common_hex(&destroy_env.to_envelope_bytes()),
+                error: "field_not_expected_type".into(),
+            });
+        }
+        // generation-time validation: every reject must produce exactly
+        // the named typed error through the real verification path
+        for r in &parse_reject {
+            let bytes = from_hex(&r.hex);
+            let err = SignedCircuitRevocation::from_envelope_bytes(&bytes)
+                .expect_err("parse reject must fail")
+                .name()
+                .to_string();
+            assert_eq!(err, r.error, "parse reject {:?} diverged", r.note);
+        }
+    }
+
+    // envelope_reject: malformed carrying envelopes.
+    let mut envelope_reject = Vec::new();
+    {
+        let cin = &cases_in[0];
+        let (members, circuit_id, _registry, _commitment) = build_case(cin);
+        let revoker = &members[cin.revoker_position as usize];
+        let base_evidence: std::collections::BTreeMap<String, EvidenceValue> = cin
+            .evidence
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.to_string(), EvidenceValue::from(v)))
+            .collect();
+        let base =
+            CircuitRevocation::new(revoker, circuit_id, RevocationReason::LinkFailure, Some(base_evidence), 1_200)
+                .unwrap();
+        let wire_bytes = base.to_wire_bytes();
+        let good_sig = revoker.sign_detached(&wire_bytes);
+
+        // 1. signature of 63 bytes
+        let env = crate_bytes(&Value::Map(vec![
+            (Value::Int(1), Value::Bytes(wire_bytes.clone())),
+            (Value::Int(2), Value::Bytes(good_sig.to_vec()[..63].to_vec())),
+        ]));
+        envelope_reject.push(RevocationReject {
+            note: Some("envelope signature of 63 bytes".into()),
+            hex: common_hex(&env),
+            error: "signature_wrong_length".into(),
+        });
+        // 2. envelope with only the payload entry
+        let env = crate_bytes(&Value::Map(vec![(
+            Value::Int(1),
+            Value::Bytes(wire_bytes.clone()),
+        )]));
+        envelope_reject.push(RevocationReject {
+            note: Some("envelope with one entry".into()),
+            hex: common_hex(&env),
+            error: "envelope_wrong_entry_count".into(),
+        });
+        // 3. envelope field 1 not bytes
+        let env = crate_bytes(&Value::Map(vec![
+            (Value::Int(1), Value::Int(5)),
+            (Value::Int(2), Value::Bytes(good_sig.to_vec())),
+        ]));
+        envelope_reject.push(RevocationReject {
+            note: Some("envelope payload field not bytes".into()),
+            hex: common_hex(&env),
+            error: "field_not_expected_type".into(),
+        });
+        // 4. envelope not a map
+        let env = crate_bytes(&Value::Array(vec![Value::Int(1)]));
+        envelope_reject.push(RevocationReject {
+            note: Some("envelope not a map".into()),
+            hex: common_hex(&env),
+            error: "not_a_map".into(),
+        });
+        // generation-time validation
+        for r in &envelope_reject {
+            let bytes = from_hex(&r.hex);
+            let err = SignedCircuitRevocation::from_envelope_bytes(&bytes)
+                .expect_err("envelope reject must fail")
+                .name()
+                .to_string();
+            assert_eq!(err, r.error, "envelope reject {:?} diverged", r.note);
+        }
+    }
+
+    RevocationVectorsFile {
+        scheme: "sharenet-circuit-revocation-v1".into(),
+        description: "Circuit revocation vectors (R7-001). For every case the harness MUST: \
+rebuild the proposer + hops from seeds, rebuild the route proposal + acceptances + \
+commitment (R3-004 chain) byte-exactly, the setup envelope, derive circuit_id = \
+SHA-256(context || route_id || setup_nonce), establish the circuit in a registry, then \
+rebuild the revocation from (revoker_position, reason, evidence, revoked_at_unix) and pin \
+the canonical wire + carrying envelope bytes. receive[] replays ONE shared ledger in \
+order: revoker primary = the case's revoker_position member; second = member at \
+(revoker_position + 1) % path_len revoking with reason \"policy\", no evidence, at the \
+case's revoked_at_unix; outsider = the fixed foreign seed 0xEE*32, same shape; \
+registry \"empty\" = a fresh registry with no circuits. parse_reject[] and \
+envelope_reject[] are full carrying-envelope bytes that MUST fail with the named \
+typed error.".into(),
+        cases,
+        receive,
+        parse_reject,
+        envelope_reject,
+    }
+}
+
+/// Replace one integer-keyed field's value in a CBOR map Value (tests only).
+fn set_field(wire: &mut Value, key: i64, value: Value) {
+    if let Value::Map(ref mut entries) = wire {
+        for (k, v) in entries.iter_mut() {
+            if let Value::Int(n) = k {
+                if *n == key {
+                    *v = value;
+                    return;
+                }
+            }
+        }
+    }
+    panic!("field {key} not found in wire map");
+}
+
+/// A minimal route-envelope stand-in for building reject bytes (tests only).
+struct SignedEnvelopeLike {
+    bytes: Vec<u8>,
+    signature: [u8; 64],
+}
+
+impl SignedEnvelopeLike {
+    fn to_envelope_bytes(&self) -> Vec<u8> {
+        crate_bytes(&Value::Map(vec![
+            (Value::Int(1), Value::Bytes(self.bytes.clone())),
+            (Value::Int(2), Value::Bytes(self.signature.to_vec())),
+        ]))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Content manifest vectors (R6-001)
 // ---------------------------------------------------------------------------
@@ -3482,6 +4122,209 @@ fn vectors_conformance() {
             Ok(_) => panic!("content parse_reject {} was accepted", r.hex),
         };
         assert_eq!(err.name(), r.error, "content parse_reject {}", r.hex);
+    // ---- circuit revocation vectors (R7-001) ----
+    let rev_file: RevocationVectorsFile = serde_json::from_str(
+        &std::fs::read_to_string(vectors_path("revocation_vectors.json"))
+            .expect("revocation_vectors.json must exist (run the regenerate test if missing)"),
+    )
+    .expect("revocation_vectors.json parses");
+    assert_eq!(rev_file.scheme, "sharenet-circuit-revocation-v1");
+    assert!(rev_file.cases.len() >= 4, "expected all four reasons covered");
+    {
+        use sharenet_protocol::circuit::{CircuitRegistry, CircuitSetup, CircuitSetupAck};
+        use sharenet_protocol::revocation::{
+            CircuitRevocation, EvidenceValue, RevocationLedger, RevocationReason,
+            SignedCircuitRevocation,
+        };
+        use sharenet_protocol::route::{derive_proposal_id, RouteAcceptance, RouteCommitment, RouteProposal};
+
+        let mk = |seed_hex: &str, created: u64| -> Identity {
+            let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
+            Identity::from_seed(seed, created, None).unwrap()
+        };
+        // rebuild one case's chain + establish the circuit in a registry
+        let build = |c: &RevocationCase| {
+            let proposer = mk(&c.proposer_seed_hex, c.proposer_created_at_unix);
+            let hops: Vec<Identity> = c
+                .hop_seed_hexes
+                .iter()
+                .map(|s| mk(s, c.hop_created_at_unix))
+                .collect();
+            let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
+            path.push(*proposer.node_id().as_bytes());
+            let proposal_nonce: [u8; 32] =
+                from_hex(&c.proposal_nonce_hex).try_into().unwrap();
+            let proposal = RouteProposal::new(
+                &proposer,
+                path,
+                c.service_class.clone(),
+                c.proposed_at_unix,
+                c.validity_secs,
+                proposal_nonce,
+            )
+            .unwrap();
+            let proposal_env = proposal.sign(&proposer).unwrap();
+            let proposal_id = derive_proposal_id(proposal_env.bytes());
+            let mut members: Vec<&Identity> = hops.iter().collect();
+            members.push(&proposer);
+            members.sort_by_key(|i| *i.node_id().as_bytes());
+            let acceptance_envs: Vec<_> = members
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let a = RouteAcceptance::new(
+                        m,
+                        proposal_id,
+                        i as u64,
+                        c.accepted_at_unix,
+                        c.acceptance_validity_secs,
+                    )
+                    .unwrap();
+                    a.sign(m).unwrap()
+                })
+                .collect();
+            let commitment =
+                RouteCommitment::build(1_100, proposal_env, acceptance_envs).unwrap();
+            let setup_nonce: [u8; 32] = from_hex(&c.setup_nonce_hex).try_into().unwrap();
+            let setup =
+                CircuitSetup::new(&commitment, &proposer, setup_nonce, c.setup_issued_at_unix, c.setup_validity_secs)
+                    .unwrap();
+            let setup_env = setup.sign(&proposer).unwrap();
+            let circuit_id =
+                sharenet_protocol::circuit::derive_circuit_id(commitment.route_id(), &setup_nonce);
+            let mut registry = CircuitRegistry::new();
+            registry.admit_setup(c.admission_now_unix, &setup_env).unwrap();
+            for (pos, member) in members.iter().enumerate() {
+                let ack = CircuitSetupAck::new(
+                    circuit_id,
+                    &setup_env,
+                    member,
+                    pos as u64,
+                    c.ack_accepted_at_unix,
+                    c.ack_validity_secs,
+                )
+                .unwrap();
+                let env = ack.sign(member).unwrap();
+                registry.admit_ack(c.admission_now_unix, &env).unwrap();
+            }
+            // return OWNED identities in sorted-member (position) order
+            let owned: Vec<Identity> = members.into_iter().cloned().collect();
+            (owned, circuit_id, registry)
+        };
+
+        // every case: rebuild + pin wire/envelope + the frozen reason set
+        let mut seen_reasons = std::collections::HashSet::new();
+        for (i, c) in rev_file.cases.iter().enumerate() {
+            let (members, circuit_id, registry) = build(c);
+            assert_eq!(common_hex(&circuit_id), c.circuit_id_hex, "revocation case {i}");
+            let reason = RevocationReason::from_name(&c.reason)
+                .unwrap_or_else(|| panic!("revocation case {i}: reason not frozen"));
+            seen_reasons.insert(c.reason.clone());
+            let evidence: Option<std::collections::BTreeMap<String, EvidenceValue>> = c
+                .evidence
+                .as_ref()
+                .map(|ev| {
+                    ev.iter().map(|(k, v)| (k.clone(), EvidenceValue::from(v))).collect()
+                });
+            let revoker = &members[c.revoker_position as usize];
+            let revocation =
+                CircuitRevocation::new(revoker, circuit_id, reason, evidence, c.revoked_at_unix)
+                    .unwrap();
+            let signed = revocation.sign(revoker).unwrap();
+            assert_eq!(
+                common_hex(&signed.revocation_bytes().to_vec()),
+                c.revocation_wire_hex,
+                "revocation wire mismatch in case {i}"
+            );
+            assert_eq!(
+                common_hex(&signed.to_envelope_bytes()),
+                c.revocation_envelope_hex,
+                "revocation envelope mismatch in case {i}"
+            );
+            // the committed envelope must verify through the real path
+            let reparsed =
+                SignedCircuitRevocation::from_envelope_bytes(&from_hex(&c.revocation_envelope_hex))
+                    .unwrap_or_else(|e| panic!("revocation case {i} envelope: {e}"));
+            assert_eq!(reparsed.revocation().circuit_id(), &circuit_id);
+            // and admit as First on a fresh ledger
+            let ledger = RevocationLedger::new();
+            assert_eq!(
+                ledger.admit(c.revoked_at_unix, &signed, &registry).unwrap(),
+                sharenet_protocol::revocation::RevocationAdmitOutcome::First,
+                "revocation case {i} must admit as first"
+            );
+        }
+        assert_eq!(
+            seen_reasons,
+            std::collections::HashSet::from([
+                "link_failure".to_string(),
+                "evidence_timeout".to_string(),
+                "policy".to_string(),
+                "operator".to_string(),
+            ]),
+            "the four frozen reasons must all be covered"
+        );
+        // distinct circuit ids across cases (fresh setup nonces)
+        let cids: std::collections::HashSet<&String> =
+            rev_file.cases.iter().map(|c| &c.circuit_id_hex).collect();
+        assert_eq!(cids.len(), rev_file.cases.len());
+
+        // receive: replay ONE shared ledger in order, asserting outcomes
+        let shared_ledger = RevocationLedger::new();
+        let empty_registry = CircuitRegistry::new();
+        for (i, r) in rev_file.receive.iter().enumerate() {
+            let c = &rev_file.cases[r.case];
+            let (members, _circuit_id, registry) = build(c);
+            let revoker = match r.revoker.as_str() {
+                "primary" => &members[c.revoker_position as usize],
+                "second" => {
+                    &members[((c.revoker_position + 1) % members.len() as u64) as usize]
+                }
+                "outsider" => &mk("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", 1),
+                other => panic!("unknown revoker kind {other:?}"),
+            };
+            let (reason, evidence, revoked_at) = if r.revoker == "primary" {
+                (
+                    RevocationReason::from_name(&c.reason).unwrap(),
+                    c.evidence.as_ref().map(|ev| {
+                        ev.iter().map(|(k, v)| (k.clone(), EvidenceValue::from(v))).collect()
+                    }),
+                    c.revoked_at_unix,
+                )
+            } else {
+                (RevocationReason::Policy, None, c.revoked_at_unix)
+            };
+            let circuit_id: [u8; 32] = from_hex(&c.circuit_id_hex).try_into().unwrap();
+            let revocation =
+                CircuitRevocation::new(revoker, circuit_id, reason, evidence, revoked_at).unwrap();
+            let signed = revocation.sign(revoker).unwrap();
+            let target = if r.registry.as_deref() == Some("empty") {
+                &empty_registry
+            } else {
+                &registry
+            };
+            let outcome = match shared_ledger.admit(r.now_unix, &signed, target) {
+                Ok(o) => o.as_str().to_string(),
+                Err(e) => e.name().to_string(),
+            };
+            assert_eq!(outcome, r.expect, "revocation receive {i} diverged");
+        }
+
+        // rejects: parse/envelope level through the real verification path
+        for (i, r) in rev_file.parse_reject.iter().enumerate() {
+            let bytes = from_hex(&r.hex);
+            match SignedCircuitRevocation::from_envelope_bytes(&bytes) {
+                Err(e) => assert_eq!(e.name(), r.error, "revocation parse_reject {i}"),
+                Ok(_) => panic!("revocation parse_reject {i} was accepted"),
+            }
+        }
+        for (i, r) in rev_file.envelope_reject.iter().enumerate() {
+            let bytes = from_hex(&r.hex);
+            match SignedCircuitRevocation::from_envelope_bytes(&bytes) {
+                Err(e) => assert_eq!(e.name(), r.error, "revocation envelope_reject {i}"),
+                Ok(_) => panic!("revocation envelope_reject {i} was accepted"),
+            }
+        }
     }
 }
 
@@ -3558,6 +4401,9 @@ fn regenerate_vectors() {
     let content_json = serde_json::to_string_pretty(&content_vectors()).unwrap() + "\n";
     std::fs::write(vectors_path("content_vectors.json"), content_json)
         .expect("write content vectors");
+    let rev_json = serde_json::to_string_pretty(&revocation_vectors()).unwrap() + "\n";
+    std::fs::write(vectors_path("revocation_vectors.json"), rev_json)
+        .expect("write revocation vectors");
     eprintln!("vectors regenerated under {VECTORS_DIR}");
 }
 

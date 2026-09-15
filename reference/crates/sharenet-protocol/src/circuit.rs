@@ -105,6 +105,9 @@ pub enum CircuitError {
     AckIdentityMismatch { position: u64 },
     FrameSeqOutOfOrder { direction: u64, expected: u64, found: u64 },
     DestroySenderNotOnPath,
+    /// The circuit id is durably revoked (L015) — the durable revocation
+    /// is authoritative even when the runtime destroy state was lost.
+    CircuitRevoked,
 }
 
 impl fmt::Display for CircuitError {
@@ -183,6 +186,9 @@ impl fmt::Display for CircuitError {
             CircuitError::DestroySenderNotOnPath => {
                 write!(f, "destroy sender is not on the committed path")
             }
+            CircuitError::CircuitRevoked => {
+                write!(f, "circuit revoked (durable revocation, L015)")
+            }
         }
     }
 }
@@ -231,6 +237,7 @@ impl CircuitError {
             CircuitError::AckIdentityMismatch { .. } => "ack_identity_mismatch",
             CircuitError::FrameSeqOutOfOrder { .. } => "frame_seq_out_of_order",
             CircuitError::DestroySenderNotOnPath => "destroy_sender_not_on_path",
+            CircuitError::CircuitRevoked => "circuit_revoked",
         }
     }
 }
@@ -1084,11 +1091,47 @@ impl AckOutcome {
 pub struct CircuitRegistry {
     circuits: HashMap<[u8; 32], CircuitState>,
     used_nonces: HashSet<([u8; 32], [u8; 32])>, // (route_id, setup_nonce)
+    /// Durable revocation gate (L015): when installed (via
+    /// [`CircuitRegistry::install_revocation_ledger`]), every admission
+    /// path consults the ledger's authoritative revoked-circuit view and
+    /// refuses revoked circuit ids even if the runtime destroy state —
+    /// or the whole runtime registry — was lost. `None` = exactly the
+    /// pre-R7-001 behavior.
+    revocation_gate: Option<crate::revocation::RevocationLedger>,
 }
 
 impl CircuitRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Install the durable revocation ledger (L015). The registry keeps
+    /// a shared view of the ledger: revocations admitted to the ledger
+    /// (by this process or restored from a snapshot) are immediately
+    /// authoritative for every subsequent admission here.
+    pub fn install_revocation_ledger(
+        &mut self,
+        ledger: &crate::revocation::RevocationLedger,
+    ) {
+        self.revocation_gate = Some(ledger.clone());
+    }
+
+    /// The installed durable revocation ledger, if any.
+    pub fn revocation_ledger(&self) -> Option<&crate::revocation::RevocationLedger> {
+        self.revocation_gate.as_ref()
+    }
+
+    /// The L015 gate: refuse a durably revoked circuit id before any
+    /// admission side effect. Checked FIRST in every admission path —
+    /// the durable revocation outranks every runtime state (including
+    /// the single-use nonce set and the destroy flag).
+    fn ensure_not_revoked(&self, circuit_id: &[u8; 32]) -> Result<(), CircuitError> {
+        if let Some(ledger) = &self.revocation_gate {
+            if ledger.is_revoked(circuit_id) {
+                return Err(CircuitError::CircuitRevoked);
+            }
+        }
+        Ok(())
     }
 
     /// Admit a signed setup envelope. Returns the derived circuit id.
@@ -1120,10 +1163,15 @@ impl CircuitRegistry {
         }
         let route_id = verified.route_id;
         let nonce = setup.setup_nonce();
+        let circuit_id = derive_circuit_id(&route_id, nonce);
+        // L015: a durably revoked circuit id is terminal forever. The
+        // gate deliberately precedes the single-use nonce consumption:
+        // the durable revocation is authoritative even when the runtime
+        // nonce set was lost with the rest of the runtime state.
+        self.ensure_not_revoked(&circuit_id)?;
         if !self.used_nonces.insert((route_id, *nonce)) {
             return Err(CircuitError::SetupNonceReused);
         }
-        let circuit_id = derive_circuit_id(&route_id, nonce);
         let path = verified.proposal.path().to_vec();
         if path.len() > CIRCUIT_MAX_PATH {
             return Err(CircuitError::PositionOutOfRange {
@@ -1157,6 +1205,10 @@ impl CircuitRegistry {
         ack.accepting_identity()
             .verify_detached(envelope.bytes(), envelope.signature())
             .map_err(|_| CircuitError::AckSignatureInvalid)?;
+        // L015: the durable revocation gate outranks the runtime record
+        // (a revoked circuit is refused even when the runtime state was
+        // lost and the circuit is no longer known here).
+        self.ensure_not_revoked(ack.circuit_id())?;
         let state = self
             .circuits
             .get_mut(ack.circuit_id())
@@ -1207,6 +1259,8 @@ impl CircuitRegistry {
 
     /// Admit a frame: binding + ordering + bounds.
     pub fn admit_frame(&mut self, frame: &CircuitFrame) -> Result<(), CircuitError> {
+        // L015: the durable revocation gate outranks the runtime record.
+        self.ensure_not_revoked(frame.circuit_id())?;
         let state = self
             .circuits
             .get_mut(frame.circuit_id())
@@ -1246,6 +1300,11 @@ impl CircuitRegistry {
             .sender_identity()
             .verify_detached(envelope.bytes(), envelope.signature())
             .map_err(|_| CircuitError::DestroySignatureInvalid)?;
+        // L015: a revoked circuit is terminal forever — the durable
+        // revocation is the terminal authority, so even a runtime
+        // destroy is refused as redundant (the circuit is already
+        // terminal in the authoritative record).
+        self.ensure_not_revoked(destroy.circuit_id())?;
         let state = self
             .circuits
             .get_mut(destroy.circuit_id())

@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Static governance checks for the frozen ShareNet architecture.
-
-This intentionally uses only the Python standard library. It validates the
-repository-local control plane rather than implementation behavior.
-"""
+"""Static governance checks for the frozen ShareNet architecture."""
 from __future__ import annotations
 
 import pathlib
@@ -34,7 +30,6 @@ def main() -> int:
     for path in REQUIRED:
         if not (ROOT / path).is_file():
             errors.append(f"missing required authority: {path}")
-
     if errors:
         for error in errors:
             print(f"ERROR: {error}")
@@ -47,67 +42,70 @@ def main() -> int:
     current = text("spec/architect/current-state.yaml")
     items = text("spec/work-items.yaml")
 
-    required_lock_ids = [f"L{i:03d}" for i in range(1, 26)]
-    for lock_id in required_lock_ids:
+    for i in range(1, 26):
+        lock_id = f"L{i:03d}"
         if not re.search(rf"\|\s*{lock_id}\s*\|", locks):
             errors.append(f"missing architecture lock {lock_id}")
 
-    for phrase in (
-        "ConnectivityPort",
-        "ConnectivityContract",
-        "QUIC",
-        "ICE/STUN/TURN",
-        "LIVE",
-        "OPPORTUNISTIC",
-        "DTN",
-        "Civic Points",
-    ):
+    for phrase in ("ConnectivityPort", "ConnectivityContract", "QUIC", "ICE/STUN/TURN", "LIVE", "OPPORTUNISTIC", "DTN", "Civic Points"):
         if phrase not in architecture:
             errors.append(f"architecture missing frozen concept: {phrase}")
 
-    for phrase in (
-        "Maximum three direct workers",
-        "Completion requires",
-        "fresh-audit",
-        "R4",
-        "R7",
-        "R8",
-        "R10",
-    ):
+    for phrase in ("Maximum three direct workers", "Completion requires", "fresh-audit", "R4", "R7", "R8", "R10"):
         if phrase not in handoff:
             errors.append(f"orchestrator handoff missing control: {phrase}")
 
-    for phrase in (
-        "execution scheduling authority",
-        "Maximum three direct workers",
-        "No second source of truth",
-        "origin/main",
-    ):
+    for phrase in ("execution scheduling authority", "Maximum three direct workers", "No second source of truth", "origin/main"):
         if phrase.lower() not in agents.lower():
             errors.append(f"AGENTS.md missing governance rule: {phrase}")
 
     if "status: ARCHITECTURE_FROZEN_IMPLEMENTATION_NOT_STARTED" not in current:
         errors.append("current-state does not declare the implementation baseline")
 
-    ids = set(re.findall(r"^\s*- id: (R\d+-\d+)\s*$", items, re.MULTILINE))
-    if len(ids) < 10:
-        errors.append("work-item registry appears incomplete")
+    # v2 registry entries are one-line mappings, so dependency validation can be
+    # performed without introducing a YAML runtime dependency into CI.
+    entries = re.findall(r"- \{id: ([A-Z0-9-]+), .*?depends: \[([^]]*)\]", items)
+    ids = {item_id for item_id, _ in entries}
+    if len(ids) != 48:
+        errors.append(f"expected 48 work items, found {len(ids)}")
 
-    deps = re.findall(r"depends_on: \[([^]]*)\]", items)
-    for dep_group in deps:
-        for dep in [x.strip() for x in dep_group.split(",") if x.strip()]:
+    graph: dict[str, list[str]] = {}
+    for item_id, dep_group in entries:
+        deps = [d.strip() for d in dep_group.split(",") if d.strip()]
+        graph[item_id] = deps
+        for dep in deps:
             if dep not in ids:
-                errors.append(f"work item references missing predecessor: {dep}")
+                errors.append(f"work item {item_id} references missing predecessor {dep}")
 
-    if "R6-005" in items and "R8-004" in items:
-        block = re.search(r"- id: R6-005(?P<body>.*?)(?=\n  - id: |\Z)", items, re.S)
-        if block and "R8-004" in block.group("body"):
-            errors.append("R6-005 must not depend on Civic Points; priority integration is downstream")
+    # Cycle detection over the work-item DAG.
+    visiting: set[str] = set()
+    visited: set[str] = set()
 
-    if "R7-001" in items:
-        block = re.search(r"- id: R7-001(?P<body>.*?)(?=\n  - id: |\Z)", items, re.S)
-        if block and "R5-005" in block.group("body"):
-            errors.append("R7-001 core failure detection must not depend on ADCOS gateway admission")
+    def visit(node: str) -> None:
+        if node in visiting:
+            errors.append(f"dependency cycle detected at {node}")
+            return
+        if node in visited:
+            return
+        visiting.add(node)
+        for dep in graph.get(node, []):
+            visit(dep)
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in graph:
+        visit(node)
+
+    # Architectural scheduling invariants deliberately checked here.
+    def deps_of(item_id: str) -> set[str]:
+        return set(graph.get(item_id, []))
+
+    if "R8-004" in deps_of("R6-005"):
+        errors.append("R6-005 must not depend on Civic Points; priority is an integration overlay")
+    if "R5-005" in deps_of("R7-001"):
+        errors.append("R7-001 core failure detector must not depend on ADCOS gateway admission")
+    if deps_of("R5-001"):
+        errors.append("R5-001 ConnectivityPort must be independently freezable from circuit implementation")
 
     if errors:
         for error in errors:

@@ -1,0 +1,15 @@
+[package]
+name = "sharenet-protocol"
+description = "ShareNet protocol core: canonical CBOR wire profile v1 and Ed25519 node identity binding (R1-001, R1-002)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true

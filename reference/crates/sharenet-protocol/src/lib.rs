@@ -36,6 +36,7 @@ pub mod cbor;
 pub mod capability;
 pub mod circuit;
 pub mod connectivity_evidence;
+pub mod content;
 pub mod identity;
 pub mod link;
 pub mod route;
@@ -73,6 +74,12 @@ pub use connectivity_evidence::{
     EvidenceKind, ObservationAdmission, SignedConnectivityObservation,
     CONNECTIVITY_EVIDENCE_SCHEME_VERSION, EXECUTION_MAX_ENTRIES, EXECUTION_MAX_KEY_BYTES,
     SEQUENCE_MIN,
+};
+pub use content::{
+    chunk_hash, ContentError, ContentManifest, MetadataValue, CHUNK_HASH_LEN,
+    CONTENT_MAX_CHUNK_SIZE, CONTENT_MIN_CHUNK_SIZE, CONTENT_SCHEME_VERSION,
+    CONTENT_TYPE_MAX_BYTES, METADATA_MAX_ENTRIES, METADATA_MAX_KEY_BYTES,
+    METADATA_MAX_VALUE_TEXT_BYTES,
 };
 pub use link::{
     LinkConfirm, LinkError, LinkInitiate, LinkInitiator, LinkRespond, LinkResponder,

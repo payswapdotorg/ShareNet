@@ -52,6 +52,12 @@ import {
   x25519Shared,
 } from "./link.ts";
 import { buildObservation as connObsBuild } from "./connectivity_evidence.ts";
+import {
+  applyMutation as contentApplyMutation,
+  buildManifest as contentBuildManifest,
+  reassemble as contentReassemble,
+  type MetadataValue,
+} from "./content.ts";
 
 const vectorsDir =
   process.argv[2] ??
@@ -691,6 +697,85 @@ function loadJson(name: string): any {
   }
   for (let i = 0; i < file.envelope_reject.length; i++) {
     console.log(`CONN_OBS_ENV_REJ ${i} ${file.envelope_reject[i].error}`);
+  }
+}
+
+// ---------------- content manifest vectors (R6-001) ----------------
+{
+  const file = loadJson("content_vectors.json");
+  const build = (c: any): { wire: string; id: string; hashes: string[]; chunks: Uint8Array[] } => {
+    const metadata =
+      c.metadata === null || c.metadata === undefined
+        ? null
+        : new Map<string, MetadataValue>(
+            Object.entries(c.metadata).map(([k, v]: [string, any]) => [
+              k,
+              typeof v === "string" ? { t: "text", v } : { t: "int", v: BigInt(v) },
+            ]),
+          );
+    const built = contentBuildManifest({
+      content: fromHex(c.content_hex),
+      chunkSize: BigInt(c.chunk_size),
+      contentType: c.content_type,
+      metadata,
+      createdAtUnix: BigInt(c.created_at_unix),
+    });
+    return {
+      wire: toHex(built.wire),
+      id: toHex(built.contentId),
+      hashes: built.chunkHashes.map((h: Uint8Array) => toHex(h)),
+      chunks: built.chunks,
+    };
+  };
+  for (const c of file.cases) {
+    const i = file.cases.indexOf(c);
+    const b = build(c);
+    if (
+      b.wire !== c.manifest_wire_hex ||
+      b.id !== c.content_id_hex ||
+      JSON.stringify(b.hashes) !== JSON.stringify(c.chunk_hashes_hex)
+    ) {
+      fail(`content ${i}: re-derived image differs from the committed vector`);
+    }
+    console.log(`CONTENT ${i} wire=${b.wire} id=${b.id} chunks=${b.hashes.join(",")}`);
+  }
+  for (const r of file.reassembly) {
+    const i = file.reassembly.indexOf(r);
+    const c = file.cases[r.case];
+    const built = contentBuildManifest({
+      content: fromHex(c.content_hex),
+      chunkSize: BigInt(c.chunk_size),
+      contentType: c.content_type,
+      metadata:
+        c.metadata === null || c.metadata === undefined
+          ? null
+          : new Map<string, MetadataValue>(
+              Object.entries(c.metadata).map(([k, v]: [string, any]) => [
+                k,
+                typeof v === "string" ? { t: "text", v } : { t: "int", v: BigInt(v) },
+              ]),
+            ),
+      createdAtUnix: BigInt(c.created_at_unix),
+    });
+    let stream = built.chunks;
+    if (r.mutation !== null && r.mutation !== undefined) {
+      stream = contentApplyMutation(stream, r.mutation, r.slot ?? null);
+    }
+    const outcome = contentReassemble({
+      chunkSize: BigInt(c.chunk_size),
+      totalLength: BigInt(built.chunks.reduce((n: number, ch: Uint8Array) => n + ch.length, 0)),
+      chunkHashes: built.chunkHashes,
+      chunks: stream,
+    });
+    if (outcome !== r.expect) {
+      fail(`content reassembly ${i}: ${outcome} != expected ${r.expect}`);
+    }
+    console.log(`CONTENT_REASM ${i} ${outcome}`);
+  }
+  // strict manifest parse is Rust-core scope (documented in the conformance
+  // README); the wire lines above pin the encoder, these pin the taxonomy
+  for (let i = 0; i < file.parse_reject.length; i++) {
+    console.log(`CONTENT_REJ ${i} ${file.parse_reject[i].error}`);
   }
 }
 

@@ -19,6 +19,7 @@ import sys
 from . import advertisement as admod
 from . import circuit as circuitmod
 from . import connectivity_evidence as ce_mod
+from . import content as contentmod
 from . import route as routemod
 from . import topology as topomod
 from . import ed25519
@@ -612,6 +613,59 @@ def run(vectors_dir: str) -> int:
         print(f"CONN_OBS_REJ {i} {r['error']}")
     for i, r in enumerate(obs_file["envelope_reject"]):
         print(f"CONN_OBS_ENV_REJ {i} {r['error']}")
+
+    # ---------------- content manifest vectors (R6-001) ----------------
+    content_file = load_json(vectors_dir, "content_vectors.json")
+    for i, c in enumerate(content_file["cases"]):
+        try:
+            content = bytes.fromhex(c["content_hex"])
+            wire, content_id, hashes = contentmod.build_manifest(
+                content,
+                c["chunk_size"],
+                c["content_type"],
+                c.get("metadata"),
+                c["created_at_unix"],
+            )
+            if (
+                wire.hex() != c["manifest_wire_hex"]
+                or content_id.hex() != c["content_id_hex"]
+                or [h.hex() for h in hashes] != c["chunk_hashes_hex"]
+            ):
+                fail(f"content {i}: re-derived image differs from the committed vector")
+            print(
+                f"CONTENT {i} wire={wire.hex()} id={content_id.hex()} "
+                f"chunks={','.join(h.hex() for h in hashes)}"
+            )
+        except Exception as e:  # noqa: BLE001
+            fail(f"content {i}: {e}")
+    for i, r in enumerate(content_file["reassembly"]):
+        try:
+            c = content_file["cases"][r["case"]]
+            content = bytes.fromhex(c["content_hex"])
+            _wire, _cid, hashes = contentmod.build_manifest(
+                content,
+                c["chunk_size"],
+                c["content_type"],
+                c.get("metadata"),
+                c["created_at_unix"],
+            )
+            stream = contentmod.split_chunks(content, c["chunk_size"])
+            if r.get("mutation") is not None:
+                stream = contentmod.apply_mutation(
+                    stream, r["mutation"], r.get("slot")
+                )
+            outcome = contentmod.reassemble(
+                c["chunk_size"], len(content), hashes, stream
+            )
+            if outcome != r["expect"]:
+                fail(f"content reassembly {i}: {outcome} != expected {r['expect']}")
+            print(f"CONTENT_REASM {i} {outcome}")
+        except Exception as e:  # noqa: BLE001
+            fail(f"content reassembly {i}: {e}")
+    # strict manifest parse is Rust-core scope (documented in the conformance
+    # README); the wire lines above pin the encoder, these pin the taxonomy
+    for i, r in enumerate(content_file["parse_reject"]):
+        print(f"CONTENT_REJ {i} {r['error']}")
 
     return 0 if failures == 0 else 1
 

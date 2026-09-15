@@ -28,6 +28,13 @@ For every committed vector in
   (signature, known-contract rule, monotonic sequence gate, freshness
   edges; tampered and foreign signatures) agree on every receive case,
   checked against the vector's pinned `expect` in all three legs.
+- **ContentManifest** (R6-001): manifests rebuild to the exact wire
+  bytes from the content inputs (multi-chunk, single-chunk,
+  exact-boundary, metadata-carrying) with matching content_id =
+  SHA-256(canonical bytes) and chunk-hash lists; the reassembly
+  discipline agrees on every outcome (valid, swap, corrupt, drop,
+  extra, short, duplicate — each slot-indexed) in all three legs,
+  checked against the vector's pinned `expect`.
 
 The strict statement/envelope PARSE rejections are enforced by the Rust
 leg (the protocol core — the authority); the TypeScript and Python legs
@@ -56,12 +63,15 @@ CONN_OBS       <idx> wire=<hex> sig=<hex> env=<hex>
 CONN_OBS_RECV  <idx> now=<unix> <"admitted" | "sequence_stale" | error name>
 CONN_OBS_REJ   <idx> <ConnectivityEvidenceError name>
 CONN_OBS_ENV_REJ <idx> <ConnectivityEvidenceError name>
+CONTENT        <idx> wire=<hex> id=<hex> chunks=<csv of chunk hash hex>
+CONTENT_REASM  <idx> <"ok" | "<error name> slot=<n>">
+CONTENT_REJ    <idx> <ContentError name>
 ```
 
 (The full line vocabulary spans every registered wire-object family with
 committed vectors — CBOR, identity, capability, link, advertisement,
-topology, route, circuit, connectivity evidence — see the runner sources
-for the exact formats.)
+topology, route, circuit, connectivity evidence, content — see the runner
+sources for the exact formats.)
 
 ## Running
 

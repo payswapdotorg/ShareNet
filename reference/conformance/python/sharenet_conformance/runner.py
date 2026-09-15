@@ -18,6 +18,7 @@ import sys
 
 from . import advertisement as admod
 from . import circuit as circuitmod
+from . import connectivity_evidence as ce_mod
 from . import route as routemod
 from . import topology as topomod
 from . import ed25519
@@ -522,6 +523,95 @@ def run(vectors_dir: str) -> int:
             fail(f"circuit {i}: {e}")
     for i, r in enumerate(circuit_file["rejects"]):
         print(f"CIRCUIT_REJ {i} {r['error']}")
+
+    # ---------------- signed connectivity observation vectors (R5-004) ----------------
+    obs_file = load_json(vectors_dir, "connectivity_evidence_vectors.json")
+    foreign_seed = bytes([0xEE] * 32)
+    for i, c in enumerate(obs_file["cases"]):
+        try:
+            seed = bytes.fromhex(c["seed_hex"])
+            pk = public_key(seed)
+            execution = c.get("execution")
+            wire = ce_mod.build_observation(
+                pk,
+                c["created_at_unix"],
+                bytes.fromhex(c["contract_ref_hex"]),
+                c["kind"],
+                c["observed_at_unix"],
+                c["sequence"],
+                execution,
+            )
+            sig = ed25519.sign(seed, wire)
+            env = ce_mod.build_envelope(wire, sig)
+            if (
+                wire.hex() != c["wire_hex"]
+                or sig.hex() != c["sig_hex"]
+                or env.hex() != c["env_hex"]
+            ):
+                fail(f"connectivity evidence {i}: re-derived image differs from the committed vector")
+            print(f"CONN_OBS {i} wire={wire.hex()} sig={sig.hex()} env={env.hex()}")
+        except Exception as e:  # noqa: BLE001
+            fail(f"connectivity evidence {i}: {e}")
+    # ONE shared admission (the accepting node): the sequence namespace
+    # (provider node_id, contract_ref) is global across entries, so the
+    # receive order is itself the test.
+    highest: dict[tuple[bytes, bytes], int] = {}
+    known: set[bytes] = set()
+    for i, r in enumerate(obs_file["receive"]):
+        try:
+            c = obs_file["cases"][r["case"]]
+            seed = bytes.fromhex(c["seed_hex"])
+            pk = public_key(seed)
+            execution = c.get("execution")
+            wire = ce_mod.build_observation(
+                pk,
+                c["created_at_unix"],
+                bytes.fromhex(c["contract_ref_hex"]),
+                c["kind"],
+                c["observed_at_unix"],
+                c["sequence"],
+                execution,
+            )
+            sig = ed25519.sign(seed, wire)
+            if r["mutation"] == "tamper_signature":
+                sig = bytes([sig[0] ^ 0x01]) + sig[1:]
+            elif r["mutation"] == "foreign_signer":
+                sig = ed25519.sign(foreign_seed, wire)
+            contract_ref = bytes.fromhex(c["contract_ref_hex"])
+            if r["contract_known"]:
+                known.add(contract_ref)
+            # the registry admission order: signature -> known contract ->
+            # strictly-greater sequence -> freshness (bound exclusive)
+            if not verify_detached(pk, wire, sig):
+                outcome = "signature_invalid"
+            elif contract_ref not in known:
+                outcome = "contract_unknown"
+            else:
+                key = (derive_node_id(pk), contract_ref)
+                sequence = c["sequence"]
+                if key in highest and sequence <= highest[key]:
+                    outcome = "sequence_stale"
+                elif r["now_unix"] < c["observed_at_unix"]:
+                    outcome = "not_yet_valid"
+                elif r["now_unix"] >= c["observed_at_unix"] + r["window_secs"]:
+                    outcome = "expired"
+                else:
+                    highest[key] = sequence
+                    outcome = "admitted"
+            if "expect" in r and outcome != r["expect"]:
+                fail(
+                    f"connectivity evidence receive {i}: {outcome} != expected {r['expect']}"
+                )
+            print(f"CONN_OBS_RECV {i} now={r['now_unix']} {outcome}")
+        except Exception as e:  # noqa: BLE001
+            fail(f"connectivity evidence receive {i}: {e}")
+    # strict statement/envelope parse is Rust-core scope (documented in the
+    # conformance README); the wire lines above pin the encoder, these pin
+    # the taxonomy
+    for i, r in enumerate(obs_file["parse_reject"]):
+        print(f"CONN_OBS_REJ {i} {r['error']}")
+    for i, r in enumerate(obs_file["envelope_reject"]):
+        print(f"CONN_OBS_ENV_REJ {i} {r['error']}")
 
     return 0 if failures == 0 else 1
 

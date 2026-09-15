@@ -19,6 +19,7 @@
 use core::fmt;
 
 use sharenet_connectivity::PortError;
+use sharenet_protocol::ConnectivityEvidenceError;
 
 /// Why a response body (or a codec artifact) could not be turned into the
 /// domain types — the typed "malformed response" family.
@@ -73,6 +74,18 @@ pub enum MalformedReason {
     /// Encoding one of our own request DTOs failed (should be impossible;
     /// typed instead of a panic).
     EncodeFailed,
+    /// An assurance element carried no `signed_envelope` — an UNSIGNED
+    /// observation (the pre-R5-004 shape). Unsigned observations never
+    /// enter the connectivity layer (the R5-004 registry rule), so this is
+    /// a typed refusal, never a silent fall-back to the unsigned fields.
+    UnsignedObservation,
+    /// The `signed_envelope` field was not lowercase hex.
+    SignedEnvelopeNotHex,
+    /// The JSON observation fields disagree with the SIGNED statement
+    /// inside the envelope (an envelope/JSON mismatch — e.g. a proxy or
+    /// provider rewriting the JSON wrapper). The observation is refused;
+    /// the signed bytes are the truth, the wrapper is not.
+    ObservationDisagreement { field: &'static str },
 }
 
 /// Everything that can go wrong on the wire side of the ADCOS boundary.
@@ -98,6 +111,13 @@ pub enum AdcosError {
     /// A typed provider refusal — already a [`PortError`] (machine-named),
     /// carried through untouched.
     Port(PortError),
+    /// A signed connectivity observation (R5-004) failed the protocol
+    /// core's verification or admission — the typed
+    /// [`ConnectivityEvidenceError`] with its stable machine name
+    /// (`signature_invalid`, `contract_unknown`, `expired`, ...). Through
+    /// the trait this degrades to `ProviderUnavailable`: an answer that
+    /// fails verification is not a trustworthy answer.
+    Evidence(ConnectivityEvidenceError),
     /// The client configuration is invalid (zero timeout, zero attempts...).
     ConfigInvalid { what: &'static str },
 }
@@ -114,6 +134,7 @@ impl AdcosError {
             AdcosError::HttpStatus { .. } => "http_status",
             AdcosError::Malformed { .. } => "malformed_response",
             AdcosError::Port(_) => "port_error",
+            AdcosError::Evidence(_) => "evidence_invalid",
             AdcosError::ConfigInvalid { .. } => "config_invalid",
         }
     }
@@ -161,6 +182,9 @@ impl fmt::Display for AdcosError {
                 write!(f, "malformed ADCOS response: {reason:?}")
             }
             AdcosError::Port(error) => write!(f, "ADCOS refused the call: {error}"),
+            AdcosError::Evidence(error) => {
+                write!(f, "connectivity observation failed verification: {error}")
+            }
             AdcosError::ConfigInvalid { what } => {
                 write!(f, "invalid client configuration: {what}")
             }
@@ -187,6 +211,7 @@ mod tests {
                 reason: MalformedReason::BadJson,
             },
             AdcosError::Port(PortError::AcquisitionUnauthorized),
+            AdcosError::Evidence(ConnectivityEvidenceError::SignatureInvalid),
             AdcosError::ConfigInvalid { what: "max_attempts" },
         ];
         let names: Vec<&str> = errors.iter().map(|e| e.name()).collect();
@@ -200,6 +225,7 @@ mod tests {
                 "http_status",
                 "malformed_response",
                 "port_error",
+                "evidence_invalid",
                 "config_invalid",
             ]
         );
@@ -227,6 +253,9 @@ mod tests {
             AdcosError::Port(PortError::ContractUnknown {
                 contract: sharenet_connectivity::ConnectivityContractRef::from_id([0; 32]),
             }),
+            // A verification failure is not a transport failure: the
+            // provider answered; the answer failed verification.
+            AdcosError::Evidence(ConnectivityEvidenceError::SignatureInvalid),
         ];
         for error in &not_transport {
             assert!(!error.is_transport(), "{error:?}");

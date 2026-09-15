@@ -85,7 +85,14 @@ def _point_decompress(s: bytes):
     y &= (1 << 255) - 1
     if y >= p:
         return None
-    x = _xrecover(y)
+    try:
+        x = _xrecover(y)
+    except ValueError:
+        # y is a field element with no on-curve x (non-square x^2) — the
+        # encoding is simply not a point; verification of such a signature
+        # must be False, never an exception (found by the R5-004 tampered-
+        # signature conformance vectors)
+        return None
     if x == 0 and sign == 1:
         return None  # non-canonical encoding of a small-order point
     if x % 2 != sign:

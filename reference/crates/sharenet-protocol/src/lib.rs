@@ -35,6 +35,7 @@ pub mod advertisement;
 pub mod cbor;
 pub mod capability;
 pub mod circuit;
+pub mod connectivity_evidence;
 pub mod identity;
 pub mod link;
 pub mod route;
@@ -66,6 +67,12 @@ pub use topology::{
     BilateralLink, LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence,
     TopologyError, TopologyEvidence, TopologyStore, EVIDENCE_MAX_WINDOW,
     EVIDENCE_SCHEME_VERSION, LOSS_RATIO_PPM_MAX,
+};
+pub use connectivity_evidence::{
+    AdmissionOutcome, ConnectivityEvidenceError, ConnectivityObservationStatement,
+    EvidenceKind, ObservationAdmission, SignedConnectivityObservation,
+    CONNECTIVITY_EVIDENCE_SCHEME_VERSION, EXECUTION_MAX_ENTRIES, EXECUTION_MAX_KEY_BYTES,
+    SEQUENCE_MIN,
 };
 pub use link::{
     LinkConfirm, LinkError, LinkInitiate, LinkInitiator, LinkRespond, LinkResponder,

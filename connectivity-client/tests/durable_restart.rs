@@ -264,6 +264,11 @@ fn restart_cycle_state_staleness_sequence_and_terminate() {
     //    state is its concern); terminate, fetch the full log, and let a
     //    NEW PROCESS continue the projection across the restart. ---------
     let client_e3 = client(addr);
+    // R5-004 known-contract rule: a NEW client knows no contracts, and an
+    // observation for an unknown contract is never a trust grant — the
+    // daemon's reload path re-registers the durable store's contract list
+    // (exactly this call) before it asks for assurance again.
+    client_e3.register_known_contract(&c1);
     let port = as_port(&client_e3);
     port.terminate(&c1).expect("terminate");
     let after = port.get_assurance(&c1).expect("assurance after terminate");
@@ -338,6 +343,7 @@ fn restart_cycle_state_staleness_sequence_and_terminate() {
     // provider is Ok with NO new observation, and the projection is
     // unchanged after re-fetching.
     let client_e4 = client(addr);
+    client_e4.register_known_contract(&c1);
     let port = as_port(&client_e4);
     port.terminate(&c1).expect("terminate is idempotent across restarts");
     let refetched = port.get_assurance(&c1).expect("assurance");

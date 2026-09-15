@@ -38,9 +38,14 @@
 //! # Dependencies (deliberately tiny)
 //!
 //! `sharenet-connectivity` (the boundary being implemented — the whole
-//! point of R5-002) plus `serde`/`serde_json` for the JSON bodies. No
-//! protocol core, no async runtime, no HTTP framework, no TLS (documented
-//! as future hardening in the README).
+//! point of R5-002) plus `serde`/`serde_json` for the JSON bodies, plus
+//! `sharenet-protocol` since R5-004: the adapter verifies every
+//! `SignedConnectivityObservation` through the protocol core BEFORE
+//! anything reaches the connectivity layer (the registry rule: "UNSIGNED
+//! observations never enter durable ShareNet state"). The DOMAIN crate
+//! still imports nothing (ADR-001 intact — only this adapter knows both
+//! sides). No async runtime, no HTTP framework, no TLS (documented as
+//! future hardening in the README).
 //!
 //! # Test scaffolding
 //!
@@ -48,10 +53,15 @@
 //! discipline as `transport/ice`'s `stun_server`): a real std::TCP server
 //! speaking exactly this wire shape over a deterministic in-memory store,
 //! with injectable fault modes (drop connection, provider-unavailable,
-//! slow response, unauthorized acquisition, adversarial response shapes)
-//! and test-control endpoints. It backs the integration suite
-//! (`tests/adcos_integration.rs`), which re-runs the parent crate's
-//! generic `conformance_core` battery against this client.
+//! slow response, unauthorized acquisition, adversarial response shapes,
+//! and since R5-004 the observation attacks: tampered signature,
+//! rewritten JSON wrapper, unsigned body) and test-control endpoints. It
+//! is a SIGNING provider (a real ShareNet `Identity`): every observation
+//! it emits rides as a `SignedConnectivityObservation` envelope. It backs
+//! the integration suites (`tests/integration.rs`, `tests/durable_restart.rs`,
+//! `tests/signed_observations.rs`), which re-run the parent crate's
+//! generic `conformance_core` battery against this client and drive the
+//! R5-003/R5-004 trust boundary end to end.
 
 #![forbid(unsafe_code)]
 

@@ -15,6 +15,18 @@
 //!   Through the trait, every non-`Port` failure degrades to
 //!   `PortError::ProviderUnavailable`, which by contract means "no
 //!   provider answer exists".
+//! - **Only VERIFIED observations reach the connectivity layer (R5-004).**
+//!   `get_assurance` decodes every observation's
+//!   `SignedConnectivityObservation` envelope and runs the protocol core's
+//!   full admission (Ed25519 signature against the embedded provider
+//!   identity, the known-contract rule, the per-(provider node_id,
+//!   contract_ref) monotonic sequence gate, the freshness window) BEFORE
+//!   mapping anything into `ConnectivityObservation` domain data. Unsigned,
+//!   tampered, disagreeing or unknown-contract observations are typed
+//!   refusals (`AdcosError::Malformed`/`AdcosError::Evidence`) — they never
+//!   reach the cache, the caller, or any durable store. This IS the
+//!   registry's trust boundary: "UNSIGNED observations never enter durable
+//!   ShareNet state".
 //! - **Cache the last accepted observation with freshness metadata.** The
 //!   client keeps an internal [`ObservationCache`] (the parent's caching
 //!   policy type) fed by every successful `get_assurance`; when a
@@ -40,7 +52,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sharenet_connectivity::{
     CachedObservation, ConnectivityContractProjection, ConnectivityContractRef,
@@ -48,6 +60,7 @@ use sharenet_connectivity::{
     ConnectivityOfferRef, ConnectivityPort, ConnectivityRequirement, ObservationCache,
     PortError, DEFAULT_FRESHNESS_WINDOW_SECS,
 };
+use sharenet_protocol::ObservationAdmission;
 
 use crate::error::AdcosError;
 use crate::http::{HttpRequest, HttpResponse};
@@ -146,20 +159,27 @@ impl AdcosConfig {
 }
 
 /// The ADCOS developer-API client. Clone-free, `&self` with interior
-/// mutability (one mutex around the observation cache), `Sync` — usable
-/// from multiple threads.
+/// mutability (one mutex around the observation cache, one around the
+/// verification admission state), `Sync` — usable from multiple threads.
 #[derive(Debug)]
 pub struct AdcosClient {
     config: AdcosConfig,
     cache: Mutex<ObservationCache>,
+    /// The R5-004 verification state: the per-(provider node_id,
+    /// contract_ref) highest-seen sequence plus the known-contract set —
+    /// the registry admission rule, applied to every observation before
+    /// it reaches the connectivity layer.
+    admission: Mutex<ObservationAdmission>,
 }
 
 impl AdcosClient {
     /// Construct a client for `config` (validated).
     pub fn new(config: AdcosConfig) -> Result<AdcosClient, AdcosError> {
         config.validate()?;
+        let window = config.freshness_window_secs;
         Ok(AdcosClient {
-            cache: Mutex::new(ObservationCache::new(config.freshness_window_secs)),
+            cache: Mutex::new(ObservationCache::new(window)),
+            admission: Mutex::new(ObservationAdmission::new(window)),
             config,
         })
     }
@@ -180,10 +200,38 @@ impl AdcosClient {
         self.lock_cache().last_accepted(contract).cloned()
     }
 
+    /// Register a contract as KNOWN to this client's verification state —
+    /// the R5-004 known-contract rule (an observation for an unknown
+    /// contract is never a trust grant). Contracts accepted through
+    /// [`Self::accept_offer`] register automatically; callers that reload
+    /// contracts from durable state after a restart (the R5-003 store's
+    /// contract list) re-register through here so the rule survives the
+    /// restart.
+    pub fn register_known_contract(&self, contract: &ConnectivityContractRef) {
+        self.lock_admission().register_contract(*contract.id());
+    }
+
+    /// The highest verified sequence seen for (provider node_id,
+    /// contract_ref) by this client's admission state.
+    pub fn highest_verified_sequence(
+        &self,
+        provider: &sharenet_protocol::NodeId,
+        contract: &ConnectivityContractRef,
+    ) -> Option<u64> {
+        self.lock_admission()
+            .highest_sequence(provider, contract.id())
+    }
+
     fn lock_cache(&self) -> std::sync::MutexGuard<'_, ObservationCache> {
         self.cache
             .lock()
             .expect("adcos client observation cache lock poisoned")
+    }
+
+    fn lock_admission(&self) -> std::sync::MutexGuard<'_, ObservationAdmission> {
+        self.admission
+            .lock()
+            .expect("adcos client admission lock poisoned")
     }
 
     fn transport_config(&self) -> TransportConfig {
@@ -253,7 +301,10 @@ impl AdcosClient {
         wire::parse_offer_refs_body(&response.body)
     }
 
-    /// `acceptOffer` — `POST /intents/{id}/offers/{offer}/accept`.
+    /// `acceptOffer` — `POST /intents/{id}/offers/{offer}/accept`. The
+    /// returned contract registers as KNOWN in the client's R5-004
+    /// verification state (observations for unknown contracts are never
+    /// trust grants).
     pub fn accept_offer(
         &self,
         intent: &ConnectivityIntentRef,
@@ -261,7 +312,9 @@ impl AdcosClient {
     ) -> Result<ConnectivityContractRef, AdcosError> {
         let request = wire::accept_request(intent, offer);
         let response = self.dispatch(&request, None)?;
-        wire::parse_contract_ref_body(&response.body)
+        let contract = wire::parse_contract_ref_body(&response.body)?;
+        self.register_known_contract(&contract);
+        Ok(contract)
     }
 
     /// `getContract` — `GET /contracts/{id}`.
@@ -274,16 +327,43 @@ impl AdcosClient {
         wire::parse_projection_body(&response.body)
     }
 
-    /// `getAssurance` — `GET /contracts/{id}/assurance`. Feeds the internal
-    /// `ObservationCache` (dedup by sequence) so later outages carry the
-    /// cached freshness bound.
+    /// `getAssurance` — `GET /contracts/{id}/assurance`. R5-004: every
+    /// observation is VERIFIED (signed envelope decode, strict statement
+    /// parse, DTO agreement, protocol-core admission: signature, known
+    /// contract, sequence gate, freshness) before it is mapped into the
+    /// connectivity domain and fed to the internal `ObservationCache` —
+    /// nothing unverified is ever returned, cached or persisted. The
+    /// accepting-node clock is the system clock (the adapter is the
+    /// OS-facing edge; the deterministic seam is
+    /// [`Self::get_assurance_at`]).
     pub fn get_assurance(
         &self,
         contract: &ConnectivityContractRef,
     ) -> Result<Vec<ConnectivityObservation>, AdcosError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.get_assurance_at(contract, now)
+    }
+
+    /// `getAssurance` with an explicit accepting-node clock — the
+    /// deterministic form of [`Self::get_assurance`] (tests, probes and
+    /// callers that inject their own time).
+    pub fn get_assurance_at(
+        &self,
+        contract: &ConnectivityContractRef,
+        now_unix: u64,
+    ) -> Result<Vec<ConnectivityObservation>, AdcosError> {
         let request = wire::assurance_request(contract);
         let response = self.dispatch(&request, Some(contract))?;
-        let observations = wire::parse_observations_body(&response.body)?;
+        let dtos = wire::parse_observation_dtos(&response.body)?;
+        // the R5-004 trust boundary: verification happens HERE, in the
+        // adapter, before anything reaches the connectivity layer
+        let observations = {
+            let mut admission = self.lock_admission();
+            wire::verify_observation_dtos(&dtos, &mut admission, now_unix)?
+        };
         let mut cache = self.lock_cache();
         for observation in &observations {
             cache.accept(observation);

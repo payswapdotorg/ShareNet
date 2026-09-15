@@ -5,6 +5,16 @@
 //! injectable fault modes.
 //!
 //! Usage: adcos_test_server [--bind ADDR] [--fault MODE]
+//!                        [--provider-seed HEX64]
+//!
+//! R5-004: the server is a SIGNING provider. It holds a ShareNet
+//! `Identity` (deterministic seed — default fixed, overridable) and every
+//! observation it emits (`contract_activated` on accept, `terminated` on
+//! terminate) rides as a `SignedConnectivityObservation` carrying envelope
+//! in the assurance element's `signed_envelope` field, signed with the
+//! provider node key. The client verifies against the EMBEDDED identity,
+//! so the tests need no out-of-band key distribution (the self-certifying
+//! property).
 //!
 //! Fault modes (adversarial affordances, one per server):
 //!
@@ -15,7 +25,18 @@
 //!   response (the client must surface a typed transport error and
 //!   never fabricate state);
 //! - `garbage:N` — the first N success responses carry non-JSON bytes
-//!   with status 200 (the client must fail typed, never guess).
+//!   with status 200 (the client must fail typed, never guess);
+//! - `tamper_sig:N` — the first N ASSURANCE responses flip a byte of
+//!   the signature inside the first observation's envelope (the client
+//!   must refuse with the typed signature failure);
+//! - `tamper_dto:N` — the first N ASSURANCE responses rewrite the first
+//!   observation's JSON kind field while keeping the valid signature
+//!   over the original bytes (envelope/JSON disagreement — refused);
+//! - `unsigned:N` — the first N ASSURANCE responses strip the
+//!   `signed_envelope` field (the pre-R5-004 unsigned shape — refused).
+//!
+//! The three observation fault budgets count ASSURANCE requests only;
+//! the 503/drop/garbage budgets count all requests.
 //!
 //! Protocol: prints `READY <addr>` on stdout, then serves until killed
 //! (the test harness kills the process; that is the documented
@@ -37,6 +58,11 @@ use sharenet_connectivity_client::wire::{
     ContractRefBody, CreateIntentBody, ExecutionBody, IntentRefBody, ObservationBody,
     ProjectionBody, WireErrorBody, WireErrorEnvelope, WireRef,
 };
+use sharenet_protocol::{ConnectivityObservationStatement, EvidenceKind, Identity};
+
+/// The default provider identity seed (TEST-ONLY; deterministic so the
+/// integration suite is reproducible). Overridable with --provider-seed.
+const DEFAULT_PROVIDER_SEED: [u8; 32] = [0xAD; 32];
 
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -71,6 +97,42 @@ struct Contract {
     valid_until_unix: u64,
     observations: Vec<ObservationBody>,
     execution: (String, u64, u64), // state, throughput_bps, latency_ms
+}
+
+/// One observation fault to apply to an assurance response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObsFault {
+    None,
+    TamperSig,
+    TamperDto,
+    Unsigned,
+}
+
+/// Build one SIGNED observation DTO — the provider-side construction the
+/// R5-004 client verifies (statement over the provider identity, Ed25519
+/// detached signature, canonical carrying envelope, lowercase hex).
+fn signed_observation_body(
+    provider: &Identity,
+    contract_id: &[u8; 32],
+    kind: EvidenceKind,
+    now: u64,
+    sequence: u64,
+) -> ObservationBody {
+    let statement =
+        ConnectivityObservationStatement::new(provider, *contract_id, kind, now, sequence, None)
+            .expect("test server builds a valid observation");
+    let signed = statement.sign(provider).expect("test server signs");
+    ObservationBody {
+        kind: kind.as_str().to_string(),
+        observed_at_unix: now,
+        contract: wire_ref(RefKind::Contract, contract_id),
+        sequence,
+        signed_envelope: Some(hex_encode(&signed.to_envelope_bytes())),
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 struct Store {
@@ -131,7 +193,7 @@ fn error_response_with(status: u16, code: &str, fresh_until: u64) -> Vec<u8> {
     json_response(status, &serde_json::to_vec(&envelope).expect("serialize error"))
 }
 
-fn handle(store: &mut Store, request: &HttpRequest) -> Vec<u8> {
+fn handle(store: &mut Store, provider: &Identity, request: &HttpRequest, obs_fault: ObsFault) -> Vec<u8> {
     let path = request.path.as_str();
     let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
     let now = now_unix();
@@ -208,18 +270,15 @@ fn handle(store: &mut Store, request: &HttpRequest) -> Vec<u8> {
             let contract_id = hex_id(n, 0x03);
             let sequence = store.sequence.fetch_add(1, Ordering::SeqCst) + 1;
             store.accepted.insert(offer, contract_id);
+            let activated =
+                signed_observation_body(provider, &contract_id, EvidenceKind::ContractActivated, now, sequence);
             store.contracts.insert(
                 contract_id,
                 Contract {
                     state: "active".into(),
                     valid_from_unix: now,
                     valid_until_unix: now + 3600,
-                    observations: vec![ObservationBody {
-                        kind: "contract_activated".into(),
-                        observed_at_unix: now,
-                        contract: wire_ref(RefKind::Contract, &contract_id),
-                        sequence,
-                    }],
+                    observations: vec![activated],
                     execution: ("running".into(), 1_000_000, 40),
                 },
             );
@@ -253,7 +312,30 @@ fn handle(store: &mut Store, request: &HttpRequest) -> Vec<u8> {
             match store.contracts.get(&contract_id) {
                 None => error_response_ref(404, "contract_unknown", RefKind::Contract, &contract_id),
                 Some(c) => {
-                    json_response(200, &serde_json::to_vec(&c.observations).expect("serialize"))
+                    let mut observations = c.observations.clone();
+                    if let Some(first) = observations.first_mut() {
+                        match obs_fault {
+                            ObsFault::None => {}
+                            ObsFault::TamperSig => {
+                                // flip the last hex digit of the envelope —
+                                // inside the 64-byte signature
+                                if let Some(hex) = first.signed_envelope.as_mut() {
+                                    let last = hex.pop().unwrap_or('0');
+                                    hex.push(if last == '0' { '1' } else { '0' });
+                                }
+                            }
+                            ObsFault::TamperDto => {
+                                // rewrite the JSON kind while the signature
+                                // still covers the ORIGINAL bytes
+                                first.kind = "degraded".into();
+                            }
+                            ObsFault::Unsigned => {
+                                // strip the envelope: the unsigned shape
+                                first.signed_envelope = None;
+                            }
+                        }
+                    }
+                    json_response(200, &serde_json::to_vec(&observations).expect("serialize"))
                 }
             }
         }
@@ -285,12 +367,13 @@ fn handle(store: &mut Store, request: &HttpRequest) -> Vec<u8> {
                     if c.state != "terminated" {
                         let sequence = store.sequence.fetch_add(1, Ordering::SeqCst) + 1;
                         c.state = "terminated".into();
-                        c.observations.push(ObservationBody {
-                            kind: "terminated".into(),
-                            observed_at_unix: now,
-                            contract: wire_ref(RefKind::Contract, &contract_id),
+                        c.observations.push(signed_observation_body(
+                            provider,
+                            &contract_id,
+                            EvidenceKind::Terminated,
+                            now,
                             sequence,
-                        });
+                        ));
                     }
                     json_response(200, b"{}")
                 }
@@ -314,6 +397,7 @@ fn parse_id(text: &str) -> Result<[u8; 32], ()> {
 fn main() -> ExitCode {
     let mut bind: SocketAddr = "127.0.0.1:0".parse().expect("static addr");
     let mut fault: Option<String> = None;
+    let mut provider_seed: [u8; 32] = DEFAULT_PROVIDER_SEED;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -325,13 +409,27 @@ fn main() -> ExitCode {
                 }
             },
             "--fault" => fault = args.next(),
+            "--provider-seed" => match args.next() {
+                Some(hex) if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) => {
+                    for (i, b) in provider_seed.iter_mut().enumerate() {
+                        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+                            .expect("checked hex digit");
+                    }
+                }
+                _ => {
+                    eprintln!("error: --provider-seed wants 64 hex characters");
+                    return ExitCode::from(2);
+                }
+            },
             other => {
                 eprintln!("error: unknown argument {other:?}");
                 return ExitCode::from(2);
             }
         }
     }
-    // Fault mode: "MODE:N" — the first N requests are affected.
+    // Fault mode: "MODE:N" — the first N requests are affected. The
+    // observation faults (tamper_sig/tamper_dto/unsigned) count ASSURANCE
+    // requests only; 503/drop/garbage count all requests.
     let (fault_mode, fault_count) = match fault.as_deref() {
         None => (None, 0u64),
         Some(spec) => match spec.split_once(':') {
@@ -339,13 +437,18 @@ fn main() -> ExitCode {
                 ("503", Ok(n)) => (Some("503"), n),
                 ("drop", Ok(n)) => (Some("drop"), n),
                 ("garbage", Ok(n)) => (Some("garbage"), n),
+                ("tamper_sig", Ok(n)) => (Some("tamper_sig"), n),
+                ("tamper_dto", Ok(n)) => (Some("tamper_dto"), n),
+                ("unsigned", Ok(n)) => (Some("unsigned"), n),
                 _ => {
-                    eprintln!("error: unknown fault {spec:?} (want 503:N | drop:N | garbage:N)");
+                    eprintln!(
+                        "error: unknown fault {spec:?} (want 503:N | drop:N | garbage:N | tamper_sig:N | tamper_dto:N | unsigned:N)"
+                    );
                     return ExitCode::from(2);
                 }
             },
             None => {
-                eprintln!("error: --fault wants MODE:N (503:N | drop:N | garbage:N)");
+                eprintln!("error: --fault wants MODE:N");
                 return ExitCode::from(2);
             }
         },
@@ -370,12 +473,22 @@ fn main() -> ExitCode {
         sequence: AtomicU64::new(0),
     }));
     let served = Arc::new(AtomicU64::new(0));
+    // assurance-request counter for the observation fault budgets
+    let assurance_served = Arc::new(AtomicU64::new(0));
+    // the signing provider identity (deterministic seed; the key lives only
+    // in this process — TEST scaffolding, zeroized with the Identity)
+    let provider = Arc::new(
+        Identity::from_seed(provider_seed, 0, None)
+            .expect("deterministic provider identity"),
+    );
 
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
         let store = store.clone();
         let fault_mode = fault_mode.map(str::to_string);
         let served = served.clone();
+        let assurance_served = assurance_served.clone();
+        let provider = provider.clone();
         std::thread::spawn(move || {
             let request = match read_request(&mut stream) {
                 Ok(Some(r)) => r,
@@ -385,9 +498,28 @@ fn main() -> ExitCode {
                     return;
                 }
             };
+            // observation faults count ASSURANCE requests only
+            let obs_fault = if matches!(fault_mode.as_deref(), Some("tamper_sig") | Some("tamper_dto") | Some("unsigned"))
+                && request.method == Method::Get
+                && request.path.ends_with("/assurance")
+            {
+                let i = assurance_served.fetch_add(1, Ordering::SeqCst);
+                if i < fault_count {
+                    match fault_mode.as_deref() {
+                        Some("tamper_sig") => ObsFault::TamperSig,
+                        Some("tamper_dto") => ObsFault::TamperDto,
+                        Some("unsigned") => ObsFault::Unsigned,
+                        _ => ObsFault::None,
+                    }
+                } else {
+                    ObsFault::None
+                }
+            } else {
+                ObsFault::None
+            };
             let index = served.fetch_add(1, Ordering::SeqCst);
             let mut store = store.lock().expect("store lock");
-            let response = if index < fault_count {
+            let response = if index < fault_count && !matches!(fault_mode.as_deref(), Some("tamper_sig") | Some("tamper_dto") | Some("unsigned")) {
                 match fault_mode.as_deref() {
                     Some("drop") => {
                         eprintln!("server: fault drop #{index}");
@@ -417,7 +549,7 @@ fn main() -> ExitCode {
                     }
                 }
             } else {
-                handle(&mut store, &request)
+                handle(&mut store, &provider, &request, obs_fault)
             };
             if let Err(e) = stream.write_all(&response) {
                 eprintln!("server: write failed: {e}");

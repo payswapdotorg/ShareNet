@@ -38,6 +38,10 @@ use sharenet_protocol::topology::{
     LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence, TopologyEvidence,
     TopologyStore,
 };
+use sharenet_protocol::connectivity_evidence::{
+    AdmissionOutcome, ConnectivityObservationStatement, EvidenceKind, ObservationAdmission,
+    SignedConnectivityObservation,
+};
 use sharenet_protocol::advertisement::{
     Advertisement, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement, TransportDescriptor,
 };
@@ -849,6 +853,197 @@ fn main() -> ExitCode {
             other => panic!("unknown reject kind {other:?}"),
         };
         println!("CIRCUIT_REJ {i} {outcome}");
+    }
+
+    // ---------------- signed connectivity observation vectors (R5-004) ----------------
+    #[derive(Deserialize)]
+    struct ConnObsFile {
+        cases: Vec<ConnObsCaseV>,
+        receive: Vec<ConnObsReceiveV>,
+        parse_reject: Vec<ConnObsRejectV>,
+        envelope_reject: Vec<ConnObsRejectV>,
+    }
+    #[derive(Deserialize)]
+    struct ConnObsCaseV {
+        #[allow(dead_code)]
+        note: String,
+        seed_hex: String,
+        created_at_unix: u64,
+        contract_ref_hex: String,
+        kind: String,
+        observed_at_unix: u64,
+        sequence: u64,
+        execution: Option<std::collections::BTreeMap<String, i64>>,
+        wire_hex: String,
+        sig_hex: String,
+        env_hex: String,
+    }
+    #[derive(Deserialize)]
+    struct ConnObsReceiveV {
+        case: usize,
+        now_unix: u64,
+        window_secs: u64,
+        contract_known: bool,
+        mutation: Option<String>,
+        expect: String,
+    }
+    #[derive(Deserialize)]
+    struct ConnObsRejectV {
+        hex: String,
+        error: String,
+        #[allow(dead_code)]
+        note: String,
+    }
+    let obs_file: ConnObsFile = load_json(&vectors_dir.join("connectivity_evidence_vectors.json"));
+    // cases: re-derive the wire image + signature + envelope from the
+    // inputs through the REAL protocol API and pin them against the
+    // committed hex (never trusting the committed values).
+    for (i, c) in obs_file.cases.iter().enumerate() {
+        let seed: [u8; 32] = from_hex(&c.seed_hex).try_into().expect("seed");
+        let provider = Identity::from_seed(seed, c.created_at_unix, None).expect("identity");
+        let contract: [u8; 32] = from_hex(&c.contract_ref_hex)
+            .try_into()
+            .expect("contract");
+        let kind = EvidenceKind::from_name(&c.kind).unwrap_or_else(|| {
+            panic!("vector kind {kind:?} is not one of the frozen six", kind = c.kind)
+        });
+        let statement = ConnectivityObservationStatement::new(
+            &provider,
+            contract,
+            kind,
+            c.observed_at_unix,
+            c.sequence,
+            c.execution.clone(),
+        )
+        .expect("statement builds");
+        let signed = statement.sign(&provider).expect("signs");
+        let wire = to_hex(signed.observation_bytes());
+        let sig = to_hex(signed.signature());
+        let env = to_hex(&signed.to_envelope_bytes());
+        if wire != c.wire_hex || sig != c.sig_hex || env != c.env_hex {
+            eprintln!(
+                "FAIL connectivity evidence {i}: re-derived image differs from the committed vector"
+            );
+            failures += 1;
+        }
+        println!("CONN_OBS {i} wire={wire} sig={sig} env={env}");
+    }
+    // receive: ONE shared admission (the accepting node) — the sequence
+    // namespace (provider node_id, contract_ref) is global across entries,
+    // so the vector order is itself the test.
+    {
+        let mut admission = ObservationAdmission::new(
+            obs_file.receive.first().map(|r| r.window_secs).unwrap_or(600),
+        );
+        let foreign_seed: [u8; 32] = [0xEE; 32];
+        let foreign = Identity::from_seed(foreign_seed, 0, None).expect("foreign identity");
+        for (i, r) in obs_file.receive.iter().enumerate() {
+            let c = &obs_file.cases[r.case];
+            if r.window_secs != admission.freshness_window_secs() {
+                panic!(
+                    "vector receive {i}: per-entry windows must match the shared accepting-node policy"
+                );
+            }
+            if r.contract_known {
+                admission.register_contract(
+                    from_hex(&c.contract_ref_hex)
+                        .try_into()
+                        .expect("contract"),
+                );
+            }
+            // rebuild the signed observation, apply the mutation, admit
+            let seed: [u8; 32] = from_hex(&c.seed_hex).try_into().expect("seed");
+            let provider = Identity::from_seed(seed, c.created_at_unix, None).expect("identity");
+            let contract: [u8; 32] = from_hex(&c.contract_ref_hex)
+                .try_into()
+                .expect("contract");
+            let kind = EvidenceKind::from_name(&c.kind).expect("kind");
+            let statement = ConnectivityObservationStatement::new(
+                &provider,
+                contract,
+                kind,
+                c.observed_at_unix,
+                c.sequence,
+                c.execution.clone(),
+            )
+            .expect("statement builds");
+            let mut signed = statement.sign(&provider).expect("signs");
+            match r.mutation.as_deref() {
+                None => {}
+                Some("tamper_signature") => {
+                    let mut sig = *signed.signature();
+                    sig[0] ^= 0x01;
+                    signed = SignedConnectivityObservation::from_parts(
+                        signed.observation_bytes().to_vec(),
+                        sig,
+                    );
+                }
+                Some("foreign_signer") => {
+                    signed = SignedConnectivityObservation::from_parts(
+                        signed.observation_bytes().to_vec(),
+                        foreign.sign_detached(signed.observation_bytes()),
+                    );
+                }
+                Some(other) => panic!("unknown receive mutation {other:?}"),
+            }
+            let outcome = match admission.receive(&signed, r.now_unix) {
+                Ok(AdmissionOutcome::Admitted) => "admitted".to_string(),
+                Ok(AdmissionOutcome::SequenceStale { .. }) => "sequence_stale".to_string(),
+                Err(e) => e.name(),
+            };
+            if outcome != r.expect {
+                eprintln!(
+                    "FAIL connectivity evidence receive {i}: {outcome} != expected {}",
+                    r.expect
+                );
+                failures += 1;
+            }
+            println!("CONN_OBS_RECV {i} now={} {outcome}", r.now_unix);
+        }
+    }
+    for (i, r) in obs_file.parse_reject.iter().enumerate() {
+        let bytes = from_hex(&r.hex);
+        match ConnectivityObservationStatement::from_wire_bytes(&bytes) {
+            Err(e) => {
+                let name = e.name();
+                if name != r.error {
+                    eprintln!(
+                        "FAIL connectivity evidence parse_reject {i}: {} != expected {}",
+                        name, r.error
+                    );
+                    failures += 1;
+                }
+                println!("CONN_OBS_REJ {i} {name}");
+            }
+            Ok(_) => {
+                eprintln!(
+                    "FAIL connectivity evidence parse_reject {i}: unexpectedly parsed"
+                );
+                failures += 1;
+            }
+        }
+    }
+    for (i, r) in obs_file.envelope_reject.iter().enumerate() {
+        let bytes = from_hex(&r.hex);
+        match SignedConnectivityObservation::from_envelope_bytes(&bytes) {
+            Err(e) => {
+                let name = e.name();
+                if name != r.error {
+                    eprintln!(
+                        "FAIL connectivity evidence envelope_reject {i}: {} != expected {}",
+                        name, r.error
+                    );
+                    failures += 1;
+                }
+                println!("CONN_OBS_ENV_REJ {i} {name}");
+            }
+            Ok(_) => {
+                eprintln!(
+                    "FAIL connectivity evidence envelope_reject {i}: unexpectedly parsed"
+                );
+                failures += 1;
+            }
+        }
     }
 
     // ---------------- NodeIdentity decode spot check ----------------

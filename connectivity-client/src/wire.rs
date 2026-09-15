@@ -16,7 +16,7 @@
 //! | `discover_offers` | GET | `/intents/{id}/offers` | `[WireRef]` |
 //! | `accept_offer` | POST | `/intents/{id}/offers/{offer}/accept` | `{"contract_ref":WireRef}` |
 //! | `get_contract` | GET | `/contracts/{id}` | projection fields |
-//! | `get_assurance` | GET | `/contracts/{id}/assurance` | `[observation fields]` |
+//! | `get_assurance` | GET | `/contracts/{id}/assurance` | `[observation fields + signed_envelope]` |
 //! | `get_execution` | GET | `/contracts/{id}/execution` | execution fields |
 //! | `terminate` | POST | `/contracts/{id}/terminate` | `{}` |
 //!
@@ -60,9 +60,12 @@ use sharenet_connectivity::{
     ConnectivityIntentRef, ConnectivityObservation, ConnectivityOfferRef, ConnectivityRequirement,
     ObservationKind, PortError, RefKind, REF_ID_LEN,
 };
+use sharenet_protocol::{
+    ConnectivityObservationStatement, ObservationAdmission, SignedConnectivityObservation,
+};
 
 use crate::error::{AdcosError, MalformedReason};
-use crate::hex::{decode_lower_hex_32, encode_lower_hex};
+use crate::hex::{decode_lower_hex, decode_lower_hex_32, encode_lower_hex};
 use crate::http::{HttpRequest, Method};
 
 // ---------------------------------------------------------------------------
@@ -254,6 +257,13 @@ pub struct ProjectionBody {
 }
 
 /// One `GET /contracts/{id}/assurance` element — the observation fields.
+///
+/// The R5-004 trust rule: the JSON fields are a WRAPPER, never the truth.
+/// The truth is [`SignedConnectivityObservation`] inside `signed_envelope`
+/// (lowercase hex of the canonical CBOR carrying envelope), signed with the
+/// provider's ShareNet node key. A missing envelope is the unsigned
+/// pre-R5-004 shape and is refused by [`verify_observation_dtos`]; a
+/// disagreeing wrapper is refused too (the signed bytes win).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservationBody {
     /// One of the six adcos.md event machine names.
@@ -264,6 +274,12 @@ pub struct ObservationBody {
     pub contract: WireRef,
     /// Monotonic per-provider sequence number.
     pub sequence: u64,
+    /// Lowercase hex of the SignedConnectivityObservation carrying
+    /// envelope (R5-004). `None` on the unsigned pre-R5-004 shape — kept
+    /// optional so the JSON still parses and the refusal is TYPED
+    /// ([`MalformedReason::UnsignedObservation`]), not a `BadJson` blur.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub signed_envelope: Option<String>,
 }
 
 /// `GET /contracts/{id}/execution` success body — the execution fields.
@@ -326,24 +342,111 @@ pub fn parse_projection_body(body: &[u8]) -> Result<ConnectivityContractProjecti
     .map_err(AdcosError::Port)
 }
 
-/// Parse the `GET /contracts/{id}/assurance` success body.
-pub fn parse_observations_body(body: &[u8]) -> Result<Vec<ConnectivityObservation>, AdcosError> {
+/// Parse the `GET /contracts/{id}/assurance` success body into the raw
+/// observation DTOs (kind vocabulary + contract refs validated; the signed
+/// envelopes are NOT verified here — that is
+/// [`verify_observation_dtos`], the R5-004 trust boundary).
+pub fn parse_observation_dtos(body: &[u8]) -> Result<Vec<ObservationBody>, AdcosError> {
     let parsed: Vec<ObservationBody> = decode(body)?;
-    parsed
-        .iter()
-        .map(|obs| {
-            let kind = ObservationKind::from_name(&obs.kind).ok_or(AdcosError::Malformed {
+    for obs in &parsed {
+        if ObservationKind::from_name(&obs.kind).is_none() {
+            return Err(AdcosError::Malformed {
                 reason: MalformedReason::UnknownObservationKind(obs.kind.clone()),
-            })?;
-            let contract = parse_contract_ref(&obs.contract)?;
-            Ok(ConnectivityObservation::new(
-                kind,
-                obs.observed_at_unix,
-                contract,
-                obs.sequence,
-            ))
-        })
-        .collect()
+            });
+        }
+        parse_contract_ref(&obs.contract)?;
+    }
+    Ok(parsed)
+}
+
+/// The R5-004 trust boundary as one function: every observation on the
+/// assurance body is turned into domain data ONLY after the strict
+/// envelope parse, the strict statement parse, the DTO/statement agreement
+/// check and the full protocol-core admission (Ed25519 signature against
+/// the embedded provider identity, the known-contract rule, the
+/// per-(provider node_id, contract_ref) monotonic sequence gate and the
+/// accepting node's freshness window). Unsigned, tampered, disagreeing or
+/// unknown-contract observations fail with typed errors and NOTHING is
+/// returned — there is no partial-success path into the domain.
+///
+/// `AdmissionOutcome::SequenceStale` entries (verified redeliveries the
+/// sequence gate already covers) are still returned: they are verified
+/// observations, and redelivery dedup is the CONSUMER's policy (the
+/// R5-003 store's `accept` and the client cache both dedup by sequence).
+pub fn verify_observation_dtos(
+    dtos: &[ObservationBody],
+    admission: &mut ObservationAdmission,
+    now_unix: u64,
+) -> Result<Vec<ConnectivityObservation>, AdcosError> {
+    let mut verified = Vec::with_capacity(dtos.len());
+    for dto in dtos {
+        let Some(envelope_hex) = dto.signed_envelope.as_deref() else {
+            return Err(AdcosError::Malformed {
+                reason: MalformedReason::UnsignedObservation,
+            });
+        };
+        let envelope_bytes = decode_lower_hex(envelope_hex).map_err(|_| AdcosError::Malformed {
+            reason: MalformedReason::SignedEnvelopeNotHex,
+        })?;
+        let signed =
+            SignedConnectivityObservation::from_envelope_bytes(&envelope_bytes)
+                .map_err(AdcosError::Evidence)?;
+        // strict parse of the signed bytes (the R1-001 node_id derivation of
+        // the provider identity happens inside the identity parse)
+        let statement = signed.observation().map_err(AdcosError::Evidence)?;
+        // the JSON wrapper must agree with the signed statement — the
+        // signed bytes are the truth, the wrapper is not
+        check_agreement(dto, &statement)?;
+        // the full protocol-core admission (signature, known contract,
+        // sequence gate, freshness — in the registry's order)
+        admission.receive(&signed, now_unix).map_err(AdcosError::Evidence)?;
+        // only now does the observation enter the connectivity domain, and
+        // its fields come from the SIGNED statement
+        let kind = ObservationKind::from_name(statement.kind().as_str())
+            .expect("agreement check proved the kind name is in the frozen six");
+        let contract =
+            ConnectivityContractRef::from_parts(RefKind::Contract, *statement.contract_ref())
+                .map_err(AdcosError::Port)?;
+        verified.push(ConnectivityObservation::new(
+            kind,
+            statement.observed_at_unix(),
+            contract,
+            statement.sequence(),
+        ));
+    }
+    Ok(verified)
+}
+
+/// The JSON wrapper must agree with the signed statement field-for-field.
+fn check_agreement(
+    dto: &ObservationBody,
+    statement: &ConnectivityObservationStatement,
+) -> Result<(), AdcosError> {
+    if dto.kind != statement.kind().as_str() {
+        return Err(AdcosError::Malformed {
+            reason: MalformedReason::ObservationDisagreement { field: "kind" },
+        });
+    }
+    if dto.observed_at_unix != statement.observed_at_unix() {
+        return Err(AdcosError::Malformed {
+            reason: MalformedReason::ObservationDisagreement {
+                field: "observed_at_unix",
+            },
+        });
+    }
+    let dto_contract = decode_lower_hex_32(&dto.contract.id)
+        .map_err(|_| AdcosError::Malformed { reason: MalformedReason::BadRefId })?;
+    if dto_contract != *statement.contract_ref() {
+        return Err(AdcosError::Malformed {
+            reason: MalformedReason::ObservationDisagreement { field: "contract" },
+        });
+    }
+    if dto.sequence != statement.sequence() {
+        return Err(AdcosError::Malformed {
+            reason: MalformedReason::ObservationDisagreement { field: "sequence" },
+        });
+    }
+    Ok(())
 }
 
 /// Parse the `GET /contracts/{id}/execution` success body (state-text bound
@@ -889,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn observations_body_parses_all_six_adcos_event_kinds() {
+    fn observation_dtos_parse_all_six_adcos_event_kinds() {
         let kinds = [
             "contract_activated",
             "execution_state_changed",
@@ -911,12 +1014,15 @@ mod tests {
             })
             .collect();
         let body = format!("[{}]", elements.join(","));
-        let parsed = parse_observations_body(body.as_bytes()).unwrap();
+        let parsed = parse_observation_dtos(body.as_bytes()).unwrap();
         assert_eq!(parsed.len(), 6);
-        for (i, obs) in parsed.iter().enumerate() {
-            assert_eq!(obs.kind().as_str(), kinds[i]);
-            assert_eq!(obs.sequence(), (i + 1) as u64);
-            assert_eq!(obs.contract(), &contract());
+        for (i, dto) in parsed.iter().enumerate() {
+            assert_eq!(dto.kind, kinds[i]);
+            assert_eq!(dto.sequence, (i + 1) as u64);
+            assert_eq!(dto.contract.id, contract_hex());
+            // the unsigned shape parses at the DTO level — the refusal is
+            // the VERIFICATION path's job (typed, below)
+            assert_eq!(dto.signed_envelope, None);
         }
         // Unknown kind: malformed with the evidence carried.
         let bad = format!(
@@ -924,11 +1030,228 @@ mod tests {
             contract_hex()
         );
         assert_eq!(
-            parse_observations_body(bad.as_bytes()),
+            parse_observation_dtos(bad.as_bytes()),
             Err(AdcosError::Malformed {
                 reason: MalformedReason::UnknownObservationKind("invented".to_string())
             })
         );
+    }
+
+    /// Build one signed observation DTO from a real provider identity —
+    /// the same construction the adcos_test_server uses.
+    fn signed_dto(
+        provider: &sharenet_protocol::Identity,
+        contract_ref: [u8; 32],
+        kind: sharenet_protocol::EvidenceKind,
+        observed_at: u64,
+        sequence: u64,
+        mutate: impl FnOnce(&mut ObservationBody),
+    ) -> Vec<u8> {
+        let statement = ConnectivityObservationStatement::new(
+            provider,
+            contract_ref,
+            kind,
+            observed_at,
+            sequence,
+            None,
+        )
+        .expect("statement builds");
+        let signed = statement.sign(provider).expect("signs");
+        let mut dto = ObservationBody {
+            kind: kind.as_str().to_string(),
+            observed_at_unix: observed_at,
+            contract: ref_to_wire(RefKind::Contract, &contract_ref),
+            sequence,
+            signed_envelope: Some(encode_lower_hex(&signed.to_envelope_bytes())),
+        };
+        mutate(&mut dto);
+        serde_json::to_vec(&[dto]).expect("serialize dto body")
+    }
+
+    #[test]
+    fn verified_observations_flow_and_unsigned_is_refused() {
+        use sharenet_protocol::{ConnectivityEvidenceError, EvidenceKind, Identity};
+
+        let provider = Identity::from_seed([0xA1; 32], 0, None).expect("provider");
+        let contract_ref = [3u8; 32]; // the `contract()` test helper's id
+        let mut admission = ObservationAdmission::new(600);
+        admission.register_contract(contract_ref);
+
+        // Valid signed observation → verified into the domain, fields taken
+        // from the SIGNED statement.
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_000, 1, |_| {});
+        let dtos = parse_observation_dtos(&body).unwrap();
+        let verified = verify_observation_dtos(&dtos, &mut admission, 1_050).unwrap();
+        assert_eq!(verified.len(), 1);
+        assert_eq!(verified[0].kind().as_str(), "degraded");
+        assert_eq!(verified[0].observed_at_unix(), 1_000);
+        assert_eq!(verified[0].sequence(), 1);
+        assert_eq!(verified[0].contract(), &contract());
+
+        // Unsigned (the pre-R5-004 shape): typed refusal, nothing returned.
+        let unsigned = format!(
+            r#"[{{"kind":"degraded","observed_at_unix":1000,"contract":{{"kind":"contract","id":"{}"}},"sequence":1}}]"#,
+            contract_hex()
+        );
+        let dtos = parse_observation_dtos(unsigned.as_bytes()).unwrap();
+        assert_eq!(
+            verify_observation_dtos(&dtos, &mut admission, 1_050),
+            Err(AdcosError::Malformed { reason: MalformedReason::UnsignedObservation })
+        );
+
+        // Envelope not lowercase hex.
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_010, 2, |dto| {
+            dto.signed_envelope = Some("NOT HEX".to_string());
+        });
+        let dtos = parse_observation_dtos(&body).unwrap();
+        assert_eq!(
+            verify_observation_dtos(&dtos, &mut admission, 1_050),
+            Err(AdcosError::Malformed { reason: MalformedReason::SignedEnvelopeNotHex })
+        );
+
+        // Tampered signature bytes inside the envelope hex.
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_010, 2, |dto| {
+            let mut hex = dto.signed_envelope.take().unwrap();
+            // flip one hex digit inside the 64-byte signature (the tail of
+            // the envelope): the last hex character
+            let last = hex.pop().unwrap();
+            hex.push(if last == '0' { '1' } else { '0' });
+            dto.signed_envelope = Some(hex);
+        });
+        let dtos = parse_observation_dtos(&body).unwrap();
+        assert_eq!(
+            verify_observation_dtos(&dtos, &mut admission, 1_050),
+            Err(AdcosError::Evidence(ConnectivityEvidenceError::SignatureInvalid))
+        );
+
+        // The signature from a DIFFERENT key (forged envelope).
+        let foreign = Identity::from_seed([0xEE; 32], 0, None).expect("foreign");
+        let statement = ConnectivityObservationStatement::new(
+            &provider,
+            contract_ref,
+            EvidenceKind::Degraded,
+            1_010,
+            2,
+            None,
+        )
+        .unwrap();
+        let raw = statement.to_wire_bytes();
+        let forged = SignedConnectivityObservation::from_parts(raw.clone(), foreign.sign_detached(&raw));
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_010, 2, |dto| {
+            dto.signed_envelope = Some(encode_lower_hex(&forged.to_envelope_bytes()));
+        });
+        let dtos = parse_observation_dtos(&body).unwrap();
+        assert_eq!(
+            verify_observation_dtos(&dtos, &mut admission, 1_050),
+            Err(AdcosError::Evidence(ConnectivityEvidenceError::SignatureInvalid))
+        );
+    }
+
+    #[test]
+    fn observation_wrapper_disagreement_is_refused() {
+        use sharenet_protocol::EvidenceKind;
+
+        let provider = sharenet_protocol::Identity::from_seed([0xA2; 32], 0, None).expect("p");
+        let contract_ref = [3u8; 32];
+        let mut admission = ObservationAdmission::new(600);
+        admission.register_contract(contract_ref);
+
+        // kind rewritten in the JSON wrapper (signature still valid over the
+        // original bytes — the signed bytes win, the wrapper is refused)
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_000, 1, |dto| {
+            dto.kind = "terminated".to_string();
+        });
+        let dtos = parse_observation_dtos(&body).unwrap();
+        assert_eq!(
+            verify_observation_dtos(&dtos, &mut admission, 1_050),
+            Err(AdcosError::Malformed {
+                reason: MalformedReason::ObservationDisagreement { field: "kind" }
+            })
+        );
+        // observed_at rewritten
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_000, 1, |dto| {
+            dto.observed_at_unix = 1_999;
+        });
+        let dtos = parse_observation_dtos(&body).unwrap();
+        assert_eq!(
+            verify_observation_dtos(&dtos, &mut admission, 1_050),
+            Err(AdcosError::Malformed {
+                reason: MalformedReason::ObservationDisagreement { field: "observed_at_unix" }
+            })
+        );
+        // sequence rewritten
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_000, 1, |dto| {
+            dto.sequence = 7;
+        });
+        let dtos = parse_observation_dtos(&body).unwrap();
+        assert_eq!(
+            verify_observation_dtos(&dtos, &mut admission, 1_050),
+            Err(AdcosError::Malformed {
+                reason: MalformedReason::ObservationDisagreement { field: "sequence" }
+            })
+        );
+        // contract rewritten (a different contract's hex in the wrapper)
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_000, 1, |dto| {
+            dto.contract = ref_to_wire(RefKind::Contract, &[9u8; 32]);
+        });
+        let dtos = parse_observation_dtos(&body).unwrap();
+        assert_eq!(
+            verify_observation_dtos(&dtos, &mut admission, 1_050),
+            Err(AdcosError::Malformed {
+                reason: MalformedReason::ObservationDisagreement { field: "contract" }
+            })
+        );
+        // and the failed attempts never advanced the sequence gate
+        assert_eq!(admission.highest_sequence(&provider.node_id(), &contract_ref), None);
+    }
+
+    #[test]
+    fn observation_admission_paths_are_typed_at_the_wire() {
+        use sharenet_protocol::{ConnectivityEvidenceError, EvidenceKind, Identity};
+
+        let provider = Identity::from_seed([0xA3; 32], 0, None).expect("p");
+        let contract_ref = [3u8; 32];
+
+        // unknown contract: the known-contract rule (never a trust grant)
+        let mut admission = ObservationAdmission::new(600);
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_000, 1, |_| {});
+        let dtos = parse_observation_dtos(&body).unwrap();
+        assert!(matches!(
+            verify_observation_dtos(&dtos, &mut admission, 1_050),
+            Err(AdcosError::Evidence(ConnectivityEvidenceError::ContractUnknown { .. }))
+        ));
+
+        // freshness edges (bound exclusive): inside → verified, at/after the
+        // bound → expired, before observed_at → not_yet_valid
+        admission.register_contract(contract_ref);
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_000, 1, |_| {});
+        let dtos = parse_observation_dtos(&body).unwrap();
+        assert_eq!(
+            verify_observation_dtos(&dtos, &mut admission, 1_599).unwrap()[0].sequence(),
+            1,
+            "inside the window verifies"
+        );
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_700, 2, |_| {});
+        let dtos = parse_observation_dtos(&body).unwrap();
+        assert!(matches!(
+            verify_observation_dtos(&dtos, &mut admission, 1_699),
+            Err(AdcosError::Evidence(ConnectivityEvidenceError::NotYetValid { .. }))
+        ));
+        assert!(matches!(
+            verify_observation_dtos(&dtos, &mut admission, 2_300),
+            Err(AdcosError::Evidence(ConnectivityEvidenceError::Expired { .. }))
+        ));
+
+        // a verified redelivery (sequence already seen) still returns the
+        // observation — dedup is the consumer's policy — and a strictly
+        // greater sequence continues
+        let body = signed_dto(&provider, contract_ref, EvidenceKind::Degraded, 1_800, 5, |_| {});
+        let dtos = parse_observation_dtos(&body).unwrap();
+        let verified = verify_observation_dtos(&dtos, &mut admission, 1_810).unwrap();
+        assert_eq!(verified[0].sequence(), 5);
+        let replay = verify_observation_dtos(&dtos, &mut admission, 1_810).unwrap();
+        assert_eq!(replay[0].sequence(), 5, "verified redelivery is returned, not applied twice");
+        assert_eq!(admission.highest_sequence(&provider.node_id(), &contract_ref), Some(5));
     }
 
     #[test]

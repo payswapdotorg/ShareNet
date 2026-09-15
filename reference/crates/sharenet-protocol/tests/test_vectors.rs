@@ -4122,6 +4122,7 @@ fn vectors_conformance() {
             Ok(_) => panic!("content parse_reject {} was accepted", r.hex),
         };
         assert_eq!(err.name(), r.error, "content parse_reject {}", r.hex);
+    }
     // ---- circuit revocation vectors (R7-001) ----
     let rev_file: RevocationVectorsFile = serde_json::from_str(
         &std::fs::read_to_string(vectors_path("revocation_vectors.json"))

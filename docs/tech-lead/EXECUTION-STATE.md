@@ -905,12 +905,101 @@ Architect decision — see Open Architect Decisions).
   telemetry 35/0, wasm32 green, conformance harness PASS (218 lines),
   Android :vpn 67/67 + AAR, governance PASS.
 
+### R5-005 — Gateway admission/backhaul policy — COMPLETE (Wave 11)
+
+- `admission/` crate `sharenet-admission`: the pure two-factor decision
+  engine per adcos.md — a gateway is ShareNet-eligible only when BOTH
+  (1) authenticated ShareNet node/link evidence (R3-003
+  SignedTopologyEvidence: strict parse + Ed25519 + subject binding +
+  freshness window = earlier of observer expiry and observed_at +
+  window) AND (2) acceptable ADCOS-backed connectivity evidence
+  (R5-003 projection through its typed surface with the R5-004 trust
+  boundary DERIVED, not trusted: observations re-verified, unique
+  (provider, sequence), every log entry covered, snapshot
+  self-consistency, Active + Fresh at the decision clock) hold.
+- Typed GatewayAdmission::{Eligible, Ineligible{reasons}} with machine
+  names; fail-closed on either side missing; exact integer ppm quality
+  floor (u128 intermediates; the WORSE of stated ratio and
+  counters-derived ratio — an internally inconsistent observer is
+  judged by its counters); latency in exact microseconds. Deterministic
+  for a fixed evidence snapshot (architecture §2). Honest boundary:
+  grants no packet-delivery or fulfillment attestation.
+- Verification: 25 tests (integration: real TopologyEvidence + real
+  signed observations + a real DurableProjectionStore; adversarial:
+  wrong-node binding, tampered evidence, one-sided, determinism,
+  parameter edges, counter-vs-stated inconsistency) + wasm32 green +
+  governance PASS. Deps exactly sharenet-protocol +
+  sharenet-connectivity (ADR-001 intact — connectivity/src/ untouched).
+
+### R6-001 — Content addressing/manifests — COMPLETE (Wave 11)
+
+- Registry: ContentManifest pre-registered BEFORE implementation;
+  maturity → implemented at integration (metadata text-value bound
+  1..=256 bytes and the length-before-hash law ordering confirmed by
+  the Tech Lead).
+- `reference/crates/sharenet-protocol/src/content.rs`: the
+  content-addressed foundation per architecture §12 — ContentManifest
+  (chunk_size 1..=2 MiB = the CircuitFrame payload bound, exact
+  chunk_hashes count, bounded metadata), content_id =
+  SHA-256(canonical manifest) (commitment-derived identity, L013);
+  chunk()/reassemble() with per-slot typed errors (per-slot length law
+  BEFORE hash law; MissingChunk = verified-prefix semantics naming the
+  first missing slot — exactly what R6-002 resume re-requests;
+  ExtraChunk catches duplicates/injections).
+- Verification: unit (9) + adversarial (20: manifest-only trust —
+  claimed-length lies that keep geometry matching still fail every
+  reassembly path, tested both directions) + conformance
+  (content_vectors.json: 4 cases, 12 reassembly outcomes, 19 parse
+  rejections; harness now 283 byte-identical lines). reference
+  218/218. wasm32 green.
+
+### R7-001 — Failure detector/revocation — COMPLETE (Wave 11)
+
+- Registry: CircuitRevocation pre-registered BEFORE implementation;
+  maturity → implemented at integration.
+- `reference/crates/sharenet-protocol/src/revocation.rs`: the durable
+  authoritative failure record (L015) — path-member-signed (verified
+  against the revoked circuit's COMMITTED path, never caller-asserted),
+  frozen reasons (link_failure, evidence_timeout, policy, operator),
+  bounded honest evidence map. RevocationLedger: idempotent per
+  (circuit, revoker), second-revoker recorded never un-revokes,
+  is_revoked authoritative, L015 ENFORCED (setup/ack/frame admission
+  refused for a revoked circuit_id even with runtime destroy state
+  lost; durability via an injectable snapshot seam — full durable
+  files R7-002 scope). FailureDetector (runtime): typed verdicts
+  (LinkFailure{missed_acks}, EvidenceTimeout{stale_since}, Policy,
+  Operator) — deterministic, caller-supplied clock, the input to
+  revocation construction.
+- Verification: unit + adversarial (21: per-field tamper, foreign
+  key, non-path-member, future timestamp, evidence violations,
+  envelope confusion, revoked-circuit admission refusal) + conformance
+  (revocation_vectors.json: 4 full route+circuit chain rebuilds, 9
+  receive-ledger outcomes, 13 parse + 4 envelope rejects; harness 283
+  lines). wasm32 green; governance PASS.
+
+## Wave 11 integration record (2026-09-15)
+
+- The biggest parallel wave: three items, three worktrees, three
+  dispatches. R6-001 (11-b) completed clean in one run (1b352fe). R7-001
+  (11-a) and R5-005 (11-c) subagents BOTH died at their context
+  deadlines with complete-but-uncommitted work — the recurring failure
+  mode; Tech Lead verified both (R7-001's conformance legs were
+  unwritten: dispatched a focused wiring agent that completed the three
+  runner integrations in one bounded run).
+- Merges: d8d201b (R6-001) → 901c401 (R7-001; runner/vector same-insert
+  conflicts resolved keeping both sections; one missing for-loop brace
+  fixed at the content/revocation seam) → aba3973 (R5-005).
+- Registry: ContentManifest + CircuitRevocation → implemented.
+- Fresh audit on merged main: reference 218/218, admission 25/25,
+  connectivity 50/50, connectivity-client 50/50, linux 61/61, wasm32
+  green, conformance harness PASS (283 byte-identical lines — up from
+  218 at wave 10 start), governance PASS. 27 of 48 work items complete.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 11 (all three READY, three-way parallel): R5-005 (gateway
-  admission/backhaul policy — R3-003 ✓, R5-003 ✓, R5-004 ✓), R6-001
-  (content addressing/manifests — R3-004 ✓, R4-002 ✓), R7-001
-  (failure detector/revocation — R4-002 ✓).
+- Wave 12 (all three READY): R6-002 (resumable transfer — R6-001 ✓,
+  R4-001 ✓), R6-003 (DTN store-carry-forward — R6-001 ✓, R5-005 ✓),
+  R7-002 (durable recovery attempts — R7-001 ✓).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

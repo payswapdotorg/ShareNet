@@ -1,0 +1,61 @@
+version: 2
+program: ShareNet
+status: FROZEN_EXECUTION_PLAN
+worker_limit: 3
+rules:
+  - exactly_one_owner
+  - ready_only_after_all_predecessors_complete
+  - no_conflicting_normative_authority_between_concurrent_workers
+  - production_caller_and_required_verification_are_closure_requirements
+  - normative_wire_or_state_change_requires_spec_adr_registry_update
+  - workers_may_not_expand_scope_into_downstream_items
+  - architecture_check_must_pass_before_scheduling
+items:
+  - {id: R1-001, gate: R1, owner: W1, wave: 1, depends: [], verify: [unit, architecture, conformance], title: Identity binding}
+  - {id: R1-002, gate: R1, owner: W1, wave: 1, depends: [], verify: [unit, architecture, conformance], title: Canonical CBOR wire foundation}
+  - {id: R2-001, gate: R2, owner: W2, wave: 1, depends: [], verify: [unit, architecture, android], title: Android nearby transport}
+  - {id: R2-003, gate: R2, owner: W2, wave: 1, depends: [], verify: [unit, architecture, linux], title: Linux transport/TUN foundation}
+  - {id: R1-003, gate: R1, owner: W1, wave: 2, depends: [R1-001, R1-002], verify: [conformance], title: Protocol registry and cross-language harness}
+  - {id: R1-004, gate: R1, owner: W1, wave: 2, depends: [R1-001, R1-002], verify: [unit, adversarial, conformance], title: Signed capabilities/admission}
+  - {id: R2-004, gate: R2, owner: W2, wave: 2, depends: [R2-001, R2-003], verify: [unit, integration], title: Transport quality telemetry}
+  - {id: R3-001, gate: R3, owner: W1, wave: 3, depends: [R1-001, R1-002, R1-004, R2-001, R2-003], verify: [unit, architecture, conformance, multiprocess], title: Authenticated links}
+  - {id: R3-002, gate: R3, owner: W1, wave: 4, depends: [R1-003, R3-001, R2-004], verify: [unit, adversarial, multiprocess], title: Advertisement/discovery}
+  - {id: R3-003, gate: R3, owner: W1, wave: 5, depends: [R3-001, R3-002], verify: [unit, adversarial, conformance], title: Authenticated topology evidence}
+  - {id: R3-004, gate: R3, owner: W1, wave: 6, depends: [R3-003], verify: [unit, conformance, adversarial, multiprocess], title: Route commitment}
+  - {id: R4-001, gate: R4, owner: W2, wave: 6, depends: [R2-003, R3-001], verify: [unit, linux, multiprocess], title: QUIC/TLS tunnel}
+  - {id: R4-002, gate: R4, owner: W1, wave: 7, depends: [R3-004, R4-001], verify: [unit, conformance, adversarial], title: Route-to-circuit binding}
+  - {id: R4-005, gate: R4, owner: W2, wave: 7, depends: [R4-001], verify: [integration, adversarial, multiprocess], title: ICE/TURN}
+  - {id: R4-003, gate: R4, owner: W2, wave: 8, depends: [R2-003, R4-001, R4-002], verify: [linux, real-network], title: Linux gateway forwarding}
+  - {id: R4-004, gate: R4, owner: W2, wave: 8, depends: [R2-001, R4-001, R4-002], verify: [android, real-device], title: Android VpnService}
+  - {id: R5-001, gate: R5, owner: W3, wave: 7, depends: [], verify: [unit, architecture], title: ConnectivityPort}
+  - {id: R5-002, gate: R5, owner: W3, wave: 8, depends: [R5-001], verify: [unit, integration, architecture], title: ADCOS client}
+  - {id: R4-006, gate: R4, owner: W2, wave: 9, depends: [R4-005], verify: [integration, adversarial], title: Restrictive-network fallback}
+  - {id: R4-007, gate: R4, owner: W2, wave: 9, depends: [R4-003, R4-004, R4-005], verify: [real-device, real-network], title: Mission gate real Internet bridge}
+  - {id: R5-003, gate: R5, owner: W3, wave: 9, depends: [R5-002], verify: [unit, restart, integration], title: Contract projection}
+  - {id: R5-004, gate: R5, owner: W3, wave: 10, depends: [R5-002, R5-003], verify: [unit, adversarial, integration], title: Signed observations}
+  - {id: R5-005, gate: R5, owner: W3, wave: 11, depends: [R3-003, R5-003, R5-004], verify: [architecture, integration, adversarial], title: Gateway admission/backhaul policy}
+  - {id: R6-001, gate: R6, owner: W3, wave: 11, depends: [R3-004, R4-002], verify: [unit, conformance], title: Content addressing/manifests}
+  - {id: R6-002, gate: R6, owner: W3, wave: 12, depends: [R6-001, R4-001], verify: [unit, multiprocess, adversarial], title: Resumable transfer}
+  - {id: R6-003, gate: R6, owner: W3, wave: 12, depends: [R6-001, R5-005], verify: [unit, multiprocess, restart], title: DTN store-carry-forward}
+  - {id: R6-004, gate: R6, owner: W3, wave: 13, depends: [R6-001, R6-002, R6-003], verify: [unit, adversarial, restart], title: Dedup/integrity/TTL}
+  - {id: R6-005, gate: R6, owner: W3, wave: 14, depends: [R6-003, R6-004], verify: [unit, simulation, multiprocess], title: Opportunistic forwarding}
+  - {id: R7-001, gate: R7, owner: W1, wave: 11, depends: [R4-002], verify: [unit, architecture, adversarial], title: Failure detector/revocation}
+  - {id: R7-002, gate: R7, owner: W1, wave: 12, depends: [R7-001], verify: [unit, restart, concurrency], title: Durable recovery attempts}
+  - {id: R7-003, gate: R7, owner: W1, wave: 13, depends: [R7-002, R3-004, R5-005], verify: [adversarial, multiprocess], title: Alternate route/gateway recovery}
+  - {id: R7-004, gate: R7, owner: W1, wave: 14, depends: [R7-003, R4-002, R4-001], verify: [adversarial, multiprocess, restart], title: Replacement circuit}
+  - {id: R7-005, gate: R7, owner: W1, wave: 15, depends: [R7-002, R7-004], verify: [unit, restart, concurrency], title: Retry/backoff}
+  - {id: R7-006, gate: R7, owner: W1, wave: 16, depends: [R7-005], verify: [concurrency, multiprocess, adversarial], title: Concurrent recovery/second failure/cleanup}
+  - {id: R8-001, gate: R8, owner: W1, wave: 17, depends: [R6-003, R7-004], verify: [unit, adversarial, conformance], title: Contribution evidence}
+  - {id: R8-002, gate: R8, owner: W1, wave: 18, depends: [R8-001], verify: [unit, adversarial, simulation], title: Useful-work valuation}
+  - {id: R8-003, gate: R8, owner: W1, wave: 19, depends: [R8-002], verify: [unit, restart, concurrency, adversarial], title: Civic Point ledger}
+  - {id: R8-004, gate: R8, owner: W3, wave: 20, depends: [R8-003, R5-005], verify: [integration, adversarial], title: Priority/perk consumption}
+  - {id: R8-005, gate: R8, owner: W1, wave: 21, depends: [R8-003, R8-004], verify: [adversarial, simulation], title: Anti-gaming/audit}
+  - {id: R9-001, gate: R9, owner: W2, wave: 17, depends: [R4-001, R3-001], verify: [architecture, ios], title: iOS Network.framework participant}
+  - {id: R9-002, gate: R9, owner: W2, wave: 20, depends: [R9-001, R4-004, R4-007], verify: [platform], title: iOS Packet Tunnel evaluation}
+  - {id: R9-003, gate: R9, owner: W2, wave: 18, depends: [R4-007, R5-005, R7-004], verify: [real-network, endurance], title: Dedicated gateway appliance}
+  - {id: R9-004, gate: R9, owner: W2, wave: 21, depends: [R4-007], verify: [architecture, integration], title: Additional access adapters}
+  - {id: R10-001, gate: R10, owner: W2, wave: 22, depends: [R4-007, R7-004], verify: [multiprocess], title: Two-process Linux loopback}
+  - {id: R10-002, gate: R10, owner: W2, wave: 22, depends: [R4-007, R7-004], verify: [real-device, real-network], title: Android real-device bridge}
+  - {id: R10-003, gate: R10, owner: W2, wave: 23, depends: [R10-001, R10-002, R7-006], verify: [endurance, restart], title: 24h endurance/restart}
+  - {id: R10-004, gate: R10, owner: W1, wave: 23, depends: [R10-001, R10-002, R7-006], verify: [adversarial, multiprocess, real-device], title: Failure injection/recovery validation}
+  - {id: R10-005, gate: R10, owner: W3, wave: 24, depends: [R8-005, R10-004], verify: [simulation, reproducibility], title: Four-week competitor simulation}

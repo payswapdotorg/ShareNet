@@ -32,6 +32,7 @@ use serde::Deserialize;
 use sharenet_protocol::cbor::{decode, encode, Value};
 use sharenet_protocol::capability::{admit, Capability, CapabilityStatement};
 use sharenet_protocol::identity::{derive_node_id, Identity};
+use sharenet_protocol::link::{LinkInitiator, LinkResponder, LinkSession};
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -252,6 +253,86 @@ fn main() -> ExitCode {
         }
     }
 
+    // ---------------- link vectors ----------------
+    #[derive(Deserialize)]
+    struct LinkFile {
+        cases: Vec<LinkCaseV>,
+        frames: Vec<LinkFrameCaseV>,
+    }
+    #[derive(Deserialize)]
+    struct LinkCaseV {
+        initiator_seed_hex: String,
+        responder_seed_hex: String,
+        initiator_created_at_unix: u64,
+        responder_created_at_unix: u64,
+        initiator_scalar_hex: String,
+        responder_scalar_hex: String,
+    }
+    #[derive(Deserialize)]
+    struct LinkFrameCaseV {
+        case: usize,
+        direction: u8,
+        seq: u64,
+        #[allow(dead_code)]
+        payload_hex: String,
+    }
+    let link_file: LinkFile = load_json(&vectors_dir.join("link_vectors.json"));
+    let mut sessions: Vec<(LinkSession, LinkSession)> = Vec::new();
+    for (i, c) in link_file.cases.iter().enumerate() {
+        let seed_i: [u8; 32] = from_hex(&c.initiator_seed_hex).try_into().expect("seed");
+        let seed_r: [u8; 32] = from_hex(&c.responder_seed_hex).try_into().expect("seed");
+        let id_i = Identity::from_seed(seed_i, c.initiator_created_at_unix, None).expect("id");
+        let id_r = Identity::from_seed(seed_r, c.responder_created_at_unix, None).expect("id");
+        let scalar_i: [u8; 32] = from_hex(&c.initiator_scalar_hex).try_into().expect("scalar");
+        let scalar_r: [u8; 32] = from_hex(&c.responder_scalar_hex).try_into().expect("scalar");
+        let initiator = LinkInitiator::from_ephemeral_bytes(&scalar_i, id_i, None)
+            .expect("initiator");
+        let responder = LinkResponder::new(id_r, None);
+        let msg1 = initiator.initiate();
+        let msg1_bytes = msg1.to_wire_bytes();
+        let (msg2, pending) = responder
+            .respond_fixed(&msg1, &msg1_bytes, &scalar_r)
+            .expect("respond");
+        let msg2_bytes = msg2.to_wire_bytes();
+        let (msg3, session_i) = initiator
+            .confirm(&msg1_bytes, &msg2, &msg2_bytes)
+            .expect("confirm");
+        let msg3_bytes = msg3.to_wire_bytes();
+        let session_r = pending
+            .finish(&msg1_bytes, &msg2_bytes, &msg3, &msg3_bytes)
+            .expect("finish");
+        println!(
+            "LINK {i} msg1={} msg2={} msg3={} id={}",
+            to_hex(&msg1_bytes),
+            to_hex(&msg2_bytes),
+            to_hex(&msg3_bytes),
+            to_hex(session_i.link_id()),
+        );
+        sessions.push((session_i, session_r));
+    }
+    for f in &link_file.frames {
+        // direction 1 = initiator->responder (seals on the initiator
+        // session's outgoing counter); direction 2 = responder->initiator.
+        let session = &mut sessions[f.case].0;
+        let session = if f.direction == 2 {
+            &mut sessions[f.case].1
+        } else {
+            session
+        };
+        // re-seal at the exact sequence: seal() uses the internal counter,
+        // which matches the vector's seq only if frames arrive in order.
+        // The vector frames are generated in increasing seq per direction;
+        // to be independent of call order we re-derive by sealing up to seq.
+        let frame = reseal_at(session, f.direction, f.seq, &from_hex(&f.payload_hex));
+        println!(
+            "LINK_FRAME {} dir={} seq={} frame={}",
+            f.case,
+            f.direction,
+            f.seq,
+            to_hex(&frame)
+        );
+    }
+
     // ---------------- NodeIdentity decode spot check ----------------
     // The IDENT wire lines must decode back to the identity (guards the
     // encoder/decoder pair through the same public API).
@@ -275,6 +356,26 @@ fn main() -> ExitCode {
         eprintln!("{failures} conformance check(s) failed");
         ExitCode::FAILURE
     }
+}
+
+/// Seal a frame at an exact outgoing sequence: `LinkSession::seal` uses an
+/// internal monotonic counter per DIRECTION, and the conformance vectors
+/// pin (direction, seq) pairs; advance the counter to the requested seq by
+/// sealing (and discarding) intermediate frames.
+fn reseal_at(
+    session: &mut LinkSession,
+    _direction: u8,
+    seq: u64,
+    payload: &[u8],
+) -> Vec<u8> {
+    let current = session.frames_sent();
+    if seq < current {
+        panic!("vector frames must be sealed in nondecreasing seq per direction");
+    }
+    while session.frames_sent() < seq {
+        let _ = session.seal(b"").expect("seal filler");
+    }
+    session.seal(payload).expect("seal requested")
 }
 
 fn load_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> T {

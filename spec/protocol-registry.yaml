@@ -30,13 +30,13 @@ objects:
     maturity: foundation
   - name: LinkAuthentication
     class: wire
-    maturity: in-implementation
+    maturity: implemented
     implementation: reference/crates/sharenet-protocol (link.rs)
     wire_schema: three-message authenticated key exchange between initiator (i) and responder (r), all maps in canonical CBOR — msg1 (initiate) {1: scheme_version (=1), 2: e_i (32-byte bstr, X25519 ephemeral public key)}; msg2 (respond) {1: scheme_version (=1), 2: e_r (32-byte bstr, X25519 ephemeral public), 3: responder NodeIdentity map, 4: responder_signature (64-byte bstr), 5: capabilities (optional bstr: SignedCapabilityStatement carrying envelope bytes)}; msg3 (confirm) {1: scheme_version (=1), 2: initiator NodeIdentity map, 3: initiator_signature (64-byte bstr), 4: capabilities (optional bstr)}
     signature_rule: responder_signature = responder Ed25519 key over SHA-256("sharenet-link-auth-v1/responder" || cbor(msg1) || cbor(msg2 without field 4)); initiator_signature = initiator key over SHA-256("sharenet-link-auth-v1/initiator" || cbor(msg1) || cbor(msg2) || cbor(msg3 without field 3)); signatures are strict (malleable forms rejected)
     derivation_rule: shared_secret = X25519(e_i, e_r); salt = SHA-256(cbor(msg1) || cbor(msg2) || cbor(msg3)); okm = HKDF-SHA256(ikm = shared_secret, salt = salt, info = "sharenet-link-session-v1", L = 64); key_initiator_to_responder = okm[0..32], key_responder_to_initiator = okm[32..64]; link_id = SHA-256("sharenet-link-id-v1" || cbor(msg1) || cbor(msg2) || cbor(msg3)) — commitment-derived, caller-selected link IDs forbidden
     frame_rule: link frames are ChaCha20-Poly1305 (RFC 8439) AEAD: nonce = 4 zero bytes || seq (u64 big-endian, per direction starting at 0, strictly monotonic), AAD = "sharenet-link-frame-v1" || link_id (32 bytes) || direction byte (1 = initiator->responder, 2 = responder->initiator) || seq (u64 big-endian); receivers enforce a replay window and reject sequence reuse, non-strict ordering within the window, and any tag failure; session keys and ephemeral secrets are zeroized on drop
-    status_note: implementation scheduled as R3-001 (Wave 3); design rationale — composed from standard primitives (X25519 RFC 7748, Ed25519 RFC 8032, HKDF RFC 5869, ChaCha20-Poly1305 RFC 8439) in a TLS-1.3-shaped sign-the-transcript exchange (per ADR-002 standards-first; no bespoke ciphers, no new cryptographic primitives); the exchange authenticates both endpoints against their R1-001 node identities, binds the session to the exact handshake bytes, and derives the link_id by commitment
+    status_note: implemented in Wave 3 (R3-001); design rationale — composed from standard primitives (X25519 RFC 7748, Ed25519 RFC 8032, HKDF RFC 5869, ChaCha20-Poly1305 RFC 8439) in a TLS-1.3-shaped sign-the-transcript exchange (per ADR-002 standards-first; no bespoke ciphers, no new cryptographic primitives); the exchange authenticates both endpoints against their R1-001 node identities, binds the session to the exact handshake bytes, and derives the link_id by commitment
   - name: RouteProposal
     class: wire
     maturity: foundation

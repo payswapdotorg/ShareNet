@@ -120,6 +120,7 @@
       "now_unix": 1700040000,
       "require": [],
       "expect": "node_id_mismatch",
+      "verify_key": "next",
       "note": "verify with a DIFFERENT key than the case's seed derives"
     },
     {

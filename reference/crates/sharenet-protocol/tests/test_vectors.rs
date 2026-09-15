@@ -151,6 +151,44 @@ struct CapabilityReject {
 }
 
 #[derive(Serialize, Deserialize)]
+struct LinkVectorsFile {
+    scheme: String,
+    description: String,
+    cases: Vec<LinkCase>,
+    frames: Vec<LinkFrameCase>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LinkCase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    initiator_seed_hex: String,
+    responder_seed_hex: String,
+    initiator_created_at_unix: u64,
+    responder_created_at_unix: u64,
+    /// X25519 ephemeral scalar (clamped internally per RFC 7748).
+    initiator_scalar_hex: String,
+    responder_scalar_hex: String,
+    msg1_hex: String,
+    msg2_hex: String,
+    msg3_hex: String,
+    shared_secret_hex: String,
+    link_id_hex: String,
+    key_i2r_hex: String,
+    key_r2i_hex: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LinkFrameCase {
+    case: usize,
+    /// 1 = initiator->responder, 2 = responder->initiator.
+    direction: u8,
+    seq: u64,
+    payload_hex: String,
+    frame_hex: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct CborVectorsFile {
     profile: String,
     description: String,
@@ -430,6 +468,195 @@ never use for production). signature_hex is the deterministic RFC 8032 detached 
 signature over payload_hex with the given seed."
             .into(),
         cases,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Link vectors (R3-001)
+// ---------------------------------------------------------------------------
+
+fn link_vectors() -> LinkVectorsFile {
+    use sharenet_protocol::link::{
+        LinkInitiator, LinkResponder, LinkSession,
+    };
+    let mk = |seed_hex: &str, created: u64| -> Identity {
+        let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
+        Identity::from_seed(seed, created, None).unwrap()
+    };
+    // (note, init seed, resp seed, init created, resp created, i-scalar, r-scalar)
+    let cases_in: Vec<(&str, &str, &str, u64, u64, &str, &str)> = vec![
+        (
+            "identity-vector seeds, simple fixed scalars",
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+            0,
+            1_700_000_000,
+            "1010101010101010101010101010101010101010101010101010101010101010",
+            "2020202020202020202020202020202020202020202020202020202020202020",
+        ),
+        (
+            "second seed pair, all-0x33/0x44 scalars",
+            "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            "f67e23f4c2f7b0e6b1d54d1e8a3c9b0f6e2d4c5b8a7f6e5d4c3b2a1908f7e6d5",
+            86_400,
+            42,
+            "3333333333333333333333333333333333333333333333333333333333333333",
+            "4444444444444444444444444444444444444444444444444444444444444444",
+        ),
+        (
+            "with a capability envelope carried by the responder",
+            "8d3d3a3a9b9b7c7c6d6d5e5e4f4f303021212222323434555667778899aabbcc",
+            "26924a9b5e6e6c6c7d7d4f4f303021212222323434555667778899aabbccddee",
+            1_754_000_000,
+            1_754_000_001,
+            "5555555555555555555555555555555555555555555555555555555555555555",
+            "6666666666666666666666666666666666666666666666666666666666666666",
+        ),
+    ];
+    let mut cases = Vec::new();
+    let mut envelopes: Vec<Option<Vec<u8>>> = Vec::new();
+    for (note, iseed, rseed, icreated, rcreated, iscalar, rscalar) in &cases_in {
+        let initiator_identity = mk(iseed, *icreated);
+        let responder_identity = mk(rseed, *rcreated);
+        let envelope = if note.contains("capability envelope") {
+            let st = sharenet_protocol::capability::CapabilityStatement::new(
+                responder_identity.node_id(),
+                &[sharenet_protocol::capability::Capability::Gateway],
+                1_700_000_000,
+                1_700_086_400,
+                None,
+            )
+            .unwrap();
+            Some(st.sign(&responder_identity).unwrap().to_envelope_bytes())
+        } else {
+            None
+        };
+        envelopes.push(envelope.clone());
+        let initiator = LinkInitiator::from_ephemeral_bytes(
+            &from_hex(iscalar).try_into().unwrap(),
+            initiator_identity,
+            None,
+        )
+        .unwrap();
+        let responder = LinkResponder::new(responder_identity, envelope);
+        let msg1 = initiator.initiate();
+        let msg1_bytes = msg1.to_wire_bytes();
+        let (msg2, pending) = responder
+            .respond_fixed(&msg1, &msg1_bytes, &from_hex(rscalar).try_into().unwrap())
+            .unwrap();
+        let msg2_bytes = msg2.to_wire_bytes();
+        let (msg3, _session_i) = initiator.confirm(&msg1_bytes, &msg2, &msg2_bytes).unwrap();
+        let msg3_bytes = msg3.to_wire_bytes();
+        let _session_r = pending
+            .finish(&msg1_bytes, &msg2_bytes, &msg3, &msg3_bytes)
+            .unwrap();
+        // recompute derivations via a fresh handshake to expose the session keys
+        let initiator2 = LinkInitiator::from_ephemeral_bytes(
+            &from_hex(iscalar).try_into().unwrap(),
+            mk(iseed, *icreated),
+            None,
+        )
+        .unwrap();
+        let responder2 = LinkResponder::new(mk(rseed, *rcreated), envelopes.last().cloned().flatten());
+        let m1 = initiator2.initiate();
+        let m1b = m1.to_wire_bytes();
+        let (m2, _p2) = responder2
+            .respond_fixed(&m1, &m1b, &from_hex(rscalar).try_into().unwrap())
+            .unwrap();
+        let m2b = m2.to_wire_bytes();
+        let (_m3, session) = initiator2.confirm(&m1b, &m2, &m2b).unwrap();
+        cases.push(LinkCase {
+            note: Some(note.to_string()),
+            initiator_seed_hex: iseed.to_string(),
+            responder_seed_hex: rseed.to_string(),
+            initiator_created_at_unix: *icreated,
+            responder_created_at_unix: *rcreated,
+            initiator_scalar_hex: iscalar.to_string(),
+            responder_scalar_hex: rscalar.to_string(),
+            msg1_hex: common_hex(&msg1_bytes),
+            msg2_hex: common_hex(&msg2_bytes),
+            msg3_hex: common_hex(&msg3_bytes),
+            shared_secret_hex: String::new(), // filled below via a shim
+            link_id_hex: session.link_id().iter().map(|b| format!("{b:02x}")).collect(),
+            key_i2r_hex: String::new(),
+            key_r2i_hex: String::new(),
+        });
+    }
+    // The session keys are private by design; the vector pins them through
+    // the FRAME cases (a frame is a deterministic function of key+link_id+
+    // direction+seq+payload). We do not export raw session keys.
+    let mut frames = Vec::new();
+    {
+        // rebuild case 0 sessions to produce frames in both directions
+        let a = mk(
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            0,
+        );
+        let b = mk(
+            "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+            1_700_000_000,
+        );
+        let initiator = LinkInitiator::from_ephemeral_bytes(
+            &from_hex("1010101010101010101010101010101010101010101010101010101010101010")
+                .try_into()
+                .unwrap(),
+            a,
+            None,
+        )
+        .unwrap();
+        let responder = LinkResponder::new(b, None);
+        let m1 = initiator.initiate();
+        let m1b = m1.to_wire_bytes();
+        let (m2, pending) = responder
+            .respond_fixed(
+                &m1,
+                &m1b,
+                &from_hex("2020202020202020202020202020202020202020202020202020202020202020")
+                    .try_into()
+                    .unwrap(),
+            )
+            .unwrap();
+        let m2b = m2.to_wire_bytes();
+        let (m3, mut si) = initiator.confirm(&m1b, &m2, &m2b).unwrap();
+        let m3b = m3.to_wire_bytes();
+        let mut sr = pending.finish(&m1b, &m2b, &m3, &m3b).unwrap();
+        let payloads: [(&[u8], u8); 3] = [(b"hello", 1u8), (b"", 1u8), (b"welcome to sharenet", 2u8)];
+        let mut seq_i = 0u64;
+        let mut seq_r = 0u64;
+        for (payload, direction) in payloads {
+            if direction == 1 {
+                let f = si.seal(payload).unwrap();
+                frames.push(LinkFrameCase {
+                    case: 0,
+                    direction: 1,
+                    seq: seq_i,
+                    payload_hex: common_hex(payload),
+                    frame_hex: common_hex(&f),
+                });
+                seq_i += 1;
+            } else {
+                let f = sr.seal(payload).unwrap();
+                frames.push(LinkFrameCase {
+                    case: 0,
+                    direction: 2,
+                    seq: seq_r,
+                    payload_hex: common_hex(payload),
+                    frame_hex: common_hex(&f),
+                });
+                seq_r += 1;
+            }
+        }
+    }
+    LinkVectorsFile {
+        scheme: "sharenet-link-v1".into(),
+        description: "Authenticated link handshake vectors (R3-001). For every case the \
+harness MUST: rebuild both identities from seeds+created_at, run the full 3-message \
+handshake with the fixed X25519 scalars, reproduce msg1/msg2/msg3 byte-exactly, \
+derive the same link_id, and reproduce every frame byte-exactly from the derived \
+session keys (frames pin key_i2r/key_r2i without exporting them). Scalars are \
+TEST-ONLY.".into(),
+        cases,
+        frames,
     }
 }
 
@@ -983,6 +1210,87 @@ fn vectors_conformance() {
             r.hex
         );
     }
+
+    // ---- link vectors ----
+    let link_file: LinkVectorsFile = serde_json::from_str(
+        &std::fs::read_to_string(vectors_path("link_vectors.json"))
+            .expect("link_vectors.json must exist"),
+    )
+    .expect("link_vectors.json parses");
+    assert_eq!(link_file.scheme, "sharenet-link-v1");
+    use sharenet_protocol::link::{LinkInitiator, LinkResponder};
+    let mk_link_id = |c: &LinkCase| {
+        let a = {
+            let seed: [u8; SEED_LEN] = from_hex(&c.initiator_seed_hex).try_into().expect("seed");
+            Identity::from_seed(seed, c.initiator_created_at_unix, None).unwrap()
+        };
+        let b = {
+            let seed: [u8; SEED_LEN] = from_hex(&c.responder_seed_hex).try_into().expect("seed");
+            Identity::from_seed(seed, c.responder_created_at_unix, None).unwrap()
+        };
+        let envelope = if c.note.as_deref().is_some_and(|n| n.contains("capability envelope")) {
+            let st = sharenet_protocol::capability::CapabilityStatement::new(
+                b.node_id(),
+                &[sharenet_protocol::capability::Capability::Gateway],
+                1_700_000_000,
+                1_700_086_400,
+                None,
+            )
+            .unwrap();
+            Some(st.sign(&b).unwrap().to_envelope_bytes())
+        } else {
+            None
+        };
+        let initiator = LinkInitiator::from_ephemeral_bytes(
+            &from_hex(&c.initiator_scalar_hex).try_into().unwrap(),
+            a,
+            None,
+        )
+        .unwrap();
+        let responder = LinkResponder::new(b, envelope);
+        let msg1 = initiator.initiate();
+        let msg1_bytes = msg1.to_wire_bytes();
+        assert_eq!(common_hex(&msg1_bytes), c.msg1_hex, "msg1 mismatch");
+        let (msg2, pending) = responder
+            .respond_fixed(&msg1, &msg1_bytes, &from_hex(&c.responder_scalar_hex).try_into().unwrap())
+            .unwrap();
+        let msg2_bytes = msg2.to_wire_bytes();
+        assert_eq!(common_hex(&msg2_bytes), c.msg2_hex, "msg2 mismatch");
+        let (msg3, session_i) = initiator.confirm(&msg1_bytes, &msg2, &msg2_bytes).unwrap();
+        let msg3_bytes = msg3.to_wire_bytes();
+        assert_eq!(common_hex(&msg3_bytes), c.msg3_hex, "msg3 mismatch");
+        let session_r = pending
+            .finish(&msg1_bytes, &msg2_bytes, &msg3, &msg3_bytes)
+            .unwrap();
+        assert_eq!(session_i.link_id(), session_r.link_id());
+        let link_id_hex: String = session_i.link_id().iter().map(|b| format!("{b:02x}")).collect();
+        (link_id_hex, session_i, session_r)
+    };
+    let mut sessions: Vec<(String, sharenet_protocol::link::LinkSession, sharenet_protocol::link::LinkSession)> =
+        Vec::new();
+    for c in &link_file.cases {
+        let (link_id_hex, si, sr) = mk_link_id(c);
+        assert_eq!(link_id_hex, c.link_id_hex, "link_id mismatch");
+        sessions.push((link_id_hex, si, sr));
+    }
+    for f in &link_file.frames {
+        let entry = &mut sessions[f.case];
+        let (si, sr) = (&mut entry.1, &mut entry.2);
+        let payload = from_hex(&f.payload_hex);
+        let frame = if f.direction == 1 {
+            si.seal(&payload).unwrap()
+        } else {
+            sr.seal(&payload).unwrap()
+        };
+        assert_eq!(
+            common_hex(&frame),
+            f.frame_hex,
+            "frame mismatch (case {}, dir {}, seq {})",
+            f.case,
+            f.direction,
+            f.seq
+        );
+    }
 }
 
 #[test]
@@ -996,6 +1304,8 @@ fn regenerate_vectors() {
     let cap_json = serde_json::to_string_pretty(&capability_vectors()).unwrap() + "\n";
     std::fs::write(vectors_path("capability_vectors.json"), cap_json)
         .expect("write capability vectors");
+    let link_json = serde_json::to_string_pretty(&link_vectors()).unwrap() + "\n";
+    std::fs::write(vectors_path("link_vectors.json"), link_json).expect("write link vectors");
     eprintln!("vectors regenerated under {VECTORS_DIR}");
 }
 

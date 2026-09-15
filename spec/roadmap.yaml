@@ -1,0 +1,172 @@
+version: 1
+program: ShareNet
+program_status: ARCHITECTURE_FROZEN_IMPLEMENTATION_NOT_STARTED
+
+gates:
+  - id: R0
+    name: architecture-freeze
+    status: COMPLETE
+    outputs:
+      - spec/architecture.md
+      - spec/architecture-lock.md
+      - spec/research.md
+      - spec/integrations/adcos.md
+      - spec/roadmap.yaml
+      - spec/dependency-graph.md
+
+  - id: R1
+    name: protocol-core-foundation
+    objective: identity, canonical wire encoding, capabilities, conformance registry
+
+  - id: R2
+    name: local-connectivity
+    objective: Android/Linux real nearby link substrate
+
+  - id: R3
+    name: authenticated-topology-and-routing
+    objective: authenticated links, discovery, topology, route commitment
+
+  - id: R4
+    name: live-circuit-and-ip-bridge
+    objective: QUIC tunnel, gateway forwarding, transparent IP service
+
+  - id: R5
+    name: adcos-connectivity-control-plane
+    objective: ADCOS intent/contract/assurance integration for gateway backhaul
+
+  - id: R6
+    name: dtn-and-content
+    objective: opportunistic and store-carry-forward Internet/content delivery
+
+  - id: R7
+    name: automatic-recovery
+    objective: durable failure detection, replanning and replacement circuits
+
+  - id: R8
+    name: contribution-and-civic-points
+    objective: verifiable useful-work accounting and perk allocation
+
+  - id: R9
+    name: platform-expansion
+    objective: iOS, dedicated gateways, advanced transports and appliances
+
+  - id: R10
+    name: production-verification
+    objective: multi-process, restart, real-device, long-running field validation
+
+work_items:
+  R1:
+    - id: R1-001
+      scope: Ed25519 identity binding
+    - id: R1-002
+      scope: canonical CBOR encoder/decoder
+    - id: R1-003
+      scope: protocol registry + TS/Python conformance verifier
+    - id: R1-004
+      scope: signed capability/admission records
+
+  R2:
+    - id: R2-001
+      scope: Android Nearby Connections adapter
+    - id: R2-002
+      scope: Android Wi-Fi Aware adapter
+    - id: R2-003
+      scope: Linux transport/TUN adapter
+    - id: R2-004
+      scope: transport quality telemetry
+
+  R3:
+    - id: R3-001
+      scope: authenticated links
+    - id: R3-002
+      scope: advertisement/discovery
+    - id: R3-003
+      scope: topology evidence
+    - id: R3-004
+      scope: route proposal/acceptance/commitment
+
+  R4:
+    - id: R4-001
+      scope: QUIC/TLS tunnel
+    - id: R4-002
+      scope: route-to-circuit binding
+    - id: R4-003
+      scope: Linux gateway NAT/TUN forwarding
+    - id: R4-004
+      scope: Android VpnService client
+    - id: R4-005
+      scope: NAT traversal via ICE/TURN
+    - id: R4-006
+      scope: restrictive-network fallback via MASQUE where needed
+
+  R5:
+    - id: R5-001
+      scope: ConnectivityPort
+    - id: R5-002
+      scope: ADCOS SDK/API client
+    - id: R5-003
+      scope: contract projection
+    - id: R5-004
+      scope: signed observation/webhook verification
+    - id: R5-005
+      scope: gateway admission from ShareNet + ADCOS evidence
+
+  R6:
+    - id: R6-001
+      scope: content addressing/chunk manifests
+    - id: R6-002
+      scope: resumable transfer
+    - id: R6-003
+      scope: DTN queue/store-carry-forward
+    - id: R6-004
+      scope: deduplication/integrity/TTL
+    - id: R6-005
+      scope: opportunistic forwarding and priority
+
+  R7:
+    - id: R7-001
+      scope: detector and durable revocation
+    - id: R7-002
+      scope: durable recovery attempts
+    - id: R7-003
+      scope: alternate route/gateway discovery
+    - id: R7-004
+      scope: replacement circuit
+    - id: R7-005
+      scope: bounded retry/backoff
+    - id: R7-006
+      scope: concurrent recovery safety
+
+  R8:
+    - id: R8-001
+      scope: contribution evidence model
+    - id: R8-002
+      scope: useful-work valuation
+    - id: R8-003
+      scope: Civic Point ledger
+    - id: R8-004
+      scope: priority/perk consumption
+    - id: R8-005
+      scope: anti-gaming and audit
+
+  R9:
+    - id: R9-001
+      scope: iOS Network.framework participant
+    - id: R9-002
+      scope: iOS Packet Tunnel Provider evaluation
+    - id: R9-003
+      scope: dedicated gateway appliance
+    - id: R9-004
+      scope: additional transports and future access technologies
+
+  R10:
+    - id: R10-001
+      scope: two-process Linux loopback
+    - id: R10-002
+      scope: Android real-device bridge
+    - id: R10-003
+      scope: 24h endurance/restart
+    - id: R10-004
+      scope: failure injection and recovery
+    - id: R10-005
+      scope: 4-week field/agent simulation against competitors

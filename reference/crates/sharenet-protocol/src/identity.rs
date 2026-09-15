@@ -531,6 +531,26 @@ pub enum IdentityError {
     EntropyUnavailable,
 }
 
+impl IdentityError {
+    /// Stable machine name (conformance vectors + cross-language harness).
+    pub fn name(&self) -> &'static str {
+        match self {
+            IdentityError::NotAMap => "not_a_map",
+            IdentityError::KeyNotAnInteger => "key_not_an_integer",
+            IdentityError::FieldNotExpectedType { .. } => "field_not_expected_type",
+            IdentityError::DuplicateField { .. } => "duplicate_field",
+            IdentityError::UnknownField { .. } => "unknown_field",
+            IdentityError::MissingField { .. } => "missing_field",
+            IdentityError::SchemeVersionUnsupported { .. } => "scheme_version_unsupported",
+            IdentityError::PublicKeyWrongLength { .. } => "public_key_wrong_length",
+            IdentityError::PublicKeyInvalid => "public_key_invalid",
+            IdentityError::CreatedAtOutOfRange { .. } => "created_at_out_of_range",
+            IdentityError::DisplayNameTooLong { .. } => "display_name_too_long",
+            IdentityError::EntropyUnavailable => "entropy_unavailable",
+        }
+    }
+}
+
 impl fmt::Display for IdentityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

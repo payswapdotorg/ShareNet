@@ -204,11 +204,60 @@ Architect decision — see Open Architect Decisions).
   vector paths recorded (schema was defined by the Wave 1 worker
   contract and is now frozen by implementation + exported vectors).
 
+### R3-001 — Authenticated links — COMPLETE (Wave 3)
+
+- `reference/crates/sharenet-protocol/src/link.rs`: the three-message
+  authenticated key exchange registered in the protocol registry — X25519
+  ephemerals, Ed25519 transcript signatures (each side signs the exact
+  bytes of the exchange so far, TLS-1.3-shaped), HKDF-SHA256 key
+  schedule, ChaCha20-Poly1305 AEAD frames with per-direction strictly
+  monotonic sequence numbers and a 64-entry replay window;
+  commitment-derived link_id (SHA-256 over the full transcript);
+  optional SignedCapabilityStatement envelopes carried and verified
+  during the handshake; zeroized ephemerals and session keys; typed
+  errors with stable machine names. No new cryptographic primitives
+  (ADR-002): everything is X25519/Ed25519/HKDF/ChaCha20-Poly1305.
+- Entropy is caller-supplied (unix /dev/urandom fail-closed helper;
+  non-unix returns EntropyUnavailable) — no getrandom dependency, so the
+  wasm32 platform-independence lock (L007) still holds.
+- Production callers: the multiprocess verification below; R3-002
+  (advertisement/discovery) and R4-001 (QUIC tunnel) consume
+  LinkSession as the peer-session primitive.
+- Verification achieved: unit + architecture (wasm32 check green) +
+  conformance (link_vectors.json: 3 deterministic handshakes + 3 frames,
+  reproduced byte-exactly by Rust, TypeScript and Python legs — the
+  cross-language harness now spans 136 lines including X25519/Ed25519/
+  HKDF/ChaCha20-Poly1305 agreement across three independent
+  implementations; the pure TS and Python AEAD implementations are
+  pinned against RFC 8439 §2.8.2, the pure-Python X25519 against
+  RFC 7748 §6.1) + multiprocess (two REAL processes over REAL UDP
+  sockets: full handshake, 4 frames both directions, echo cross-check,
+  tampered-msg2 refusal; peer exits non-zero without msg3).
+- Adversarial (beyond the required levels): 11 tests — msg2 replayed
+  under a different msg1, msg3 replayed under a different msg2,
+  identity substitution, cross-session frame confusion, replay window
+  edges (out-of-order, duplicates, far-future), frame tamper, capability
+  envelope tamper + cross-node binding, strict wire parsing, zeroize
+  drop, link_id distinctness per handshake.
+
+## Wave 3 integration record (2026-09-15)
+
+- Implemented directly by the Tech Lead on
+  `work/wave3-w1-authenticated-links` (the worker rail remains gone with
+  the sandbox reset; same governance: registry pre-registration commit
+  4d04b96 preceded implementation).
+- Registry: LinkAuthentication maturity → implemented (schema,
+  signature/derivation/frame rules and vectors were pre-registered
+  before the code; the implementation matches them byte-for-byte).
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 2 items (R1-003, R1-004, R2-004) — COMPLETE (see records above).
-- R3-001 (authenticated links) — READY: predecessors R1-001, R1-002,
-  R1-004, R2-001, R2-003 all complete.
+- Wave 3 item R3-001 — COMPLETE (see record above).
+- R3-002 (advertisement/discovery) — READY once its remaining
+  predecessors land: needs R1-003 (COMPLETE), R3-001 (COMPLETE) and
+  R2-004 (COMPLETE) — ALL COMPLETE: R3-002 is READY.
+- R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
+  (Tech Lead decision; not on the frozen wave path).
 - R2-002 (Wi-Fi Aware) remains unscheduled in the frozen registry waves
   (note under gate R2: may run as soon as the Android transport seam is
   stable — the seam is now stable; scheduling is a Tech Lead decision

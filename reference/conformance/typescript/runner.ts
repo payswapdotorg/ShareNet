@@ -20,6 +20,19 @@ import {
   type CapabilityName,
 } from "./capability.ts";
 import { deriveNodeId, Ed25519Key, nodeIdentityWire } from "./identity.ts";
+import {
+  buildMsg1,
+  buildMsg2,
+  buildMsg2Content,
+  buildMsg3,
+  buildMsg3Content,
+  deriveSession,
+  initiatorSignPayload,
+  responderSignPayload,
+  sealFrame,
+  x25519Public,
+  x25519Shared,
+} from "./link.ts";
 
 const vectorsDir =
   process.argv[2] ??
@@ -184,6 +197,48 @@ function loadJson(name: string): any {
       console.log(`CAP_REJ ${i} ${e.code ?? `untyped:${e.message}`}`);
     }
   });
+}
+
+// ---------------- link vectors ----------------
+{
+  const file = loadJson("link_vectors.json");
+  const sessions: { linkId: string; keyI2R: Uint8Array; keyR2I: Uint8Array }[] = [];
+  for (const c of file.cases) {
+    const keyI = new Ed25519Key(fromHex(c.initiator_seed_hex));
+    const keyR = new Ed25519Key(fromHex(c.responder_seed_hex));
+    const eI = x25519Public(fromHex(c.initiator_scalar_hex));
+    const eR = x25519Public(fromHex(c.responder_scalar_hex));
+    const shared = x25519Shared(fromHex(c.initiator_scalar_hex), eR);
+    const msg1 = buildMsg1(eI);
+    const identityR = {
+      publicKey: keyR.publicKey,
+      createdAtUnix: BigInt(c.responder_created_at_unix),
+      displayName: null,
+    };
+    const identityI = {
+      publicKey: keyI.publicKey,
+      createdAtUnix: BigInt(c.initiator_created_at_unix),
+      displayName: null,
+    };
+    const msg2Content = buildMsg2Content(eR, identityR, null);
+    const sigR = keyR.signDetached(responderSignPayload(msg1, msg2Content));
+    const msg2 = buildMsg2(eR, identityR, null, sigR);
+    const msg3Content = buildMsg3Content(identityI, null);
+    const sigI = keyI.signDetached(initiatorSignPayload(msg1, msg2, msg3Content));
+    const msg3 = buildMsg3(identityI, null, sigI);
+    const { linkId, keyI2R, keyR2I } = deriveSession(shared, msg1, msg2, msg3);
+    sessions.push({ linkId: toHex(linkId), keyI2R, keyR2I });
+    console.log(
+      `LINK ${file.cases.indexOf(c)} msg1=${toHex(msg1)} msg2=${toHex(msg2)} msg3=${toHex(msg3)} id=${toHex(linkId)}`,
+    );
+  }
+  for (const f of file.frames) {
+    const s = sessions[f.case]!;
+    const key = f.direction === 1 ? s.keyI2R : s.keyR2I;
+    const linkId = fromHex(s.linkId);
+    const frame = sealFrame(key, linkId, f.direction, BigInt(f.seq), fromHex(f.payload_hex));
+    console.log(`LINK_FRAME ${f.case} dir=${f.direction} seq=${f.seq} frame=${toHex(frame)}`);
+  }
 }
 
 // order-insensitive value equality (byte-stability lines catch ordering)

@@ -15,9 +15,11 @@ import os
 import sys
 
 from . import ed25519
+from . import link as linkmod
 from .capability import admit, build_statement, CapabilityError  # noqa: F401
 from .cbor import decode, encode, value_eq, value_from_json
 from .identity import derive_node_id, node_identity_wire, public_key, verify_detached
+from .x25519 import public_from_scalar, shared
 
 DEFAULT_VECTORS = os.path.join(
     os.path.dirname(__file__),
@@ -176,6 +178,60 @@ def run(vectors_dir: str) -> int:
         except Exception as e:  # noqa: BLE001
             code = getattr(e, "code", f"untyped:{e}")
             print(f"CAP_REJ {i} {code}")
+
+    # ---------------- link vectors ----------------
+    link_file = load_json(vectors_dir, "link_vectors.json")
+    sessions = []
+    for i, c in enumerate(link_file["cases"]):
+        try:
+            pk_i = public_key(bytes.fromhex(c["initiator_seed_hex"]))
+            pk_r = public_key(bytes.fromhex(c["responder_seed_hex"]))
+            scalar_i = bytes.fromhex(c["initiator_scalar_hex"])
+            scalar_r = bytes.fromhex(c["responder_scalar_hex"])
+            e_i = public_from_scalar(scalar_i)
+            e_r = public_from_scalar(scalar_r)
+            shared_secret = shared(scalar_i, e_r)
+            msg1 = linkmod.build_msg1(e_i)
+            msg2_content = linkmod.build_msg2_content(
+                e_r, pk_r, c["responder_created_at_unix"], None
+            )
+            sig_r = ed25519.sign(
+                bytes.fromhex(c["responder_seed_hex"]),
+                linkmod.responder_sign_payload(msg1, msg2_content),
+            )
+            msg2 = linkmod.build_msg2(
+                e_r, pk_r, c["responder_created_at_unix"], None, sig_r
+            )
+            msg3_content = linkmod.build_msg3_content(
+                pk_i, c["initiator_created_at_unix"], None
+            )
+            sig_i = ed25519.sign(
+                bytes.fromhex(c["initiator_seed_hex"]),
+                linkmod.initiator_sign_payload(msg1, msg2, msg3_content),
+            )
+            msg3 = linkmod.build_msg3(
+                pk_i, c["initiator_created_at_unix"], None, sig_i
+            )
+            link_id, key_i2r, key_r2i = linkmod.derive_session(
+                shared_secret, msg1, msg2, msg3
+            )
+            sessions.append((link_id, key_i2r, key_r2i))
+            print(
+                f"LINK {i} msg1={msg1.hex()} msg2={msg2.hex()} "
+                f"msg3={msg3.hex()} id={link_id.hex()}"
+            )
+        except Exception as e:  # noqa: BLE001
+            fail(f"link {i}: {e}")
+    for f in link_file["frames"]:
+        try:
+            link_id, key_i2r, key_r2i = sessions[f["case"]]
+            key = key_i2r if f["direction"] == 1 else key_r2i
+            frame = linkmod.seal_frame(
+                key, link_id, f["direction"], f["seq"], bytes.fromhex(f["payload_hex"])
+            )
+            print(f"LINK_FRAME {f['case']} dir={f['direction']} seq={f['seq']} frame={frame.hex()}")
+        except Exception as e:  # noqa: BLE001
+            fail(f"link frame: {e}")
 
     return 0 if failures == 0 else 1
 

@@ -34,12 +34,18 @@
 pub mod cbor;
 pub mod capability;
 pub mod identity;
+pub mod link;
 pub mod store;
 
 pub use cbor::{decode, encode, DecodeError, EncodeError, Value};
 pub use capability::{
     admit, Admitted, AdmissionError, Capability, CapabilityError, CapabilityStatement,
     SignedCapabilityStatement, CAP_SCHEME_VERSION, MAX_LIMITS_ENTRIES, MAX_LIMIT_KEY_BYTES,
+};
+pub use link::{
+    LinkConfirm, LinkError, LinkInitiate, LinkInitiator, LinkRespond, LinkResponder,
+    LinkResponderPending, LinkSession, LinkTransport, EPHEMERAL_LEN, LINK_ID_LEN,
+    LINK_SCHEME_VERSION, NONCE_LEN, REPLAY_WINDOW, SESSION_KEY_LEN,
 };
 pub use identity::{
     derive_node_id, Identity, IdentityError, NodeId, NodeIdentity, VerifyError,

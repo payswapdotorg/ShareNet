@@ -10,6 +10,11 @@ ed25519-dalek.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
 
+# Link layer (R3-001): standard primitives only (ADR-002)
+x25519-dalek.workspace = true
+hkdf.workspace = true
+chacha20poly1305.workspace = true
+
 [dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true

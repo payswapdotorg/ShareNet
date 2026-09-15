@@ -1,0 +1,77 @@
+{
+  "scheme": "sharenet-link-v1",
+  "description": "Authenticated link handshake vectors (R3-001). For every case the harness MUST: rebuild both identities from seeds+created_at, run the full 3-message handshake with the fixed X25519 scalars, reproduce msg1/msg2/msg3 byte-exactly, derive the same link_id, and reproduce every frame byte-exactly from the derived session keys (frames pin key_i2r/key_r2i without exporting them). Scalars are TEST-ONLY.",
+  "cases": [
+    {
+      "note": "identity-vector seeds, simple fixed scalars",
+      "initiator_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "responder_seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "initiator_created_at_unix": 0,
+      "responder_created_at_unix": 1700000000,
+      "initiator_scalar_hex": "1010101010101010101010101010101010101010101010101010101010101010",
+      "responder_scalar_hex": "2020202020202020202020202020202020202020202020202020202020202020",
+      "msg1_hex": "a20101025820781faab908430150daccdd6f9d6c5086e34f73a93ebbaa271765e5036edfc519",
+      "msg2_hex": "a4010102582006453fcd9cef5a1f53acc4f942104c0c8e9e27d5c7b37f5507cdcd162810596303a301010258203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c031a6553f100045840a308b52543acfd1ef07f644b3eb8fcc39d3c8c102ea54492ee94d382de5bee848a816dd9be9f4af1b2592cff3b6a7a427f99d12476abaf9824c9a849992be60c",
+      "msg3_hex": "a3010102a30101025820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a03000358409d1ac93e28e625336ba644e68405903d6f7041ab66c7c6b46de5d63294a5ef3b504b5f9c11bf4e44998fbaabbcbda69fa19783dd57dbb74a18e54b4c9043c50f",
+      "shared_secret_hex": "",
+      "link_id_hex": "a9aaf23b5f70d8fc6619b923b1f013f99715f2b8422d54e6e8b4327b6d8409ed",
+      "key_i2r_hex": "",
+      "key_r2i_hex": ""
+    },
+    {
+      "note": "second seed pair, all-0x33/0x44 scalars",
+      "initiator_seed_hex": "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+      "responder_seed_hex": "f67e23f4c2f7b0e6b1d54d1e8a3c9b0f6e2d4c5b8a7f6e5d4c3b2a1908f7e6d5",
+      "initiator_created_at_unix": 86400,
+      "responder_created_at_unix": 42,
+      "initiator_scalar_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+      "responder_scalar_hex": "4444444444444444444444444444444444444444444444444444444444444444",
+      "msg1_hex": "a201010258207b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14",
+      "msg2_hex": "a40101025820ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b03a30101025820b074c9985a7f518d051afacca93c0ce5ae7549e6d492cfe6df4c8ceb64ff27c103182a045840712eed2c2029b3c444afe3f5a637f428ea02da4de047fcc505742ab805aebd14c89e562448ef08f551c27a91524cdbf1ca82f71e1df7b14caf192390564a8b03",
+      "msg3_hex": "a3010102a30101025820e7b441bfa3cdaf05a07fbd04dd8d3a83bf1d545d82436d04ac68f32a0bd09c60031a000151800358402985372a3436d0219620d7995ccb5dd53494bd3cdf882718433c377726efd0540f4dddb5151226aacd91439091700933d27e05dacfe7bcd15fcadcc2884c8101",
+      "shared_secret_hex": "",
+      "link_id_hex": "593b20a1c10a53490d607fd1f37efafc15d9432f2b546586e7d4d729a8a2148b",
+      "key_i2r_hex": "",
+      "key_r2i_hex": ""
+    },
+    {
+      "note": "with a capability envelope carried by the responder",
+      "initiator_seed_hex": "8d3d3a3a9b9b7c7c6d6d5e5e4f4f303021212222323434555667778899aabbcc",
+      "responder_seed_hex": "26924a9b5e6e6c6c7d7d4f4f303021212222323434555667778899aabbccddee",
+      "initiator_created_at_unix": 1754000000,
+      "responder_created_at_unix": 1754000001,
+      "initiator_scalar_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+      "responder_scalar_hex": "6666666666666666666666666666666666666666666666666666666666666666",
+      "msg1_hex": "a2010102582038ab664bd86f77d7e66bdd9ae0792913a94fd8b33a1260027e4b46c1f4884c67",
+      "msg2_hex": "a50101025820219e4d800da968d2a5fcb009c784f4746c7138edb9ee4844b739e830b05cf42403a30101025820193b71d91e01b205ff9f54d365c3affacb15b17fd49a67c00da69ff56e4d122b031a688bea8104584027f068c06d2d11ad3279c8523b3d49d9b5d439ad6f6bc6afd74621ea20ebd03d261c4104a54eccc8f4fff2c19190cb4fc602fba2736b19e17dbaebed0fe34508055883a201583ca50101025820a2293b29d0c5d92552ea2a2a221a5a7f0a3e0ef89dbf27716dea55769bc1784d03816767617465776179041a6553f100051a65554280025840200eee1fba85060e25fc960afc4a38af10eaaf8641eae73447a2091f619bb62bf661a8b51476eb2c9e4316ba9c0c6c39e4e526abba6221e205a31cb0558dd906",
+      "msg3_hex": "a3010102a30101025820b2a6073abe2491015e7ed2ff5ed8f79ca9d529cb84736a75ff6f697a54b2d794031a688bea8003584022c1471cb842e26f3e59bcd0f5d0d479e083147ad164d7fd6df03df4e80dbe45aa6d4065d23efa6347e77cd11acde4023106c1a28a96a8c8bd199ac0259c9209",
+      "shared_secret_hex": "",
+      "link_id_hex": "2425efdebfe43d469bf1fc70d3968e085602e64e3e92c069463a9eeb1f05f005",
+      "key_i2r_hex": "",
+      "key_r2i_hex": ""
+    }
+  ],
+  "frames": [
+    {
+      "case": 0,
+      "direction": 1,
+      "seq": 0,
+      "payload_hex": "68656c6c6f",
+      "frame_hex": "00000000000000002f8d395e3f66b3cf110ef3de609652e45b841bc68a"
+    },
+    {
+      "case": 0,
+      "direction": 1,
+      "seq": 1,
+      "payload_hex": "",
+      "frame_hex": "000000000000000177c0dcaa73b5bcb07fea5be61b80a045"
+    },
+    {
+      "case": 0,
+      "direction": 2,
+      "seq": 0,
+      "payload_hex": "77656c636f6d6520746f2073686172656e6574",
+      "frame_hex": "00000000000000006137ede22f8fe5d374a6d64239947e09af23631c2adfba02bb2510f20b52508b009448"
+    }
+  ]
+}

@@ -32,10 +32,15 @@
 #![forbid(unsafe_code)]
 
 pub mod cbor;
+pub mod capability;
 pub mod identity;
 pub mod store;
 
 pub use cbor::{decode, encode, DecodeError, EncodeError, Value};
+pub use capability::{
+    admit, Admitted, AdmissionError, Capability, CapabilityError, CapabilityStatement,
+    SignedCapabilityStatement, CAP_SCHEME_VERSION, MAX_LIMITS_ENTRIES, MAX_LIMIT_KEY_BYTES,
+};
 pub use identity::{
     derive_node_id, Identity, IdentityError, NodeId, NodeIdentity, VerifyError,
     MAX_DISPLAY_NAME_BYTES, NODE_ID_LEN, PUBLIC_KEY_LEN, SCHEME_VERSION, SEED_LEN, SIGNATURE_LEN,

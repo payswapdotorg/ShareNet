@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sharenet-protocol"]
+members = ["crates/sharenet-protocol", "crates/sharenet-conformance"]
 
 [workspace.package]
 version = "0.1.0"

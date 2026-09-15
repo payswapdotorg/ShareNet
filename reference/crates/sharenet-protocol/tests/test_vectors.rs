@@ -16,6 +16,9 @@ mod common;
 
 use common::from_hex;
 use serde::{Deserialize, Serialize};
+use sharenet_protocol::capability::{
+    Capability, CapabilityStatement, SignedCapabilityStatement,
+};
 use sharenet_protocol::cbor::{decode, encode, Value};
 use sharenet_protocol::identity::{
     Identity, NodeIdentity, SCHEME_VERSION, SEED_LEN, SIGNATURE_LEN,
@@ -96,6 +99,56 @@ fn common_hex(bytes: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 // Vector file schemas
 // ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct CapabilityVectorsFile {
+    scheme: String,
+    signature_rule: String,
+    admission_rule: String,
+    description: String,
+    cases: Vec<CapabilityCase>,
+    admit: Vec<AdmitCase>,
+    parse_reject: Vec<CapabilityReject>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CapabilityCase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    seed_hex: String,
+    public_key_hex: String,
+    node_id_hex: String,
+    capabilities: Vec<String>,
+    issued_at_unix: u64,
+    expires_at_unix: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limits: Option<std::collections::BTreeMap<String, i64>>,
+    statement_wire_hex: String,
+    signature_hex: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AdmitCase {
+    case: usize,
+    now_unix: u64,
+    require: Vec<String>,
+    /// "ok" or the stable AdmissionError name.
+    expect: String,
+    /// Which key performs verification: absent = the case's own key;
+    /// "next" = the next case's key (the node_id_mismatch scenario).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verify_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CapabilityReject {
+    hex: String,
+    error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
 
 #[derive(Serialize, Deserialize)]
 struct CborVectorsFile {
@@ -388,6 +441,338 @@ fn vectors_path(name: &str) -> std::path::PathBuf {
     std::path::Path::new(VECTORS_DIR).join(name)
 }
 
+fn capability_vectors() -> CapabilityVectorsFile {
+    use sharenet_protocol::capability::Capability as Cap;
+    let cap_text = |c: Cap| c.wire_text().to_string();
+    // (seed byte pattern, capabilities, issued, expires, limits, note)
+    let cases_in: Vec<(
+        &str,
+        Vec<Cap>,
+        u64,
+        u64,
+        Option<Vec<(&str, i64)>>,
+        &str,
+    )> = vec![
+        (
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bcc8e0e6b9b0d",
+            Capability::ALL.to_vec(),
+            1_700_000_000,
+            1_700_086_400,
+            None,
+            "all four capabilities, one-day window, no limits",
+        ),
+        (
+            "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+            vec![Cap::Gateway],
+            1_700_000_000,
+            1_700_003_600,
+            Some(vec![("max_backhaul_mbps", 100), ("max_sessions", 4)]),
+            "single capability with numeric limits",
+        ),
+        (
+            "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+            vec![Cap::DtnCustodian, Cap::Infrastructure],
+            42,
+            86_400,
+            Some(vec![("dtn_storage_mb", -1)]),
+            "early-epoch timestamps and a negative limit value (profile permits ints)",
+        ),
+        (
+            "f67e23f4c2f7b0e6b1d54d1e8a3c9b0f6e2d4c5b8a7f6e5d4c3b2a1908f7e6d5",
+            vec![Cap::Relay],
+            0,
+            1,
+            None,
+            "minimum one-second validity window at the epoch floor",
+        ),
+        (
+            "8d3d3a3a9b9b7c7c6d6d5e5e4f4f303021212222323434555667778899aabbcc",
+            vec![Cap::Infrastructure, Cap::Relay, Cap::Gateway, Cap::DtnCustodian],
+            1_754_000_000,
+            1_755_000_000,
+            Some(vec![("a", 1), ("b", 2), ("c", 3), ("d", 4), ("e", 5)]),
+            "scrambled input order canonicalizes; multiple sorted limit keys",
+        ),
+    ];
+    let mut cases = Vec::new();
+    for (seed_hex, caps, issued, expires, limits, note) in cases_in {
+        let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed length");
+        let id = Identity::from_seed(seed, 0, None).unwrap();
+        let limits_map = limits.map(|kv| {
+            kv.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+        });
+        let st = CapabilityStatement::new(
+            id.node_id(),
+            &caps,
+            issued,
+            expires,
+            limits_map,
+        )
+        .unwrap();
+        let signed = st.sign(&id).unwrap();
+        cases.push(CapabilityCase {
+            note: Some(note.to_string()),
+            seed_hex: seed_hex.to_string(),
+            public_key_hex: common_hex(&id.node_identity().public_key_bytes()),
+            node_id_hex: id.node_id().to_hex(),
+            capabilities: caps.iter().map(|&c| cap_text(c)).collect(),
+            issued_at_unix: issued,
+            expires_at_unix: expires,
+            limits: st.limits().cloned(),
+            statement_wire_hex: common_hex(signed.statement_bytes()),
+            signature_hex: common_hex(signed.signature()),
+        });
+    }
+
+    // Admission outcomes over the cases above (indices refer to `cases`).
+    let admit = vec![
+        AdmitCase {
+            case: 0,
+            now_unix: 1_700_040_000,
+            require: vec!["gateway".into()],
+            expect: "ok".into(),
+            verify_key: None,
+            note: Some("valid window, capability held".into()),
+        },
+        AdmitCase {
+            case: 0,
+            now_unix: 1_700_086_400,
+            require: vec![],
+            expect: "expired".into(),
+            verify_key: None,
+            note: Some("now == expires_at is expired (exclusive bound)".into()),
+        },
+        AdmitCase {
+            case: 0,
+            now_unix: 1_699_999_999,
+            require: vec![],
+            expect: "not_yet_valid".into(),
+            verify_key: None,
+            note: Some("now < issued_at".into()),
+        },
+        AdmitCase {
+            case: 0,
+            now_unix: 1_700_040_000,
+            require: vec![],
+            expect: "node_id_mismatch".into(),
+            verify_key: Some("next".into()),
+            note: Some("verify with a DIFFERENT key than the case's seed derives".into()),
+        },
+        AdmitCase {
+            case: 1,
+            now_unix: 1_700_001_800,
+            require: vec!["relay".into()],
+            expect: "capability_not_held".into(),
+            verify_key: None,
+            note: Some("gateway-only statement cannot admit relay".into()),
+        },
+        AdmitCase {
+            case: 1,
+            now_unix: 1_700_001_800,
+            require: vec!["gateway".into(), "infrastructure".into()],
+            expect: "capability_not_held".into(),
+            verify_key: None,
+            note: Some("multi-require fails if ANY capability is missing".into()),
+        },
+        AdmitCase {
+            case: 2,
+            now_unix: 100,
+            require: vec!["dtn_custodian".into()],
+            expect: "ok".into(),
+            verify_key: None,
+            note: Some("multi-capability lookup with dtn_custodian held".into()),
+        },
+        AdmitCase {
+            case: 3,
+            now_unix: 0,
+            require: vec![],
+            expect: "ok".into(),
+            verify_key: None,
+            note: Some("window opens exactly at the epoch floor".into()),
+        },
+        AdmitCase {
+            case: 3,
+            now_unix: 1,
+            require: vec![],
+            expect: "expired".into(),
+            verify_key: None,
+            note: Some("one-second window closes exactly at 1".into()),
+        },
+        AdmitCase {
+            case: 4,
+            now_unix: 1_754_500_000,
+            require: vec!["infrastructure".into()],
+            expect: "ok".into(),
+            verify_key: None,
+            note: Some("canonicalized order admits any held capability".into()),
+        },
+    ];
+
+    // Typed parse rejections (statement bytes that must fail from_wire_bytes).
+    let good = &cases[1]; // gateway + limits template
+    let good_bytes = from_hex(&good.statement_wire_hex);
+    let rej = |hex: String, error: &str, note: &str| CapabilityReject {
+        hex,
+        error: error.to_string(),
+        note: Some(note.to_string()),
+    };
+    let mut parse_reject = Vec::new();
+    {
+        // unsorted capabilities array: swap [dtn_custodian, gateway] -> [gateway, dtn_custodian]
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), Value::Bytes(from_hex(&good.node_id_hex))),
+            (
+                Value::Int(3),
+                Value::Array(vec![
+                    Value::Text("gateway".into()),
+                    Value::Text("dtn_custodian".into()),
+                ]),
+            ),
+            (Value::Int(4), Value::Int(1)),
+            (Value::Int(5), Value::Int(2)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "capabilities_not_sorted",
+            "array must be strictly ascending by wire text",
+        ));
+        // unknown capability text
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), Value::Bytes(from_hex(&good.node_id_hex))),
+            (
+                Value::Int(3),
+                Value::Array(vec![Value::Text("superuser".into())]),
+            ),
+            (Value::Int(4), Value::Int(1)),
+            (Value::Int(5), Value::Int(2)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "unknown_capability",
+            "only the frozen initial set is valid in v1",
+        ));
+        // empty capabilities array
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), Value::Bytes(from_hex(&good.node_id_hex))),
+            (Value::Int(3), Value::Array(vec![])),
+            (Value::Int(4), Value::Int(1)),
+            (Value::Int(5), Value::Int(2)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "capabilities_empty",
+            "a statement claiming nothing is meaningless and rejected",
+        ));
+        // expiry not after issue (parse-side enforcement)
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), Value::Bytes(from_hex(&good.node_id_hex))),
+            (
+                Value::Int(3),
+                Value::Array(vec![Value::Text("gateway".into())]),
+            ),
+            (Value::Int(4), Value::Int(10)),
+            (Value::Int(5), Value::Int(10)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "expiry_not_after_issue",
+            "zero-length validity window is rejected",
+        ));
+        // missing required field (no key 5)
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), Value::Bytes(from_hex(&good.node_id_hex))),
+            (
+                Value::Int(3),
+                Value::Array(vec![Value::Text("gateway".into())]),
+            ),
+            (Value::Int(4), Value::Int(1)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "missing_field",
+            "expires_at is required",
+        ));
+        // wrong scheme version
+        let v = Value::Map(vec![
+            (Value::Int(1), Value::Int(2)),
+            (Value::Int(2), Value::Bytes(from_hex(&good.node_id_hex))),
+            (
+                Value::Int(3),
+                Value::Array(vec![Value::Text("gateway".into())]),
+            ),
+            (Value::Int(4), Value::Int(1)),
+            (Value::Int(5), Value::Int(2)),
+        ]);
+        parse_reject.push(rej(
+            common_hex(&encode(&v).unwrap()),
+            "scheme_version_unsupported",
+            "v2 statements are not v1",
+        ));
+        // limits with too many entries (33 > 32)
+        let mut entries = vec![
+            (Value::Int(1), Value::Int(1)),
+            (Value::Int(2), Value::Bytes(from_hex(&good.node_id_hex))),
+            (
+                Value::Int(3),
+                Value::Array(vec![Value::Text("gateway".into())]),
+            ),
+            (Value::Int(4), Value::Int(1)),
+            (Value::Int(5), Value::Int(2)),
+        ];
+        let mut limits = Vec::new();
+        for i in 0..33 {
+            limits.push((
+                Value::Text(format!("k{i:02}")),
+                Value::Int(i as i64),
+            ));
+        }
+        entries.push((Value::Int(6), Value::Map(limits)));
+        parse_reject.push(rej(
+            common_hex(&encode(&Value::Map(entries)).unwrap()),
+            "limits_too_many_entries",
+            "adversarial size bound",
+        ));
+        // non-minimal integer in the wire (profile-level violation surfaced
+        // through the statement parser): rebuild `good` with 0x18 0x01 for field 1
+        let mut bad = Vec::with_capacity(good_bytes.len() + 1);
+        bad.extend_from_slice(&good_bytes[..2]);
+        bad.extend_from_slice(&[0x18, 0x01]);
+        bad.extend_from_slice(&good_bytes[3..]);
+        parse_reject.push(rej(
+            common_hex(&bad),
+            "cbor:NonMinimalInteger",
+            "non-canonical integer rejected by the CBOR profile before parse",
+        ));
+    }
+
+    CapabilityVectorsFile {
+        scheme: "sharenet-capability-statement-v1".into(),
+        signature_rule: "signature_hex is the RFC 8032 deterministic detached Ed25519 \
+signature over statement_wire_hex (the exact canonical CBOR bytes of the statement map) \
+produced from seed_hex; carrying envelope = canonical CBOR {1: statement bstr, \
+2: signature bstr}".into(),
+        admission_rule: "admission = strict parse + node_id binding \
+(node_id = SHA-256(canonical_cbor({1: scheme_version, 2: public_key}))) + strict Ed25519 \
+verification over statement_wire_hex + (issued_at <= now < expires_at) + capability \
+lookup; no caller-controlled trust booleans".into(),
+        description: "Signed capability statement vectors (R1-004). For every case \
+the harness MUST: derive the public key from seed_hex, derive node_id and compare \
+node_id_hex, rebuild the statement map from the fields, encode it canonically and \
+compare statement_wire_hex byte-exactly, and reproduce signature_hex byte-exactly. \
+admit[] cases run full admission and expect the named outcome (for node_id_mismatch \
+the harness verifies with a DIFFERENT valid key, e.g. the seed of the next case). \
+parse_reject[] bytes MUST fail CapabilityStatement parsing with the named typed error.".into(),
+        cases,
+        admit,
+        parse_reject,
+    }
+}
+
 #[test]
 fn vectors_conformance() {
     let cbor_file: CborVectorsFile = serde_json::from_str(
@@ -502,6 +887,102 @@ fn vectors_conformance() {
         assert!(id.node_identity().verify_detached(&payload, &sig).is_ok());
     }
     assert!(id_file.cases.len() >= 5);
+
+    // ---- capability vectors ----
+    let cap_file: CapabilityVectorsFile = serde_json::from_str(
+        &std::fs::read_to_string(vectors_path("capability_vectors.json"))
+            .expect("capability_vectors.json must exist"),
+    )
+    .expect("capability_vectors.json parses");
+    assert_eq!(cap_file.scheme, "sharenet-capability-statement-v1");
+    use sharenet_protocol::capability::{admit, AdmissionError, Capability as Cap};
+    let parse_cap = |t: &str| -> Cap {
+        match t {
+            "gateway" => Cap::Gateway,
+            "relay" => Cap::Relay,
+            "dtn_custodian" => Cap::DtnCustodian,
+            "infrastructure" => Cap::Infrastructure,
+            other => panic!("bad capability text in vectors: {other}"),
+        }
+    };
+    for (i, case) in cap_file.cases.iter().enumerate() {
+        let seed: [u8; SEED_LEN] = from_hex(&case.seed_hex).try_into().expect("seed len");
+        let id = Identity::from_seed(seed, 0, None).unwrap();
+        assert_eq!(
+            common_hex(&id.node_identity().public_key_bytes()),
+            case.public_key_hex,
+            "public key mismatch in case {i}"
+        );
+        assert_eq!(id.node_id().to_hex(), case.node_id_hex, "case {i}");
+        let caps: Vec<Cap> = case.capabilities.iter().map(|t| parse_cap(t)).collect();
+        let st = CapabilityStatement::new(
+            id.node_id(),
+            &caps,
+            case.issued_at_unix,
+            case.expires_at_unix,
+            case.limits.clone(),
+        )
+        .unwrap_or_else(|e| panic!("case {i} must build: {e}"));
+        assert_eq!(
+            common_hex(&st.to_wire_bytes()),
+            case.statement_wire_hex,
+            "wire bytes mismatch in case {i}"
+        );
+        let signed = st.sign(&id).unwrap();
+        assert_eq!(
+            common_hex(signed.signature()),
+            case.signature_hex,
+            "signature mismatch in case {i}"
+        );
+    }
+    for a in &cap_file.admit {
+        let case = &cap_file.cases[a.case];
+        let seed: [u8; SEED_LEN] = from_hex(&case.seed_hex).try_into().expect("seed len");
+        let id = Identity::from_seed(seed, 0, None).unwrap();
+        // For the node_id_mismatch expectation, verify under a DIFFERENT key
+        // (deterministically: the key of the case after this one, wrapping).
+        let other = if a.expect == "node_id_mismatch" {
+            let o = &cap_file.cases[(a.case + 1) % cap_file.cases.len()];
+            let oseed: [u8; SEED_LEN] = from_hex(&o.seed_hex).try_into().expect("seed len");
+            Identity::from_seed(oseed, 0, None).unwrap()
+        } else {
+            id.clone()
+        };
+        let require: Vec<Cap> = a.require.iter().map(|t| parse_cap(t)).collect();
+        let mut sig = from_hex(&case.signature_hex);
+        if a.expect == "signature_encoding_invalid" {
+            sig.truncate(63);
+        }
+        let result = admit(
+            &from_hex(&case.statement_wire_hex),
+            &sig,
+            &other.node_identity().public_key_bytes(),
+            a.now_unix,
+            &require,
+        );
+        let name = match &result {
+            Ok(_) => "ok".to_string(),
+            Err(e) => e.name(),
+        };
+        assert_eq!(
+            name, a.expect,
+            "admit case {} (vector case {}) expected {} got {}",
+            a.now_unix, a.case, a.expect, name
+        );
+    }
+    for r in &cap_file.parse_reject {
+        let bytes = from_hex(&r.hex);
+        let err = match CapabilityStatement::from_wire_bytes(&bytes) {
+            Err(e) => e,
+            Ok(_) => panic!("parse_reject case {} was accepted", r.hex),
+        };
+        assert_eq!(
+            err.name(),
+            r.error,
+            "wrong error name for parse_reject {}",
+            r.hex
+        );
+    }
 }
 
 #[test]
@@ -512,6 +993,9 @@ fn regenerate_vectors() {
     std::fs::write(vectors_path("cbor_vectors.json"), cbor_json).expect("write cbor vectors");
     let id_json = serde_json::to_string_pretty(&identity_vectors()).unwrap() + "\n";
     std::fs::write(vectors_path("identity_vectors.json"), id_json).expect("write identity vectors");
+    let cap_json = serde_json::to_string_pretty(&capability_vectors()).unwrap() + "\n";
+    std::fs::write(vectors_path("capability_vectors.json"), cap_json)
+        .expect("write capability vectors");
     eprintln!("vectors regenerated under {VECTORS_DIR}");
 }
 

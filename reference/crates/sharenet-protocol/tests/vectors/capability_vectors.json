@@ -1,0 +1,219 @@
+{
+  "scheme": "sharenet-capability-statement-v1",
+  "signature_rule": "signature_hex is the RFC 8032 deterministic detached Ed25519 signature over statement_wire_hex (the exact canonical CBOR bytes of the statement map) produced from seed_hex; carrying envelope = canonical CBOR {1: statement bstr, 2: signature bstr}",
+  "admission_rule": "admission = strict parse + node_id binding (node_id = SHA-256(canonical_cbor({1: scheme_version, 2: public_key}))) + strict Ed25519 verification over statement_wire_hex + (issued_at <= now < expires_at) + capability lookup; no caller-controlled trust booleans",
+  "description": "Signed capability statement vectors (R1-004). For every case the harness MUST: derive the public key from seed_hex, derive node_id and compare node_id_hex, rebuild the statement map from the fields, encode it canonically and compare statement_wire_hex byte-exactly, and reproduce signature_hex byte-exactly. admit[] cases run full admission and expect the named outcome (for node_id_mismatch the harness verifies with a DIFFERENT valid key, e.g. the seed of the next case). parse_reject[] bytes MUST fail CapabilityStatement parsing with the named typed error.",
+  "cases": [
+    {
+      "note": "all four capabilities, one-day window, no limits",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bcc8e0e6b9b0d",
+      "public_key_hex": "6a428dbec96a3714cd21e6931275a6342e807399600f5f1e6a0301c857b40d68",
+      "node_id_hex": "59b1fb37af0bcea129e7d0c94a5cb188f0dfae6211101817b775b618ea9c6172",
+      "capabilities": [
+        "dtn_custodian",
+        "gateway",
+        "infrastructure",
+        "relay"
+      ],
+      "issued_at_unix": 1700000000,
+      "expires_at_unix": 1700086400,
+      "statement_wire_hex": "a5010102582059b1fb37af0bcea129e7d0c94a5cb188f0dfae6211101817b775b618ea9c617203846d64746e5f637573746f6469616e67676174657761796e696e6672617374727563747572656572656c6179041a6553f100051a65554280",
+      "signature_hex": "c648f47ec0cb1384acc007cd2d2b069ac5f3584b5f6718e5ee9f3e3fafa0affb354ae4b0c0b843e352580b6e701f43773418582b36f8aaeb234d6cb765e2b302"
+    },
+    {
+      "note": "single capability with numeric limits",
+      "seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "public_key_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "node_id_hex": "d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f96302326",
+      "capabilities": [
+        "gateway"
+      ],
+      "issued_at_unix": 1700000000,
+      "expires_at_unix": 1700003600,
+      "limits": {
+        "max_backhaul_mbps": 100,
+        "max_sessions": 4
+      },
+      "statement_wire_hex": "a60101025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f9630232603816767617465776179041a6553f100051a6553ff1006a26c6d61785f73657373696f6e7304716d61785f6261636b6861756c5f6d6270731864",
+      "signature_hex": "c8bd9a582f31a9ee934ed9ffc087e35b8fa3d427dc64a15d8a0afc407dd5b8ae6dbd87189c34442cebe0f3041dca35afd27e9a35e667ca871b2dacd3b7eb8e01"
+    },
+    {
+      "note": "early-epoch timestamps and a negative limit value (profile permits ints)",
+      "seed_hex": "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+      "public_key_hex": "e7b441bfa3cdaf05a07fbd04dd8d3a83bf1d545d82436d04ac68f32a0bd09c60",
+      "node_id_hex": "a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b",
+      "capabilities": [
+        "dtn_custodian",
+        "infrastructure"
+      ],
+      "issued_at_unix": 42,
+      "expires_at_unix": 86400,
+      "limits": {
+        "dtn_storage_mb": -1
+      },
+      "statement_wire_hex": "a60101025820a4903e16aeb1795173cfe7ad365a15a3a3be3dd0ae47682ee9cb1d4e0aa79e2b03826d64746e5f637573746f6469616e6e696e66726173747275637475726504182a051a0001518006a16e64746e5f73746f726167655f6d6220",
+      "signature_hex": "7ac8eea500eec53b1d003325f7d7a8c3bdd0b3987869d95fcb7b43ea3203f0f6a92a4004159d4c30210e091b6112d5e71459b1ad96723f41ec0be9bc4d67560a"
+    },
+    {
+      "note": "minimum one-second validity window at the epoch floor",
+      "seed_hex": "f67e23f4c2f7b0e6b1d54d1e8a3c9b0f6e2d4c5b8a7f6e5d4c3b2a1908f7e6d5",
+      "public_key_hex": "b074c9985a7f518d051afacca93c0ce5ae7549e6d492cfe6df4c8ceb64ff27c1",
+      "node_id_hex": "5f1fb43e04dd8b82befecf744ed77fb8d779cdccadcb913972b05692a4f0517c",
+      "capabilities": [
+        "relay"
+      ],
+      "issued_at_unix": 0,
+      "expires_at_unix": 1,
+      "statement_wire_hex": "a501010258205f1fb43e04dd8b82befecf744ed77fb8d779cdccadcb913972b05692a4f0517c03816572656c617904000501",
+      "signature_hex": "9eedda792fd48ff00005010668e992016ae22c55d5cd43670106618f652668bff8517b91cd47c1e8f428b4747cdefca078c32939132de8ac9d5fe1eb56cf3c01"
+    },
+    {
+      "note": "scrambled input order canonicalizes; multiple sorted limit keys",
+      "seed_hex": "8d3d3a3a9b9b7c7c6d6d5e5e4f4f303021212222323434555667778899aabbcc",
+      "public_key_hex": "b2a6073abe2491015e7ed2ff5ed8f79ca9d529cb84736a75ff6f697a54b2d794",
+      "node_id_hex": "a377dc06cfc93d47f247609fa33375bfe313dd3150d4b9f4ce04a4603e9ebc18",
+      "capabilities": [
+        "infrastructure",
+        "relay",
+        "gateway",
+        "dtn_custodian"
+      ],
+      "issued_at_unix": 1754000000,
+      "expires_at_unix": 1755000000,
+      "limits": {
+        "a": 1,
+        "b": 2,
+        "c": 3,
+        "d": 4,
+        "e": 5
+      },
+      "statement_wire_hex": "a60101025820a377dc06cfc93d47f247609fa33375bfe313dd3150d4b9f4ce04a4603e9ebc1803846d64746e5f637573746f6469616e67676174657761796e696e6672617374727563747572656572656c6179041a688bea80051a689b2cc006a5616101616202616303616404616505",
+      "signature_hex": "b35d3f11b82544231bc5ac900e0a033a0e2d0647a9578788f44e39db0a1bb03a166dd94167a9c85ac1c57d555666a7b3accb772a1c36d4f74476bf8612cf9703"
+    }
+  ],
+  "admit": [
+    {
+      "case": 0,
+      "now_unix": 1700040000,
+      "require": [
+        "gateway"
+      ],
+      "expect": "ok",
+      "note": "valid window, capability held"
+    },
+    {
+      "case": 0,
+      "now_unix": 1700086400,
+      "require": [],
+      "expect": "expired",
+      "note": "now == expires_at is expired (exclusive bound)"
+    },
+    {
+      "case": 0,
+      "now_unix": 1699999999,
+      "require": [],
+      "expect": "not_yet_valid",
+      "note": "now < issued_at"
+    },
+    {
+      "case": 0,
+      "now_unix": 1700040000,
+      "require": [],
+      "expect": "node_id_mismatch",
+      "note": "verify with a DIFFERENT key than the case's seed derives"
+    },
+    {
+      "case": 1,
+      "now_unix": 1700001800,
+      "require": [
+        "relay"
+      ],
+      "expect": "capability_not_held",
+      "note": "gateway-only statement cannot admit relay"
+    },
+    {
+      "case": 1,
+      "now_unix": 1700001800,
+      "require": [
+        "gateway",
+        "infrastructure"
+      ],
+      "expect": "capability_not_held",
+      "note": "multi-require fails if ANY capability is missing"
+    },
+    {
+      "case": 2,
+      "now_unix": 100,
+      "require": [
+        "dtn_custodian"
+      ],
+      "expect": "ok",
+      "note": "multi-capability lookup with dtn_custodian held"
+    },
+    {
+      "case": 3,
+      "now_unix": 0,
+      "require": [],
+      "expect": "ok",
+      "note": "window opens exactly at the epoch floor"
+    },
+    {
+      "case": 3,
+      "now_unix": 1,
+      "require": [],
+      "expect": "expired",
+      "note": "one-second window closes exactly at 1"
+    },
+    {
+      "case": 4,
+      "now_unix": 1754500000,
+      "require": [
+        "infrastructure"
+      ],
+      "expect": "ok",
+      "note": "canonicalized order admits any held capability"
+    }
+  ],
+  "parse_reject": [
+    {
+      "hex": "a50101025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f96302326038267676174657761796d64746e5f637573746f6469616e04010502",
+      "error": "capabilities_not_sorted",
+      "note": "array must be strictly ascending by wire text"
+    },
+    {
+      "hex": "a50101025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f9630232603816973757065727573657204010502",
+      "error": "unknown_capability",
+      "note": "only the frozen initial set is valid in v1"
+    },
+    {
+      "hex": "a50101025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f96302326038004010502",
+      "error": "capabilities_empty",
+      "note": "a statement claiming nothing is meaningless and rejected"
+    },
+    {
+      "hex": "a50101025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f9630232603816767617465776179040a050a",
+      "error": "expiry_not_after_issue",
+      "note": "zero-length validity window is rejected"
+    },
+    {
+      "hex": "a40101025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f96302326038167676174657761790401",
+      "error": "missing_field",
+      "note": "expires_at is required"
+    },
+    {
+      "hex": "a50102025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f963023260381676761746577617904010502",
+      "error": "scheme_version_unsupported",
+      "note": "v2 statements are not v1"
+    },
+    {
+      "hex": "a60101025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f96302326038167676174657761790401050206b821636b303000636b303101636b303202636b303303636b303404636b303505636b303606636b303707636b303808636b303909636b31300a636b31310b636b31320c636b31330d636b31340e636b31350f636b313610636b313711636b313812636b313913636b323014636b323115636b323216636b323317636b32341818636b32351819636b3236181a636b3237181b636b3238181c636b3239181d636b3330181e636b3331181f636b33321820",
+      "error": "limits_too_many_entries",
+      "note": "adversarial size bound"
+    },
+    {
+      "hex": "a6011801025820d412f621bbaebb45bd5ba66304681765ed9510b55dc888bf3215473f9630232603816767617465776179041a6553f100051a6553ff1006a26c6d61785f73657373696f6e7304716d61785f6261636b6861756c5f6d6270731864",
+      "error": "cbor:NonMinimalInteger",
+      "note": "non-canonical integer rejected by the CBOR profile before parse"
+    }
+  ]
+}

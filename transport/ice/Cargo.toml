@@ -1,0 +1,31 @@
+[package]
+name = "sharenet-transport-ice"
+description = "ShareNet ICE/TURN transport (R4-005): RFC 5389 STUN subset, RFC 8445 candidate model, TURN-style UDP relay — candidates as the address source for node-pinned QUIC tunnels (platform adapter layer; the protocol core stays dependency-light)."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_transport_ice"
+path = "src/lib.rs"
+
+# TEST SCAFFOLDING binaries: real second processes for the R4-005
+# multiprocess verification (same honest pattern as the QUIC peer binary
+# in transport/quic — the sandbox cannot reach external STUN/TURN servers,
+# so the tests run local ones).
+[[bin]]
+name = "stun_server"
+path = "src/bin/stun_server.rs"
+
+[[bin]]
+name = "turn_relay"
+path = "src/bin/turn_relay.rs"
+
+[[bin]]
+name = "turn_client"
+path = "src/bin/turn_client.rs"
+
+[dependencies]
+sharenet-transport-quic = { path = "../quic" }

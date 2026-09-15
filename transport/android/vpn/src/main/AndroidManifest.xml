@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      R4-004: the system-visible VPN entry point.
+
+      Unlike the nearby module's service (exported=false — app-internal),
+      a VpnService MUST be exported and guarded by the signature-protected
+      BIND_VPN_SERVICE permission: the SYSTEM binds to it when the user
+      toggles the VPN (Settings dialog / VpnManager). Only a process
+      holding android.permission.BIND_VPN_SERVICE (i.e. the system) may
+      bind. The app itself starts it with ACTION_START via startService.
+
+      The user-facing consent flow (VpnService.prepare → system dialog)
+      belongs to the embedding app; this service refuses to establish
+      without it (VpnNotPrepared typed error).
+    -->
+    <application>
+        <service
+            android:name="org.sharenet.transport.vpn.ShareNetVpnService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>

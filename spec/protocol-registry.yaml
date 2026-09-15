@@ -52,7 +52,24 @@ objects:
     status_note: implemented in Wave 5 (R3-003); quality fields are caller-mapped from the R2-04 LinkQualitySummary (the protocol core takes plain integers; the telemetry crate stays a transport-side dependency); durable replay-safe evidence receipts are R8-001 scope (this object is in-memory runtime evidence)
   - name: RouteProposal
     class: wire
-    maturity: foundation
+    maturity: in-implementation
+    implementation: reference/crates/sharenet-protocol (route.rs)
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: proposer NodeIdentity map, 3: path (array of 32-byte bstr node_ids, non-empty, strictly ascending bytewise so exactly one byte image exists per logical path; a hop may appear once), 4: service_class (text; frozen v1 set: live, opportunistic, dtn), 5: proposed_at_unix (uint), 6: expires_at_unix (uint, > proposed_at; window <= 3600s), 7: proposal_nonce (32-byte bstr, entropy supplied by the proposer — distinguishes otherwise identical proposals so every replacement route is genuinely new)}
+    signature_rule: detached Ed25519 signature by the proposer's key over the canonical proposal bytes; carrying envelope {1: proposal (bstr), 2: signature (64-byte bstr)}; proposal_id = SHA-256(canonical proposal bytes)
+  - name: RouteAcceptance
+    class: wire
+    maturity: in-implementation
+    implementation: reference/crates/sharenet-protocol (route.rs)
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: proposal_id (32-byte bstr — the accepted proposal), 3: accepting NodeIdentity map (MUST be the identity whose node_id equals path[position] of the accepted proposal), 4: position (uint — the hop index being accepted), 5: accepted_at_unix (uint), 6: expires_at_unix (uint, > accepted_at; window <= 3600s)}
+    signature_rule: detached Ed25519 signature by the accepting hop's key over the canonical acceptance bytes; carrying envelope {1: acceptance (bstr), 2: signature (64-byte bstr)}
+  - name: RouteCommitment
+    class: wire
+    maturity: in-implementation
+    implementation: reference/crates/sharenet-protocol (route.rs)
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: proposal_envelope (bstr: the signed RouteProposal carrying envelope), 3: acceptance_envelopes (array of bstr, one per path position, ordered by position), 4: commitment_root (32-byte bstr), 5: route_id (32-byte bstr)}
+    derivation_rule: commitment_root = Merkle root (SHA-256, duplicate-the-last-leaf for odd counts, single leaf hashed as its own pair with itself) over the canonical acceptance bytes ordered by position; route_id = SHA-256("sharenet-route-id-v1" || commitment_root) — commitment-derived, caller-selected route IDs are FORBIDDEN (L013); the proposal is bound through proposal_id inside every acceptance
+    verification_rule: receivers verify the proposal (signature, invariants), then every acceptance (signature, position < path length, accepting identity node_id == path[position], proposal_id match, freshness), that positions 0..len-1 are covered exactly once, re-derive the Merkle root and route_id, and reject any mismatch (fail-closed)
+    status_note: implementation scheduled as R3-004 (Wave 6); replacement routes get fresh nonces -> fresh proposals -> fresh acceptance sets -> fresh roots -> fresh route ids (L014 replay-namespace rule); recovery/revocation of committed routes is R7 scope
   - name: RouteAcceptance
     class: wire
     maturity: foundation

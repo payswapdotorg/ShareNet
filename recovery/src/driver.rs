@@ -704,6 +704,93 @@ impl RecoveryDriver {
         }
     }
 
+    /// R7-006: the cross-circuit coordination view — every circuit
+    /// carrying recovery history, with its typed status at `now` under
+    /// `backoff` (the same policy the daemon gates with), in the
+    /// deterministic circuit-id order (architecture §2).
+    ///
+    /// This is the scheduler's input: WHICH recoveries are in flight
+    /// (and how far along), which are waiting on their backoff window,
+    /// and which are terminal. It is a pure query over the durable
+    /// state — the concurrent-recovery arbitration itself (which
+    /// recovery gets the next contact slot) is the daemon's policy
+    /// composed with this view.
+    pub fn recoveries(
+        &self,
+        now_unix: u64,
+        backoff: &crate::backoff::BackoffPolicy,
+    ) -> Vec<CircuitRecoveryStatus> {
+        let mut out = Vec::new();
+        for circuit_id in self.attempts.circuits_with_history() {
+            let state = match self.when_may_retry(&circuit_id, now_unix, backoff) {
+                RetryDecision::RetryNow => RecoveryStatusState::Retryable,
+                RetryDecision::NotYet { retry_at_unix } => {
+                    RecoveryStatusState::AwaitingRetry { retry_at_unix }
+                }
+                RetryDecision::Terminal { reason } => RecoveryStatusState::Terminal { reason },
+            };
+            // Refine: an OPEN attempt is in flight regardless of the
+            // gate's reading (the gate says AttemptPending too, but the
+            // view names it directly).
+            let state = if let Some(pending) = self.attempts.pending_attempt(&circuit_id) {
+                RecoveryStatusState::AttemptInFlight {
+                    attempt_seq: pending.attempt_seq(),
+                }
+            } else {
+                state
+            };
+            out.push(CircuitRecoveryStatus {
+                circuit_id,
+                abandoned: self
+                    .attempts
+                    .attempts_for(&circuit_id)
+                    .iter()
+                    .filter(|r| r.state() == crate::attempt::AttemptState::Abandoned)
+                    .count() as u64,
+                state,
+            });
+        }
+        out
+    }
+
+    /// R7-006 cleanup: prune the ABANDONED history of every circuit
+    /// whose recovery is TERMINAL (a succeeded latest attempt, finished
+    /// at least `min_age_s` before `now`), retaining exactly the
+    /// terminal record + the high-water + the §11 anchor + the
+    /// zeroization fact.
+    ///
+    /// **The revocation ledger is NEVER touched** — L015: revocation is
+    /// durable and authoritative, and this cleanup bounds the ATTEMPT
+    /// LOG only. A cleaned circuit stays `recovery_already_complete`
+    /// (the retained terminal record preserves the terminal fact);
+    /// pending and abandoned-only recoveries keep their full history
+    /// (typed refusals, nothing pruned on any refusal).
+    ///
+    /// Returns the cleaned circuit ids (deterministic order).
+    pub fn cleanup_terminal(
+        &self,
+        now_unix: u64,
+        min_age_s: u64,
+    ) -> Result<Vec<[u8; 32]>, RecoveryError> {
+        let mut cleaned = Vec::new();
+        for circuit_id in self.attempts.circuits_with_history() {
+            // Skip anything not terminal-and-fresh-enough WITHOUT
+            // consuming its typed refusal: the driver-level law (an
+            // abandoned-only or pending circuit is not cleanup's to
+            // touch) is checked here, the age law inside the log's
+            // atomic prune.
+            let history = self.attempts.attempts_for(&circuit_id);
+            let Some(latest) = history.last() else { continue };
+            if latest.state() != crate::attempt::AttemptState::Succeeded {
+                continue;
+            }
+            if self.attempts.prune_terminal_history(&circuit_id, now_unix, min_age_s)? {
+                cleaned.push(circuit_id);
+            }
+        }
+        Ok(cleaned)
+    }
+
     /// The durable revocation ledger (the R7-002 durable layer).
     pub fn revocation_ledger(&self) -> &DurableRevocationLedger {
         &self.ledger
@@ -723,6 +810,52 @@ impl RecoveryDriver {
 // ---------------------------------------------------------------------------
 // The R7-003 composition types
 // ---------------------------------------------------------------------------
+
+/// R7-006: one circuit's recovery status in the coordination view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CircuitRecoveryStatus {
+    /// The revoked circuit.
+    pub circuit_id: [u8; 32],
+    /// How many attempts are (currently retained as) abandoned.
+    pub abandoned: u64,
+    /// The typed state.
+    pub state: RecoveryStatusState,
+}
+
+/// The typed state of one circuit's recovery in the coordination view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryStatusState {
+    /// An attempt is open and in flight (the §11 pipeline is running).
+    AttemptInFlight {
+        /// The open attempt's sequence number.
+        attempt_seq: u64,
+    },
+    /// No attempt open; the backoff window has elapsed — the next
+    /// attempt may open NOW.
+    Retryable,
+    /// No attempt open; the earliest permitted next-attempt time.
+    AwaitingRetry {
+        /// Inclusive bound.
+        retry_at_unix: u64,
+    },
+    /// No further attempt may open.
+    Terminal {
+        /// Why (typed).
+        reason: crate::backoff::TerminalReason,
+    },
+}
+
+impl RecoveryStatusState {
+    /// Stable machine name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            RecoveryStatusState::AttemptInFlight { .. } => "attempt_in_flight",
+            RecoveryStatusState::Retryable => "retryable",
+            RecoveryStatusState::AwaitingRetry { .. } => "awaiting_retry",
+            RecoveryStatusState::Terminal { .. } => "terminal",
+        }
+    }
+}
 
 /// The selected fresh gateway, bound to the open §11 recovery attempt
 /// (the output of [`RecoveryDriver::select_gateway`]): which gateway, the
@@ -1529,5 +1662,255 @@ mod tests {
             )
             .expect("a fresh nonce over the recorded (seam-supplied) route");
         assert_ne!(replacement.replacement_circuit_id, revoked);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// R7-006 tests: the coordination view + the cleanup laws
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod r7006_tests {
+    use super::*;
+    use crate::testkit as tk;
+    use crate::{AttemptFailure, AttemptState};
+
+    fn backoff() -> crate::backoff::BackoffPolicy {
+        crate::backoff::BackoffPolicy::new(
+            crate::backoff::BackoffSchedule::Fixed { delay_s: 30 },
+            None,
+        )
+        .expect("policy")
+    }
+
+    /// The shared prefix: a driver with one circuit revoked + one failed
+    /// attempt (abandoned at NOW+2, so the 30s window re-opens at NOW+32).
+    fn one_failed_recovery(tag: &str) -> (RecoveryDriver, [u8; 32], tk::TempDir) {
+        let dir = tk::TempDir::new(tag);
+        let (driver, _) = RecoveryDriver::open(&dir.path).expect("open");
+        let w = tk::world(tk::NOW);
+        let mut registry = CircuitRegistry::new();
+        let revoked = tk::admit_circuit(&w, &mut registry, tk::NOW, [0x71; 32]);
+        driver
+            .admit_revocation_envelope(
+                tk::NOW,
+                &tk::link_failure_revocation(&w, revoked, tk::NOW).to_envelope_bytes(),
+                &registry,
+            )
+            .expect("admit");
+        driver.attempt_next(&revoked, tk::NOW + 1).expect("attempt");
+        driver
+            .attempt_failed(&revoked, AttemptFailure::NoGatewayAvailable, tk::NOW + 2)
+            .expect("abandon");
+        (driver, revoked, dir)
+    }
+
+    #[test]
+    fn coordination_view_names_every_state_deterministically() {
+        let (driver, revoked, _dir) = one_failed_recovery("r7006-view");
+        // Inside the window: awaiting retry at NOW+32.
+        assert_eq!(
+            driver.recoveries(tk::NOW + 10, &backoff()),
+            vec![CircuitRecoveryStatus {
+                circuit_id: revoked,
+                abandoned: 1,
+                state: RecoveryStatusState::AwaitingRetry { retry_at_unix: tk::NOW + 32 },
+            }]
+        );
+        // After the window: retryable.
+        assert_eq!(
+            driver.recoveries(tk::NOW + 40, &backoff())[0].state,
+            RecoveryStatusState::Retryable
+        );
+        // In flight once the second attempt opens.
+        driver.attempt_next(&revoked, tk::NOW + 32).expect("open 2");
+        assert_eq!(
+            driver.recoveries(tk::NOW + 33, &backoff())[0].state,
+            RecoveryStatusState::AttemptInFlight { attempt_seq: 2 }
+        );
+        // Terminal once it succeeds.
+        let w = tk::world(tk::NOW);
+        driver
+            .attempt_succeeded(
+                &revoked,
+                crate::attempt::FreshRouteEvidence::Commitment(&w.commitment),
+                tk::NOW + 40,
+            )
+            .expect("succeed");
+        assert_eq!(
+            driver.recoveries(tk::NOW + 41, &backoff())[0].state,
+            RecoveryStatusState::Terminal { reason: crate::backoff::TerminalReason::AlreadySucceeded }
+        );
+    }
+
+    #[test]
+    fn multi_circuit_view_is_id_ordered() {
+        let (driver, _revoked, _dir) = one_failed_recovery("r7006-order");
+        // A second, independent circuit in a different recovery state.
+        let w = tk::world(tk::NOW);
+        let mut registry = CircuitRegistry::new();
+        let other = tk::admit_circuit(&w, &mut registry, tk::NOW, [0x72; 32]);
+        driver
+            .admit_revocation_envelope(
+                tk::NOW,
+                &tk::policy_revocation(&w, other, tk::NOW).to_envelope_bytes(),
+                &registry,
+            )
+            .expect("admit");
+        // The view carries circuits WITH history: open the second
+        // recovery's first attempt (it stays pending — in flight).
+        driver.attempt_next(&other, tk::NOW + 1).expect("other attempt");
+        let view = driver.recoveries(tk::NOW + 10, &backoff());
+        assert_eq!(view.len(), 2);
+        let mut ids: Vec<[u8; 32]> = view.iter().map(|s| s.circuit_id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted, "the view is id-ordered (deterministic)");
+        ids.clear();
+        let _ = ids;
+    }
+
+    #[test]
+    fn cleanup_prunes_only_terminal_and_old_enough() {
+        let (driver, revoked, _dir) = one_failed_recovery("r7006-clean");
+        // Not terminal yet (abandoned tail): cleaned NOTHING.
+        assert_eq!(driver.cleanup_terminal(tk::NOW + 100, 60).expect("clean"), Vec::<[u8; 32]>::new());
+        assert_eq!(driver.attempt_log().attempts_for(&revoked).len(), 1);
+
+        // Succeed the recovery (attempt 2 at NOW+32..NOW+40).
+        let w = tk::world(tk::NOW);
+        driver.attempt_next(&revoked, tk::NOW + 32).expect("open 2");
+        driver
+            .attempt_succeeded(
+                &revoked,
+                crate::attempt::FreshRouteEvidence::Commitment(&w.commitment),
+                tk::NOW + 40,
+            )
+            .expect("succeed");
+
+        // Too fresh (finished NOW+40; min_age 60 → earliest NOW+100):
+        // typed refusal, NOTHING pruned.
+        let err = driver
+            .cleanup_terminal(tk::NOW + 99, 60)
+            .expect_err("too early");
+        assert_eq!(err.name(), "cleanup_too_early");
+
+        // Old enough: both abandoned records pruned, terminal retained.
+        let cleaned = driver.cleanup_terminal(tk::NOW + 101, 60).expect("clean");
+        assert_eq!(cleaned, vec![revoked]);
+        let retained = driver.attempt_log().attempts_for(&revoked);
+        assert_eq!(retained.len(), 1, "only the terminal record");
+        assert_eq!(retained[0].state(), AttemptState::Succeeded);
+        assert_eq!(retained[0].attempt_seq(), 2, "the high-water's terminal record");
+
+        // The terminal fact SURVIVED the cleanup: still complete.
+        assert_eq!(
+            driver.attempt_next(&revoked, tk::NOW + 200).unwrap_err().name(),
+            "recovery_already_complete"
+        );
+        // Idempotent: nothing more to prune.
+        assert_eq!(
+            driver.cleanup_terminal(tk::NOW + 500, 60).expect("clean"),
+            Vec::<[u8; 32]>::new()
+        );
+    }
+
+    #[test]
+    fn cleanup_never_touches_the_ledger() {
+        let (driver, revoked, dir) = one_failed_recovery("r7006-ledger");
+        let (ledger_path, _) = driver.paths();
+        let ledger_before = std::fs::read(&ledger_path).expect("ledger bytes");
+        let w = tk::world(tk::NOW);
+        driver.attempt_next(&revoked, tk::NOW + 32).expect("open 2");
+        driver
+            .attempt_succeeded(
+                &revoked,
+                crate::attempt::FreshRouteEvidence::Commitment(&w.commitment),
+                tk::NOW + 40,
+            )
+            .expect("succeed");
+        driver.cleanup_terminal(tk::NOW + 200, 60).expect("clean");
+        // L015 end to end: the ledger bytes are UNTOUCHED and the
+        // circuit is still revoked after cleanup + reload.
+        assert_eq!(std::fs::read(&ledger_path).expect("ledger bytes"), ledger_before);
+        drop(driver);
+        let (driver, _) = RecoveryDriver::open(&dir.path).expect("reload");
+        assert!(driver.is_revoked(&revoked));
+    }
+
+    #[test]
+    fn second_failure_opens_a_fresh_recovery_for_the_replacement() {
+        // The L014 chain end to end: original circuit revoked →
+        // recovered with a replacement circuit → the REPLACEMENT fails
+        // and is revoked in turn → a NEW recovery opens for the
+        // replacement's own circuit id (a fresh session, a fresh §11
+        // section), while the original stays terminal.
+        let (driver, revoked, _dir) = one_failed_recovery("r7006-second");
+        let gw = tk::gateway_world(tk::NOW);
+        // Recover through the gateway to a replacement circuit.
+        driver.record_zeroization(&revoked, tk::NOW + 3).expect("zeroize");
+        let step = driver.attempt_next(&revoked, tk::NOW + 32).expect("open 2");
+        let selected = driver
+            .select_gateway(&step, &[gw.candidate_eligible()], &tk::admission_policy(), tk::NOW + 33)
+            .expect("select");
+        let material = tk::fresh_route_material(&gw, &selected, tk::NOW + 34);
+        let route = driver
+            .establish_fresh_route(&selected, &material.proposal_env, &material.acceptance_envs, tk::NOW + 34)
+            .expect("route");
+        let repl = tk::replacement_material_over(&material, &gw, &selected.gateway_node_id, [0x93; 32], tk::NOW + 35);
+        let mut registry = CircuitRegistry::new();
+        let replacement = driver
+            .establish_replacement_circuit(&route, &repl.setup_env, &repl.ack_envs, &mut registry, tk::NOW + 36)
+            .expect("replacement");
+        assert_ne!(replacement.replacement_circuit_id, revoked);
+
+        // The SECOND FAILURE: the replacement circuit is revoked in turn
+        // — signed by the RECOVERING node (a committed-path member of
+        // the replacement's own route: recovering + gateway), against
+        // the registry that carries the replacement's commitment.
+        let second_failure = sharenet_protocol::revocation::CircuitRevocation::new(
+            &gw.recovering,
+            replacement.replacement_circuit_id,
+            sharenet_protocol::revocation::RevocationReason::LinkFailure,
+            None,
+            tk::NOW + 100,
+        )
+        .expect("second revocation")
+        .sign(&gw.recovering)
+        .expect("sign");
+        driver
+            .admit_revocation_envelope(tk::NOW + 100, &second_failure.to_envelope_bytes(), &registry)
+            .expect("the replacement revokes");
+        assert!(driver.is_revoked(&replacement.replacement_circuit_id));
+
+        // A FRESH recovery opens for the replacement (its own §11
+        // section, attempt 1) — while the original stays terminal.
+        let step2 = driver
+            .attempt_next(&replacement.replacement_circuit_id, tk::NOW + 101)
+            .expect("the second failure recovers");
+        assert_eq!(
+            step2,
+            RecoveryStep::SelectFreshGateway {
+                revoked_circuit_id: replacement.replacement_circuit_id,
+                attempt_seq: 1,
+            }
+        );
+        assert_eq!(
+            driver.attempt_next(&revoked, tk::NOW + 102).unwrap_err().name(),
+            "recovery_already_complete"
+        );
+        // The coordination view carries BOTH: the original terminal,
+        // the replacement in flight — deterministically id-ordered.
+        let view = driver.recoveries(tk::NOW + 102, &backoff());
+        assert_eq!(view.len(), 2);
+        let by_id = |id: [u8; 32]| view.iter().find(|s| s.circuit_id == id).unwrap();
+        assert_eq!(
+            by_id(revoked).state,
+            RecoveryStatusState::Terminal { reason: crate::backoff::TerminalReason::AlreadySucceeded }
+        );
+        assert_eq!(
+            by_id(replacement.replacement_circuit_id).state,
+            RecoveryStatusState::AttemptInFlight { attempt_seq: 1 }
+        );
     }
 }

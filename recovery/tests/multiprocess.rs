@@ -277,3 +277,138 @@ fn replacement_circuit_across_process_boundaries() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// R7-006 across process boundaries: the full concurrent-recovery
+/// lifecycle of one circuit — two failed attempts (the backoff
+/// history), a terminal third, a too-early cleanup refused typed, an
+/// old-enough cleanup pruning to exactly the terminal record (which
+/// still blocks new attempts) — plus the SECOND FAILURE: the
+/// replacement circuit revoked in a later process opens its OWN fresh
+/// recovery, and the coordination view carries both, deterministically
+/// ordered, from yet another process.
+#[test]
+fn r7006_lifecycle_second_failure_and_cleanup_across_processes() {
+    let dir = temp_dir("r7006");
+    let d = dir.to_str().unwrap().to_string();
+
+    // -- Process role 1: revocation + zeroization + two failed rounds. --
+    let (code, out) = probe(&["setup", &d, &(BASE + 10).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+    let circuit = out
+        .iter()
+        .find_map(|l| l.strip_prefix("CIRCUIT "))
+        .expect("CIRCUIT line")
+        .split(' ')
+        .next()
+        .expect("circuit hex")
+        .to_string();
+    let (code, out) = probe(&["zeroize", &d, &(BASE + 11).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+
+    for (open_at, fail_at, reason, seq) in [
+        (BASE + 12, BASE + 13, "no_gateway_available", 1),
+        (BASE + 14, BASE + 15, "gateway_unreachable", 2),
+    ] {
+        let (code, out) = probe(&["open-attempt", &d, &open_at.to_string()]);
+        assert_eq!(code, 0, "{out:?}");
+        let (code, out) = probe(&["abandon", &d, &fail_at.to_string(), reason]);
+        assert_eq!(code, 0, "{out:?}");
+        assert_eq!(out[0], format!("ABANDONED {seq}"), "{out:?}");
+    }
+
+    // -- Process role 2: the terminal third attempt + the replacement. --
+    let (code, out) = probe(&["open-attempt", &d, &(BASE + 16).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+    let (code, out) = probe(&["select", &d, &(BASE + 17).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+    let selected = out
+        .iter()
+        .find_map(|l| l.strip_prefix("SELECTED "))
+        .expect("SELECTED line")
+        .split(' ')
+        .next()
+        .expect("gateway hex")
+        .to_string();
+    let (code, out) = probe(&["establish", &d, &(BASE + 18).to_string(), &selected]);
+    assert_eq!(code, 0, "{out:?}");
+    assert!(out.iter().any(|l| l == "ATTEMPT succeeded 3"), "{out:?}");
+    let (code, out) = probe(&[
+        "establish-replacement",
+        &d,
+        &(BASE + 19).to_string(),
+        &(BASE + 18).to_string(),
+    ]);
+    assert_eq!(code, 0, "{out:?}");
+    let replacement = out
+        .iter()
+        .find_map(|l| l.strip_prefix("REPLACEMENT "))
+        .expect("REPLACEMENT line")
+        .to_string();
+    assert_ne!(replacement, circuit, "L014: a fresh circuit id");
+
+    // -- The coordination view: terminal with the 2-abandoned history. --
+    let (code, out) = probe(&["recoveries", &d, &(BASE + 20).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+    let line = out
+        .iter()
+        .find(|l| l.starts_with(&format!("RECOVERY {circuit} ")))
+        .expect("the original in the view");
+    assert!(line.contains(" terminal 2 "), "terminal, two abandoned: {line}");
+
+    // -- Cleanup, the typed age law then the prune — across processes. --
+    let (code, out) = probe(&["cleanup", &d, &(BASE + 21).to_string(), "60"]);
+    assert_eq!(code, 3, "too early is the typed refusal: {out:?}");
+    assert!(out.iter().any(|l| l == "ERROR cleanup_too_early"), "{out:?}");
+    let (code, out) = probe(&["cleanup", &d, &(BASE + 100).to_string(), "60"]);
+    assert_eq!(code, 0, "{out:?}");
+    assert!(out.iter().any(|l| l.as_str() == format!("CLEANED {circuit}")), "{out:?}");
+    assert!(out.iter().any(|l| l == "DONE 1"), "{out:?}");
+    // The terminal fact survived the prune (across ANOTHER process).
+    let (code, out) = probe(&["state", &d]);
+    assert_eq!(code, 0, "{out:?}");
+    assert!(out.iter().any(|l| l == "ATTEMPTS 1"), "pruned to the terminal record: {out:?}");
+    let (code, out) = probe(&["open-attempt", &d, &(BASE + 101).to_string()]);
+    assert_eq!(code, 3, "{out:?}");
+    assert!(
+        out.iter().any(|l| l == "ERROR recovery_already_complete"),
+        "cleanup never resurrects a completed recovery: {out:?}"
+    );
+
+    // -- The SECOND FAILURE: the replacement revoked in a new process. --
+    let (code, out) = probe(&[
+        "revoke-replacement",
+        &d,
+        &(BASE + 200).to_string(),
+        &(BASE + 18).to_string(),
+    ]);
+    assert_eq!(code, 0, "{out:?}");
+    assert!(out.iter().any(|l| l == "OUTCOME first"), "{out:?}");
+    assert!(
+        out.iter().any(|l| l.as_str() == format!("SECOND-FAILURE {replacement}")),
+        "{out:?}"
+    );
+    assert!(
+        out.iter()
+            .any(|l| l.as_str() == format!("STEP select_fresh_gateway {replacement} 1")),
+        "a FRESH recovery for the replacement's own id: {out:?}"
+    );
+
+    // -- The coordination view from one more process: BOTH circuits. ----
+    let (code, out) = probe(&["recoveries", &d, &(BASE + 201).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+    let ids: Vec<&str> = out
+        .iter()
+        .filter_map(|l| l.strip_prefix("RECOVERY "))
+        .map(|rest| rest.split(' ').next().unwrap())
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(ids, sorted, "deterministic id order: {out:?}");
+    assert!(ids.contains(&circuit.as_str()) && ids.contains(&replacement.as_str()), "{out:?}");
+    assert!(
+        out.iter().any(|l| l.starts_with(&format!("RECOVERY {replacement} attempt_in_flight"))),
+        "the replacement is in flight: {out:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

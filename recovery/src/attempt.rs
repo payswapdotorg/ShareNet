@@ -752,6 +752,75 @@ impl RecoveryAttemptLog {
             .unwrap_or_default()
     }
 
+    /// R7-006: every circuit carrying attempt history, in the
+    /// deterministic BTreeMap key order (the coordination view's
+    /// iteration order — architecture §2).
+    pub fn circuits_with_history(&self) -> Vec<[u8; 32]> {
+        lock(&self.inner).sections.keys().copied().collect()
+    }
+
+    /// R7-006 cleanup: prune one terminal circuit's ABANDONED history,
+    /// retaining exactly the terminal succeeded record (plus the
+    /// high-water, the §11 anchor and the zeroization fact — the section
+    /// itself always survives, so the terminal fact can never be
+    /// resurrected away: a cleaned circuit stays `recovery_already_complete`).
+    ///
+    /// Laws (fail-closed, typed):
+    /// - only a section whose LATEST attempt is `Succeeded` may be
+    ///   cleaned (`NoSucceededAttempt` otherwise — pending and
+    ///   abandoned-only recoveries keep their history);
+    /// - the terminal record must have finished at least `min_age_s`
+    ///   seconds before `now` (`CleanupTooEarly` — a fresh success keeps
+    ///   its full context);
+    /// - the high-water, the revoked-at anchor and the zeroization fact
+    ///   are NEVER dropped.
+    ///
+    /// Returns whether anything was pruned.
+    pub fn prune_terminal_history(
+        &self,
+        revoked_circuit_id: &[u8; 32],
+        now_unix: u64,
+        min_age_s: u64,
+    ) -> Result<bool, RecoveryError> {
+        self.mutate(|inner| {
+            let section = inner
+                .sections
+                .get_mut(revoked_circuit_id)
+                .ok_or(RecoveryError::NoSucceededAttempt {
+                    circuit_id: *revoked_circuit_id,
+                })?;
+            let latest = section
+                .attempts
+                .last()
+                .ok_or(RecoveryError::NoSucceededAttempt {
+                    circuit_id: *revoked_circuit_id,
+                })?;
+            if latest.state != AttemptState::Succeeded {
+                return Err(RecoveryError::NoSucceededAttempt {
+                    circuit_id: *revoked_circuit_id,
+                });
+            }
+            let finished = latest
+                .finished_at_unix()
+                .expect("succeeded records carry finished_at");
+            if now_unix.saturating_sub(finished) < min_age_s {
+                return Err(RecoveryError::CleanupTooEarly {
+                    circuit_id: *revoked_circuit_id,
+                    finished_at_unix: finished,
+                    now_unix,
+                });
+            }
+            let before = section.attempts.len();
+            // Retain ONLY the terminal record (and any pending record —
+            // impossible after the succeeded check, but the invariant is
+            // cheap and explicit).
+            section
+                .attempts
+                .retain(|r| r.state != AttemptState::Abandoned);
+            Ok(section.attempts.len() < before)
+        })
+    }
+
     /// The newest retained attempt for a circuit, if any.
     pub fn latest_attempt(&self, revoked_circuit_id: &[u8; 32]) -> Option<RecoveryAttempt> {
         lock(&self.inner)

@@ -1,11 +1,15 @@
-//! The durable, bounded recovery-attempt log — work item R7-002.
+//! The durable, bounded recovery-attempt log — work items R7-002 + R7-004.
 //!
 //! Architecture §11: after `durable circuit invalidation` and
 //! `zeroization`, recovery proceeds through `recovery attempt → fresh
 //! gateway selection → fresh route commitment → fresh circuit session →
 //! verification`. *"A failed circuit is never resurrected. Recovery state
 //! is durable and bounded."* This module is the durable, bounded record
-//! of the attempts:
+//! of the attempts — and, since R7-004, of the two §11 facts that frame
+//! them: the **zeroization** of the revoked circuit (the step between
+//! invalidation and the new session — §11's exact word) and the
+//! **replacement circuit** established over a succeeded attempt's fresh
+//! route (the fresh circuit session itself):
 //!
 //! - each attempt is a **per-revoked-circuit monotonic** record
 //!   (`attempt_seq` 1, 2, 3, … with a persisted high-water mark that
@@ -34,9 +38,26 @@
 //!   retained attempts per circuit; on overflow the OLDEST abandoned
 //!   attempts are compacted away (never the pending, never the
 //!   succeeded); the whole file is capped at
-//!   [`MAX_ATTEMPT_LOG_FILE_BYTES`].
+//!   [`MAX_ATTEMPT_LOG_FILE_BYTES`];
+//! - the **zeroization fact** (R7-004): a per-revoked-circuit, at-most-once
+//!   durable record ([`ZeroizationRecord`]) that the revoked circuit's key
+//!   material was dropped, ordered AFTER durable invalidation (the ledger
+//!   anchor) and BEFORE any replacement circuit may be recorded. What is
+//!   claimed and what is not: this layer holds no key material of its own
+//!   — the honest scope is recording and ordering the FACT (see the
+//!   [`ZeroizationRecord`] docs; the in-process zeroization of real session
+//!   keys lives in the runtime layers — R3-001's link-frame key zeroizing
+//!   on drop, R4-001's tunnel);
+//! - the **replacement circuit fact** (R7-004, L014): the succeeded
+//!   attempt of a revoked circuit may carry ONE replacement circuit id —
+//!   the circuit the fresh route's setup derived
+//!   (`SHA-256("sharenet-circuit-id-v1" || route_id || setup_nonce)`, the
+//!   R4-002 binding) — and never the revoked circuit's own id. A second
+//!   replacement for the same recovery is refused typed: a further
+//!   failure of the replacement circuit is a NEW revocation and a NEW
+//!   recovery (L014 fresh session identity).
 //!
-//! # File format (v1, node-local durable state — not a wire object)
+//! # File format (v2, node-local durable state — not a wire object)
 //!
 //! Full-image strict binary, little-endian (the R5-003 store discipline:
 //! atomic flush = temp + fsync + rename; every mutation is durable
@@ -45,35 +66,43 @@
 //! ```text
 //! offset  size  field
 //! 0       4     magic = b"SNRA" (ShareNet Recovery Attempts)
-//! 4       2     format_version = 1
+//! 4       2     format_version = 2   (v1 = pre-R7-004: refused — no
+//!                                     silent reinterpretation of the
+//!                                     old 52/58-byte layout)
 //! 6       2     flags = 0 (reserved; nonzero refused)
 //! 8       4     circuit_count (u32)
 //! 12      4     body_len (u32)
 //! 16      body_len  circuit sections, sorted by circuit id bytes
 //! 16+body_len  4   crc32 (u32) — CRC-32/IEEE of bytes [0 .. 16+body_len)
 //!
-//! circuit section (52 fixed bytes + 58 per retained attempt):
+//! circuit section (60 fixed bytes + 90 per retained attempt):
 //! 0       32    revoked circuit id
 //! 32      8     next_seq (u64) — the persisted high-water mark
 //! 40      8     revoked_at_unix — the §11 freshness anchor (the revoked
 //!               circuit's first recorded revocation time, taken from
 //!               the durable ledger at first-attempt admission)
-//! 48      4     attempt_count (u32)
-//! 52      …     attempt records, strictly ascending seq
+//! 48      8     zeroized_at_unix (u64; 0 iff the §11 zeroization fact is
+//!               not recorded; nonzero → >= revoked_at_unix)
+//! 56      4     attempt_count (u32)
+//! 60      …     attempt records, strictly ascending seq
 //!
-//! attempt record (58 bytes):
+//! attempt record (90 bytes):
 //! 0       8     attempt_seq (u64)
 //! 8       8     started_at_unix (u64)
 //! 16      8     finished_at_unix (u64; 0 iff pending)
 //! 24      1     state tag (0=pending 1=succeeded 2=abandoned)
 //! 25      1     outcome tag (0=none 1=fresh_route 2..=7=failure reason)
 //! 26      32    route_id (all-zero iff not succeeded)
+//! 58      32    replacement_circuit_id (all-zero iff no replacement was
+//!               established for this succeeded attempt; nonzero ONLY
+//!               on a succeeded record — R7-004)
 //! ```
 //!
 //! Every cross-check the mutation paths enforce is re-enforced on load
 //! (canonical section order, state-machine consistency, strict seq
 //! ascent, high-water correctness, single pending, terminal success, the
-//! retained bound, exact arithmetic) — the reloaded log is exactly as
+//! retained bound, the zeroization ordering, the replacement-only-on-
+//! succeeded law, exact arithmetic) — the reloaded log is exactly as
 //! lawful as the one that was flushed.
 //!
 //! # Honest limits
@@ -104,8 +133,12 @@ use crate::ledger::DurableRevocationLedger;
 
 /// File magic: **SN**etnet **R**ecovery **A**ttempts.
 pub const ATTEMPT_MAGIC: [u8; 4] = *b"SNRA";
-/// The attempt-log format version this code writes and accepts.
-pub const ATTEMPT_FORMAT_VERSION: u16 = 1;
+/// The attempt-log format version this code writes and accepts. v2 adds
+/// the R7-004 fields (the per-circuit `zeroized_at_unix` and the
+/// per-succeeded-attempt `replacement_circuit_id`); a v1 image (the
+/// pre-R7-004 52/58-byte layout) is refused typed — the old and new
+/// layouts never mix silently.
+pub const ATTEMPT_FORMAT_VERSION: u16 = 2;
 /// Hard cap on the attempt-log file (read and write side) — bounded
 /// durable state, fail-closed against hostile files.
 pub const MAX_ATTEMPT_LOG_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -116,8 +149,8 @@ pub const MAX_ATTEMPT_RECORDS_PER_CIRCUIT: usize = 64;
 
 const HEADER_LEN: usize = 16;
 const CRC_LEN: usize = 4;
-const SECTION_FIXED_LEN: usize = 32 + 8 + 8 + 4;
-const ATTEMPT_RECORD_LEN: usize = 8 + 8 + 8 + 1 + 1 + 32;
+const SECTION_FIXED_LEN: usize = 32 + 8 + 8 + 8 + 4;
+const ATTEMPT_RECORD_LEN: usize = 8 + 8 + 8 + 1 + 1 + 32 + 32;
 /// Cap on `Vec::with_capacity` for a count read from the file (the
 /// length arithmetic below does the real fail-closed check).
 const MAX_PREALLOC: usize = 1024;
@@ -224,6 +257,64 @@ pub enum FreshRouteEvidence<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// The §11 zeroization fact (R7-004)
+// ---------------------------------------------------------------------------
+
+/// The durable, typed fact that a revoked circuit's key material was
+/// dropped — §11's `zeroization` step, the one word the architecture
+/// places between `durable circuit invalidation` and the new session.
+///
+/// # What this records — and what it does NOT claim (the honesty boundary)
+///
+/// This layer holds NO key material of its own: the attempt log records
+/// attempts and facts, never session keys. What
+/// [`RecoveryAttemptLog::record_zeroization`] records and orders durably
+/// is the FACT — *"the revoked circuit's key material was dropped at
+/// `zeroized_at_unix`, after the circuit was durably revoked at
+/// `revoked_at_unix`, and before any replacement circuit may be
+/// established for it"* — so that a restarted process cannot skip the
+/// step and the ordering survives crashes (fail-closed gates: the
+/// replacement stage refuses without it).
+///
+/// It does NOT claim that any specific in-memory key bytes were actually
+/// overwritten: the in-process zeroization of real session keys lives in
+/// the runtime layers that own them (R3-001's link ChaCha20-Poly1305
+/// session keys and ephemeral secrets zeroized on drop, R4-001's tunnel
+/// state). This record is the durable ORDERING AND ACCOUNTABILITY fact
+/// those layers' zeroization is reported through — the daemon records it
+/// once the runtime layer dropped the revoked circuit's keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZeroizationRecord {
+    /// The revoked circuit whose key material was dropped.
+    pub(crate) revoked_circuit_id: [u8; 32],
+    /// When (caller clock) the zeroization was recorded — never before the
+    /// ledger's revocation anchor for the same circuit.
+    pub(crate) zeroized_at_unix: u64,
+}
+
+impl ZeroizationRecord {
+    /// The revoked circuit this zeroization is for.
+    pub fn revoked_circuit_id(&self) -> &[u8; 32] {
+        &self.revoked_circuit_id
+    }
+    /// When the zeroization was recorded (the durable ordering fact).
+    pub fn zeroized_at_unix(&self) -> u64 {
+        self.zeroized_at_unix
+    }
+}
+
+impl std::fmt::Display for ZeroizationRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "circuit {} zeroized at {}",
+            self.revoked_circuit_id.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            self.zeroized_at_unix
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The in-memory record (read-only views)
 // ---------------------------------------------------------------------------
 
@@ -266,6 +357,9 @@ pub struct RecoveryAttempt {
     state: AttemptState,
     fresh_route_id: Option<[u8; 32]>,
     failure: Option<AttemptFailure>,
+    /// The R7-004 replacement circuit established over this succeeded
+    /// attempt's fresh route (Some iff the replacement was recorded).
+    replacement_circuit_id: Option<[u8; 32]>,
 }
 
 impl RecoveryAttempt {
@@ -292,6 +386,11 @@ impl RecoveryAttempt {
     pub fn failure(&self) -> Option<AttemptFailure> {
         self.failure
     }
+    /// The R7-004 replacement circuit id (Some iff a replacement circuit
+    /// was established over this attempt's recorded fresh route).
+    pub fn replacement_circuit_id(&self) -> Option<&[u8; 32]> {
+        self.replacement_circuit_id.as_ref()
+    }
 }
 
 /// The persisted per-circuit section.
@@ -303,6 +402,9 @@ struct CircuitSection {
     /// The §11 freshness anchor (the revoked circuit's first recorded
     /// revocation time, from the durable ledger).
     revoked_at_unix: u64,
+    /// The §11 zeroization fact (R7-004): when the revoked circuit's key
+    /// material was dropped; `None` until recorded, at most once.
+    zeroized_at_unix: Option<u64>,
     /// Retained attempt records, ascending seq.
     attempts: Vec<RecoveryAttempt>,
 }
@@ -408,6 +510,7 @@ impl RecoveryAttemptLog {
                 state: AttemptState::Pending,
                 fresh_route_id: None,
                 failure: None,
+                replacement_circuit_id: None,
             };
             section.next_seq = seq
                 .checked_add(1)
@@ -497,6 +600,143 @@ impl RecoveryAttemptLog {
             record.state = AttemptState::Abandoned;
             record.fresh_route_id = None;
             record.failure = Some(reason);
+            Ok(record.attempt_seq)
+        })
+    }
+
+    // -- R7-004: the §11 zeroization fact + the replacement circuit fact ----
+
+    /// Record the §11 `zeroization` step for a durably revoked circuit —
+    /// the typed, durable fact that its key material was dropped (see
+    /// [`ZeroizationRecord`] for the exact honesty boundary). The record is
+    /// durable before it is visible, at most once per revoked circuit, and
+    /// ordered AFTER the durable invalidation.
+    ///
+    /// Typed refusals: `circuit_not_revoked` (§11: zeroization follows
+    /// durable invalidation — unknown and unrevoked circuits alike),
+    /// `zeroization_before_revocation` (the caller clock predates the
+    /// ledger's revocation anchor), `circuit_already_zeroized` (the fact
+    /// stands; a second record never rewrites it).
+    pub fn record_zeroization(
+        &self,
+        ledger: &DurableRevocationLedger,
+        revoked_circuit_id: &[u8; 32],
+        now_unix: u64,
+    ) -> Result<ZeroizationRecord, RecoveryError> {
+        // The §11 cross-check — BEFORE anything is written (read-then-act
+        // safe: revocation is append-only, so a revoked circuit stays
+        // revoked and the anchor below is equally stable).
+        if !ledger.is_revoked(revoked_circuit_id) {
+            return Err(RecoveryError::CircuitNotRevoked { circuit_id: *revoked_circuit_id });
+        }
+        let revoked_at = ledger
+            .revoked_at(revoked_circuit_id)
+            .expect("checked: a revoked circuit has a first revocation record");
+        if now_unix < revoked_at {
+            return Err(RecoveryError::ZeroizationBeforeRevocation {
+                zeroized_at: now_unix,
+                revoked_at,
+            });
+        }
+        self.mutate(|inner| {
+            let section = inner.section_mut(revoked_circuit_id, revoked_at);
+            if let Some(at) = section.zeroized_at_unix {
+                return Err(RecoveryError::CircuitAlreadyZeroized {
+                    circuit_id: *revoked_circuit_id,
+                    zeroized_at_unix: at,
+                });
+            }
+            section.zeroized_at_unix = Some(now_unix);
+            Ok(ZeroizationRecord {
+                revoked_circuit_id: *revoked_circuit_id,
+                zeroized_at_unix: now_unix,
+            })
+        })
+    }
+
+    /// The circuit's zeroization fact, if recorded (the durable query the
+    /// replacement stage gates on — the ordering fact survives restarts).
+    pub fn zeroization(&self, revoked_circuit_id: &[u8; 32]) -> Option<ZeroizationRecord> {
+        lock(&self.inner)
+            .sections
+            .get(revoked_circuit_id)
+            .and_then(|s| s.zeroized_at_unix)
+            .map(|zeroized_at_unix| ZeroizationRecord {
+                revoked_circuit_id: *revoked_circuit_id,
+                zeroized_at_unix,
+            })
+    }
+
+    /// Record the R7-004 replacement circuit on the circuit's SUCCEEDED
+    /// attempt: the fresh-route hand-off must match the durable terminal
+    /// record (the route the replacement rides), the zeroization fact must
+    /// stand, and no earlier replacement may exist (single replacement per
+    /// recovery — a further failure of the replacement circuit is a NEW
+    /// revocation and a NEW recovery, L014). Returns the attempt_seq the
+    /// replacement was recorded on.
+    ///
+    /// Typed refusals: `no_succeeded_attempt` (nothing succeeded — or no
+    /// attempts at all), `replacement_route_mismatch` (the offered route
+    /// is not the recorded fresh one), `zeroization_missing` (the §11 step
+    /// between invalidation and the new session has not been recorded),
+    /// `replacement_already_established` (single flight),
+    /// `attempt_record_invalid` (clock-order sanity: the replacement time
+    /// predates the zeroization or the route's own recording).
+    pub fn record_replacement_circuit(
+        &self,
+        revoked_circuit_id: &[u8; 32],
+        fresh_route_id: &[u8; 32],
+        replacement_circuit_id: &[u8; 32],
+        now_unix: u64,
+    ) -> Result<u64, RecoveryError> {
+        if *replacement_circuit_id == [0u8; 32] {
+            return Err(RecoveryError::AttemptRecordInvalid {
+                what: "the all-zero replacement circuit id is reserved",
+            });
+        }
+        self.mutate(|inner| {
+            let section = inner
+                .sections
+                .get_mut(revoked_circuit_id)
+                .ok_or(RecoveryError::NoSucceededAttempt { circuit_id: *revoked_circuit_id })?;
+            let record = section
+                .attempts
+                .last_mut()
+                .ok_or(RecoveryError::NoSucceededAttempt { circuit_id: *revoked_circuit_id })?;
+            if record.state != AttemptState::Succeeded {
+                return Err(RecoveryError::NoSucceededAttempt { circuit_id: *revoked_circuit_id });
+            }
+            let recorded_route = record
+                .fresh_route_id
+                .expect("succeeded attempts carry a route ref");
+            if &recorded_route != fresh_route_id {
+                return Err(RecoveryError::ReplacementRouteMismatch {
+                    circuit_id: *revoked_circuit_id,
+                    expected_route_id: recorded_route,
+                    offered_route_id: *fresh_route_id,
+                });
+            }
+            if let Some(existing) = record.replacement_circuit_id {
+                return Err(RecoveryError::ReplacementAlreadyEstablished {
+                    circuit_id: *revoked_circuit_id,
+                    attempt_seq: record.attempt_seq,
+                    replacement_circuit_id: existing,
+                });
+            }
+            // The §11 ordering fact: the replacement session strictly
+            // follows the zeroization of the revoked circuit's keys.
+            let zeroized_at = section
+                .zeroized_at_unix
+                .ok_or(RecoveryError::ZeroizationMissing { circuit_id: *revoked_circuit_id })?;
+            let finished_at = record
+                .finished_at_unix
+                .expect("succeeded attempts carry a finish time");
+            if now_unix < zeroized_at || now_unix < finished_at {
+                return Err(RecoveryError::AttemptRecordInvalid {
+                    what: "replacement time predates the zeroization or the route's recording",
+                });
+            }
+            record.replacement_circuit_id = Some(*replacement_circuit_id);
             Ok(record.attempt_seq)
         })
     }
@@ -594,6 +834,7 @@ impl AttemptInner {
         self.sections.entry(*circuit_id).or_insert(CircuitSection {
             next_seq: 1,
             revoked_at_unix,
+            zeroized_at_unix: None,
             attempts: Vec::new(),
         })
     }
@@ -637,6 +878,15 @@ impl CircuitSection {
     /// Cross-check the section's invariants (the same laws the mutation
     /// paths enforce, re-enforced at parse).
     fn check(&self, circuit: &[u8; 32]) -> Result<(), RecoveryError> {
+        // The §11 zeroization ordering: the durable fact never predates
+        // the revocation anchor it follows.
+        if let Some(zeroized_at) = self.zeroized_at_unix {
+            if zeroized_at < self.revoked_at_unix {
+                return Err(RecoveryError::AttemptRecordInvalid {
+                    what: "zeroization predates the revocation anchor",
+                });
+            }
+        }
         if self.attempts.len() > MAX_ATTEMPT_RECORDS_PER_CIRCUIT {
             return Err(RecoveryError::AttemptRecordInvalid {
                 what: "retained attempt records exceed the compaction bound",
@@ -665,6 +915,7 @@ impl CircuitSection {
                     if record.finished_at_unix.is_some()
                         || record.fresh_route_id.is_some()
                         || record.failure.is_some()
+                        || record.replacement_circuit_id.is_some()
                     {
                         return Err(RecoveryError::AttemptRecordInvalid {
                             what: "pending attempt carries completion fields",
@@ -697,6 +948,7 @@ impl CircuitSection {
                     if record.finished_at_unix.is_none()
                         || record.fresh_route_id.is_some()
                         || record.failure.is_none()
+                        || record.replacement_circuit_id.is_some()
                     {
                         return Err(RecoveryError::AttemptRecordInvalid {
                             what: "abandoned attempt lacks its failure reason or finish time",
@@ -738,6 +990,7 @@ impl AttemptInner {
             body.extend_from_slice(circuit);
             body.extend_from_slice(&section.next_seq.to_le_bytes());
             body.extend_from_slice(&section.revoked_at_unix.to_le_bytes());
+            body.extend_from_slice(&section.zeroized_at_unix.unwrap_or(0).to_le_bytes());
             body.extend_from_slice(&(section.attempts.len() as u32).to_le_bytes());
             for record in &section.attempts {
                 body.extend_from_slice(&record.attempt_seq.to_le_bytes());
@@ -757,6 +1010,12 @@ impl AttemptInner {
                 });
                 body.extend_from_slice(
                     record.fresh_route_id.as_ref().map_or(&[0u8; 32], |r| r.as_slice()),
+                );
+                body.extend_from_slice(
+                    record
+                        .replacement_circuit_id
+                        .as_ref()
+                        .map_or(&[0u8; 32], |r| r.as_slice()),
                 );
             }
         }
@@ -850,8 +1109,10 @@ impl AttemptInner {
                 u64::from_le_bytes(body[offset + 32..offset + 40].try_into().expect("8"));
             let revoked_at_unix =
                 u64::from_le_bytes(body[offset + 40..offset + 48].try_into().expect("8"));
+            let zeroized_raw =
+                u64::from_le_bytes(body[offset + 48..offset + 56].try_into().expect("8"));
             let attempt_count =
-                u32::from_le_bytes(body[offset + 48..offset + 52].try_into().expect("4")) as usize;
+                u32::from_le_bytes(body[offset + 56..offset + 60].try_into().expect("4")) as usize;
             offset += SECTION_FIXED_LEN;
             let needed = attempt_count
                 .checked_mul(ATTEMPT_RECORD_LEN)
@@ -876,42 +1137,57 @@ impl AttemptInner {
                 let state_tag = rec[24];
                 let outcome_tag = rec[25];
                 let route_id: [u8; 32] = rec[26..58].try_into().expect("32");
-                let (state, finished_at_unix, fresh_route_id, failure) = match state_tag {
-                    0 => {
-                        if outcome_tag != 0 || finished_raw != 0 || route_id != [0u8; 32] {
-                            return Err(RecoveryError::AttemptRecordInvalid {
-                                what: "pending attempt carries completion fields",
-                            });
+                let replacement_raw: [u8; 32] = rec[58..90].try_into().expect("32");
+                let (state, finished_at_unix, fresh_route_id, failure, replacement_circuit_id) =
+                    match state_tag {
+                        0 => {
+                            if outcome_tag != 0
+                                || finished_raw != 0
+                                || route_id != [0u8; 32]
+                                || replacement_raw != [0u8; 32]
+                            {
+                                return Err(RecoveryError::AttemptRecordInvalid {
+                                    what: "pending attempt carries completion fields",
+                                });
+                            }
+                            (AttemptState::Pending, None, None, None, None)
                         }
-                        (AttemptState::Pending, None, None, None)
-                    }
-                    1 => {
-                        if outcome_tag != 1 || finished_raw == 0 || route_id == [0u8; 32] {
-                            return Err(RecoveryError::AttemptRecordInvalid {
-                                what: "succeeded attempt lacks its route ref or finish time",
-                            });
+                        1 => {
+                            if outcome_tag != 1 || finished_raw == 0 || route_id == [0u8; 32] {
+                                return Err(RecoveryError::AttemptRecordInvalid {
+                                    what: "succeeded attempt lacks its route ref or finish time",
+                                });
+                            }
+                            (
+                                AttemptState::Succeeded,
+                                Some(finished_raw),
+                                Some(route_id),
+                                None,
+                                if replacement_raw == [0u8; 32] { None } else { Some(replacement_raw) },
+                            )
                         }
-                        (AttemptState::Succeeded, Some(finished_raw), Some(route_id), None)
-                    }
-                    2 => {
-                        let failure = AttemptFailure::from_tag(outcome_tag).ok_or(
-                            RecoveryError::AttemptRecordInvalid {
-                                what: "abandoned attempt carries an unknown failure tag",
-                            },
-                        )?;
-                        if finished_raw == 0 || route_id != [0u8; 32] {
-                            return Err(RecoveryError::AttemptRecordInvalid {
-                                what: "abandoned attempt lacks its failure reason or finish time",
-                            });
+                        2 => {
+                            let failure = AttemptFailure::from_tag(outcome_tag).ok_or(
+                                RecoveryError::AttemptRecordInvalid {
+                                    what: "abandoned attempt carries an unknown failure tag",
+                                },
+                            )?;
+                            if finished_raw == 0
+                                || route_id != [0u8; 32]
+                                || replacement_raw != [0u8; 32]
+                            {
+                                return Err(RecoveryError::AttemptRecordInvalid {
+                                    what: "abandoned attempt lacks its failure reason or finish time",
+                                });
+                            }
+                            (AttemptState::Abandoned, Some(finished_raw), None, Some(failure), None)
                         }
-                        (AttemptState::Abandoned, Some(finished_raw), None, Some(failure))
-                    }
-                    _ => {
-                        return Err(RecoveryError::AttemptRecordInvalid {
-                            what: "unknown attempt state tag",
-                        })
-                    }
-                };
+                        _ => {
+                            return Err(RecoveryError::AttemptRecordInvalid {
+                                what: "unknown attempt state tag",
+                            })
+                        }
+                    };
                 attempts.push(RecoveryAttempt {
                     revoked_circuit_id: circuit,
                     attempt_seq,
@@ -920,10 +1196,16 @@ impl AttemptInner {
                     state,
                     fresh_route_id,
                     failure,
+                    replacement_circuit_id,
                 });
                 offset += ATTEMPT_RECORD_LEN;
             }
-            let section = CircuitSection { next_seq, revoked_at_unix, attempts };
+            let section = CircuitSection {
+                next_seq,
+                revoked_at_unix,
+                zeroized_at_unix: if zeroized_raw == 0 { None } else { Some(zeroized_raw) },
+                attempts,
+            };
             section.check(&circuit)?;
             if sections.insert(circuit, section).is_some() {
                 return Err(RecoveryError::AttemptRecordInvalid {
@@ -1165,9 +1447,10 @@ mod tests {
             "an unsorted section order must fail closed: {err}"
         );
 
-        // A lying attempt_count inside a section (runs past the body).
+        // A lying attempt_count inside a section (runs past the body) —
+        // the count lives at section offset 56..60 in the v2 layout.
         let mut lying = tk::attempt_section_bytes(&[0x01; 32], 2, tk::NOW, &[]);
-        lying[48..52].copy_from_slice(&9u32.to_le_bytes());
+        lying[56..60].copy_from_slice(&9u32.to_le_bytes());
         std::fs::write(dir.attempts_path(), tk::attempt_image(1, &lying)).unwrap();
         let err = RecoveryAttemptLog::load(&dir.attempts_path()).unwrap_err();
         assert!(matches!(err, RecoveryError::LengthMismatch { which: "attempts", .. }));
@@ -1742,6 +2025,215 @@ mod tests {
         match err {
             RecoveryError::AttemptRecordInvalid { what } => assert_eq!(what, "attempt seq overflow"),
             other => panic!("wrong variant {other:?}"),
+        }
+    }
+
+    // -- R7-004: the zeroization fact + the replacement circuit fact ------
+
+    /// The §11 zeroization fact: recorded only for durably revoked
+    /// circuits, only after the revocation anchor, at most once — and the
+    /// durable fact survives a full teardown/reload exactly.
+    #[test]
+    fn zeroization_round_trip_and_refusals() {
+        let dir = tk::TempDir::new("attempts-zeroization");
+        let (ledger, w, registry, revoked, live) =
+            tk::revoked_ledger(&dir.ledger_path(), tk::NOW);
+        let log = RecoveryAttemptLog::create(&dir.attempts_path()).expect("create");
+
+        // §11 ordering: zeroization follows durable invalidation — a
+        // not-revoked circuit (and an unknown one) is refused typed.
+        let err = log.record_zeroization(&ledger, &live, tk::NOW).unwrap_err();
+        assert_eq!(err.name(), "circuit_not_revoked");
+        let err = log.record_zeroization(&ledger, &[0xEE; 32], tk::NOW).unwrap_err();
+        assert_eq!(err.name(), "circuit_not_revoked");
+
+        // The clock predating the ledger's anchor is refused typed.
+        // (The revoked circuit's anchor is NOW — the ledger was built
+        // with revoked_at = NOW; the live sibling anchors the contrast.)
+        let _ = w;
+        let err = log.record_zeroization(&ledger, &revoked, tk::NOW - 1).unwrap_err();
+        assert_eq!(err.name(), "zeroization_before_revocation");
+
+        // The happy path: durable before visible, queryable.
+        assert_eq!(log.zeroization(&revoked), None);
+        let record = log.record_zeroization(&ledger, &revoked, tk::NOW + 2).expect("zeroize");
+        assert_eq!(record.revoked_circuit_id(), &revoked);
+        assert_eq!(record.zeroized_at_unix(), tk::NOW + 2);
+        assert!(format!("{record}").contains("zeroized at"));
+        assert_eq!(
+            log.zeroization(&revoked),
+            Some(ZeroizationRecord {
+                revoked_circuit_id: revoked,
+                zeroized_at_unix: tk::NOW + 2,
+            })
+        );
+
+        // At most once: the durable fact stands.
+        let err = log.record_zeroization(&ledger, &revoked, tk::NOW + 3).unwrap_err();
+        assert!(matches!(
+            err,
+            RecoveryError::CircuitAlreadyZeroized { circuit_id, zeroized_at_unix }
+                if circuit_id == revoked && zeroized_at_unix == tk::NOW + 2
+        ));
+        assert_eq!(err.name(), "circuit_already_zeroized");
+
+        // The zeroization survives a full teardown/reload — the ordering
+        // fact (invalidation -> zeroization) is durable.
+        drop(log);
+        let reloaded = RecoveryAttemptLog::load(&dir.attempts_path()).expect("reload");
+        let fact = reloaded.zeroization(&revoked).expect("the durable fact");
+        assert_eq!(fact.zeroized_at_unix(), tk::NOW + 2);
+        assert!(fact.zeroized_at_unix() >= tk::NOW, "after the anchor");
+        assert_eq!(reloaded.zeroization(&live), None);
+        let _ = registry;
+    }
+
+    /// The replacement circuit fact: recorded on the SUCCEEDED attempt
+    /// (bound to its recorded fresh route, only after zeroization, at
+    /// most once) and it survives a full teardown/reload exactly.
+    #[test]
+    fn replacement_record_round_trip_and_refusals() {
+        let dir = tk::TempDir::new("attempts-replacement");
+        let (ledger, w, _registry, revoked, _live) =
+            tk::revoked_ledger(&dir.ledger_path(), tk::NOW);
+        let log = RecoveryAttemptLog::create(&dir.attempts_path()).expect("create");
+
+        // Nothing succeeded yet: no section, a pending tail, an abandoned
+        // tail — all `no_succeeded_attempt`.
+        let route = *w.commitment.route_id();
+        let replacement = [0x99; 32];
+        let err = log.record_replacement_circuit(&revoked, &route, &replacement, tk::NOW).unwrap_err();
+        assert_eq!(err.name(), "no_succeeded_attempt");
+        log.begin_attempt(&ledger, &revoked, tk::NOW).unwrap();
+        let err = log.record_replacement_circuit(&revoked, &route, &replacement, tk::NOW).unwrap_err();
+        assert_eq!(err.name(), "no_succeeded_attempt");
+        log.finish_attempt_with_failure(&revoked, AttemptFailure::CircuitSetupFailed, tk::NOW + 1)
+            .unwrap();
+        let err = log.record_replacement_circuit(&revoked, &route, &replacement, tk::NOW).unwrap_err();
+        assert_eq!(err.name(), "no_succeeded_attempt");
+
+        // A succeeded attempt over the world's commitment — but the §11
+        // zeroization fact is not recorded yet.
+        log.begin_attempt(&ledger, &revoked, tk::NOW + 2).unwrap();
+        log.finish_attempt_with_route(
+            &revoked,
+            FreshRouteEvidence::Commitment(&w.commitment),
+            tk::NOW + 3,
+        )
+        .unwrap();
+        let err = log.record_replacement_circuit(&revoked, &route, &replacement, tk::NOW + 4).unwrap_err();
+        assert_eq!(err.name(), "zeroization_missing");
+
+        // A foreign route is refused even with everything else in place.
+        log.record_zeroization(&ledger, &revoked, tk::NOW + 5).unwrap();
+        let foreign_route = [0xAB; 32];
+        let err = log
+            .record_replacement_circuit(&revoked, &foreign_route, &replacement, tk::NOW + 6)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RecoveryError::ReplacementRouteMismatch { circuit_id, expected_route_id, offered_route_id }
+                if circuit_id == revoked
+                    && expected_route_id == route
+                    && offered_route_id == foreign_route
+        ));
+        assert_eq!(err.name(), "replacement_route_mismatch");
+
+        // The happy path: the replacement lands on the succeeded attempt.
+        assert_eq!(
+            log.record_replacement_circuit(&revoked, &route, &replacement, tk::NOW + 7).unwrap(),
+            2
+        );
+        let latest = log.latest_attempt(&revoked).expect("latest");
+        assert_eq!(latest.state(), AttemptState::Succeeded);
+        assert_eq!(latest.replacement_circuit_id(), Some(&replacement));
+
+        // Single replacement per recovery.
+        let err =
+            log.record_replacement_circuit(&revoked, &route, &[0x77; 32], tk::NOW + 8).unwrap_err();
+        assert!(matches!(
+            err,
+            RecoveryError::ReplacementAlreadyEstablished {
+                circuit_id,
+                attempt_seq: 2,
+                replacement_circuit_id,
+            } if circuit_id == revoked && replacement_circuit_id == replacement
+        ));
+        assert_eq!(err.name(), "replacement_already_established");
+
+        // The all-zero id is reserved (never a derived replacement).
+        let err = log
+            .record_replacement_circuit(&revoked, &route, &[0u8; 32], tk::NOW + 9)
+            .unwrap_err();
+        assert_eq!(err.name(), "attempt_record_invalid");
+
+        // The whole fact set survives a full teardown/reload.
+        drop(log);
+        let reloaded = RecoveryAttemptLog::load(&dir.attempts_path()).expect("reload");
+        let latest = reloaded.latest_attempt(&revoked).expect("latest");
+        assert_eq!(latest.attempt_seq(), 2);
+        assert_eq!(latest.replacement_circuit_id(), Some(&replacement));
+        assert_eq!(reloaded.zeroization(&revoked).expect("fact").zeroized_at_unix(), tk::NOW + 5);
+    }
+
+    /// The v2 layout laws: an old (v1) image is refused typed (no silent
+    /// reinterpretation of the 52/58-byte layout), the new zeroization
+    /// and replacement regions round-trip through the public paths, and
+    /// the crafted new-field corruptions fail closed.
+    #[test]
+    fn format_v2_old_layouts_and_new_fields_fail_closed() {
+        let dir = tk::TempDir::new("attempts-v2");
+        // A well-formed v2 body — offered with the v1 version bytes it is
+        // the typed old/new mixup refusal.
+        let body = tk::attempt_section_bytes(&[0x01; 32], 2, tk::NOW, &[]);
+        let v1 = tk::attempt_image_with_version(1, &body, 1);
+        std::fs::write(dir.attempts_path(), &v1).unwrap();
+        let err = RecoveryAttemptLog::load(&dir.attempts_path()).unwrap_err();
+        assert!(matches!(err, RecoveryError::VersionUnsupported { which: "attempts", found: 1 }));
+        assert_eq!(err.name(), "store_version_unsupported");
+
+        // The zeroized + replaced shape round-trips (crafted, then loaded).
+        let circuit = [0x02; 32];
+        let route = [0xA5; 32];
+        let replacement = [0x66; 32];
+        let body = tk::attempt_section_bytes_with_zeroization(
+            &circuit,
+            3,
+            tk::NOW,
+            tk::NOW + 5,
+            &[tk::succeeded_record_replaced(2, tk::NOW + 1, route, replacement)],
+        );
+        std::fs::write(dir.attempts_path(), tk::attempt_image(1, &body)).unwrap();
+        let log = RecoveryAttemptLog::load(&dir.attempts_path()).expect("load");
+        let latest = log.latest_attempt(&circuit).expect("latest");
+        assert_eq!(latest.replacement_circuit_id(), Some(&replacement));
+        assert_eq!(log.zeroization(&circuit).expect("zeroized").zeroized_at_unix(), tk::NOW + 5);
+
+        // A zeroization predating the revocation anchor never loads.
+        let body = tk::attempt_section_bytes_with_zeroization(
+            &circuit,
+            3,
+            tk::NOW,
+            tk::NOW - 1,
+            &[tk::succeeded_record(2, tk::NOW + 1, route)],
+        );
+        std::fs::write(dir.attempts_path(), tk::attempt_image(1, &body)).unwrap();
+        let err = RecoveryAttemptLog::load(&dir.attempts_path()).unwrap_err();
+        assert!(matches!(err, RecoveryError::AttemptRecordInvalid { .. }));
+        assert_eq!(err.name(), "attempt_record_invalid");
+
+        // A replacement field on a NON-succeeded record never loads.
+        for state_tag in [0u8, 2u8] {
+            let mut record = if state_tag == 0 {
+                tk::pending_record(2, tk::NOW + 1)
+            } else {
+                tk::abandoned_record(2, tk::NOW + 1, 3)
+            };
+            record[58] = 0x66; // a nonzero replacement on a non-terminal record
+            let body = tk::attempt_section_bytes(&circuit, 3, tk::NOW, &[record]);
+            std::fs::write(dir.attempts_path(), tk::attempt_image(1, &body)).unwrap();
+            let err = RecoveryAttemptLog::load(&dir.attempts_path()).unwrap_err();
+            assert_eq!(err.name(), "attempt_record_invalid", "state tag {state_tag}");
         }
     }
 }

@@ -7,7 +7,7 @@
 //!     ↓
 //! durable circuit invalidation      ← R7-001 (the revocation)
 //!     ↓
-//! zeroization                       ← R7-004 (replacement circuit)
+//! zeroization                       ← R7-004 (recorded + ordered HERE)
 //!     ↓
 //! recovery attempt                   ← R7-002 (durable, bounded)
 //!     ↓
@@ -15,7 +15,7 @@
 //!     ↓
 //! fresh route commitment             ← R7-003 (established + verified here)
 //!     ↓
-//! fresh circuit session              ← R7-004
+//! fresh circuit session              ← R7-004 (establish_replacement_circuit)
 //!     ↓
 //! verification                       ← R7-003/R7-004
 //! ```
@@ -56,24 +56,47 @@
 //!   R7-005 owns the retry/backoff policy);
 //! - [`Self::revocation_ledger`] hands out the R7-001 ledger view to
 //!   install into a `CircuitRegistry` (`install_revocation_ledger`) so
-//!   the L015 gate is live for every circuit admission in this process.
+//!   the L015 gate is live for every circuit admission in this process;
+//! - [`Self::record_zeroization`] — the §11 `zeroization` step between
+//!   `durable circuit invalidation` and the new session: the typed,
+//!   durable, at-most-once fact that the revoked circuit's key material
+//!   was dropped ([`crate::ZeroizationRecord`]). Honest scope: this
+//!   crate holds no key material of its own — the in-process zeroization
+//!   of real session keys lives in the runtime layers (R3-001 link-frame
+//!   keys, R4-001 tunnel state); what this records and orders durably is
+//!   the FACT (the daemon records it once the runtime layer dropped the
+//!   keys), and the replacement stage refuses without it;
+//! - [`Self::establish_replacement_circuit`] — the §11 `fresh circuit
+//!   session` stage (R7-004): builds the replacement over the fresh route
+//!   hand-off ([`FreshRoute`]) — the caller-supplied signed `CircuitSetup`
+//!   (+ every path member's `CircuitSetupAck`) is verified against the
+//!   driver's own durable record (the setup's embedded commitment must
+//!   BE the recorded fresh route), the derived circuit id must differ
+//!   from the revoked one (L014 fresh session identity), admission runs
+//!   through a `CircuitRegistry` the driver itself gates with its R7-001
+//!   ledger view (the revoked old id still refused), exact position
+//!   coverage must ESTABLISH the session, and the outcome is recorded
+//!   durably on the succeeded attempt (single replacement per recovery).
 //!
-//! What the driver deliberately does NOT do: circuit setup (R7-004 — the
-//! fresh route commitment here is the typed input its replacement
-//! circuit consumes), retry/backoff (R7-005), concurrent-recovery
-//! coordination (R7-006). The seams are the typed parameters the callers
-//! bring back.
+//! What the driver deliberately does NOT do: retry/backoff (R7-005),
+//! concurrent-recovery coordination (R7-006), and post-setup data-plane
+//! verification of the replacement circuit (liveness/frames is the
+//! runtime layers' job — the R4-002 admission chain verified here is the
+//! control-plane verification §11's stage rests on). The seams are the
+//! typed parameters the callers bring back.
 
 use std::path::{Path, PathBuf};
 
 use sharenet_admission::{
     AdcosEvidenceAnchor, GatewayAdmissionPolicy, ShareNetEvidenceAnchor,
 };
-use sharenet_protocol::circuit::CircuitRegistry;
+use sharenet_protocol::circuit::{derive_circuit_id, CircuitRegistry, CircuitSetup};
 use sharenet_protocol::revocation::RevocationAdmitOutcome;
 use sharenet_protocol::route::{RouteCommitment, SignedEnvelope};
 
-use crate::attempt::{AttemptFailure, FreshRouteEvidence, RecoveryAttemptLog};
+use crate::attempt::{
+    AttemptFailure, AttemptState, FreshRouteEvidence, RecoveryAttemptLog, ZeroizationRecord,
+};
 use crate::error::RecoveryError;
 use crate::gateway::{select_eligible_gateway, GatewayCandidate, GatewaySelection};
 use crate::ledger::{DurableRevocationLedger, LedgerLoadReport};
@@ -338,6 +361,7 @@ impl RecoveryDriver {
             now_unix,
         )?;
         Ok(FreshRoute {
+            revoked_circuit_id: selected.revoked_circuit_id,
             route_id: *commitment.route_id(),
             attempt_seq: selected.attempt_seq,
             gateway_node_id: selected.gateway_node_id,
@@ -365,6 +389,194 @@ impl RecoveryDriver {
             });
         }
         Ok(())
+    }
+
+    // -- R7-004: the zeroization fact + the replacement circuit session --
+
+    /// The §11 `zeroization` step between `durable circuit invalidation`
+    /// and the new session: record the durable, at-most-once fact that
+    /// the revoked circuit's key material was dropped (see
+    /// [`ZeroizationRecord`] for the exact honesty boundary — the
+    /// in-process zeroization of real session keys lives in the runtime
+    /// layers; this records and orders the FACT).
+    ///
+    /// Typed refusals: `circuit_not_revoked` (§11: zeroization follows
+    /// durable invalidation), `zeroization_before_revocation` (the clock
+    /// predates the ledger's anchor), `circuit_already_zeroized` (the
+    /// fact stands; single record per revoked circuit).
+    pub fn record_zeroization(
+        &self,
+        revoked_circuit_id: &[u8; 32],
+        now_unix: u64,
+    ) -> Result<ZeroizationRecord, RecoveryError> {
+        self.attempts.record_zeroization(&self.ledger, revoked_circuit_id, now_unix)
+    }
+
+    /// The circuit's zeroization fact, if recorded (the durable query
+    /// the replacement stage gates on — it survives restarts).
+    pub fn zeroization(&self, revoked_circuit_id: &[u8; 32]) -> Option<ZeroizationRecord> {
+        self.attempts.zeroization(revoked_circuit_id)
+    }
+
+    /// The §11 `fresh circuit session` stage (R7-004): establish the
+    /// REPLACEMENT circuit over the fresh route `route` (the
+    /// [`FreshRoute`] hand-off of [`Self::establish_fresh_route`]) and
+    /// retire the revoked one in the durable record.
+    ///
+    /// The caller brings the signed R4-002 material built over the fresh
+    /// commitment — the setup envelope (the recovering node's signed
+    /// `CircuitSetup`, whose embedded commitment must BE the recorded
+    /// fresh route) and every path member's signed `CircuitSetupAck`.
+    /// The driver then:
+    ///
+    /// 1. **gates on the zeroization fact** — the §11 step between
+    ///    invalidation and the new session must be durably recorded
+    ///    (`zeroization_missing` otherwise);
+    /// 2. **binds to its own durable record** — the hand-off's route must
+    ///    be the circuit's terminal succeeded attempt's recorded fresh
+    ///    route (`no_succeeded_attempt` / `replacement_route_mismatch`;
+    ///    a setup over the REVOKED circuit's own route, or any stale or
+    ///    foreign route, is refused here);
+    /// 3. **checks L014 fresh session identity** — the setup's derived
+    ///    circuit id
+    ///    (`SHA-256("sharenet-circuit-id-v1" || route_id || setup_nonce)`,
+    ///    the R4-002 binding) must differ from the revoked circuit's id
+    ///    (`replacement_circuit_id_not_fresh`);
+    /// 4. **admits through the gated registry** — the driver installs its
+    ///    own R7-001 ledger view into `registry` (the L015 gate is live by
+    ///    construction, never caller-asserted: the revoked old id is
+    ///    still refused, the replacement admits) and runs the full R4-002
+    ///    chain — setup signature, embedded-commitment R3-004
+    ///    verification, initiator-is-proposer, setup freshness,
+    ///    single-use `(route_id, setup_nonce)` — then every ack (exact
+    ///    position coverage) until the session is ESTABLISHED;
+    /// 5. **records the outcome durably** — the succeeded attempt carries
+    ///    the replacement circuit id (single replacement per recovery:
+    ///    `replacement_already_established` on a second; a further failure
+    ///    of the replacement is a NEW revocation + NEW recovery, L014).
+    ///
+    /// Typed refusals (besides the above): `replacement_setup_invalid`
+    /// (the envelope failed strict parse or its commitment failed R3-004
+    /// verification), `circuit_admission_refused` (the gated registry
+    /// refused the setup or an ack — forged, expired, nonce-reused…),
+    /// `replacement_circuit_not_established` (the ack set left positions
+    /// unacked — an incomplete session is never the replacement).
+    /// On ANY refusal nothing is written to the durable record.
+    pub fn establish_replacement_circuit(
+        &self,
+        route: &FreshRoute,
+        setup_envelope: &SignedEnvelope,
+        ack_envelopes: &[SignedEnvelope],
+        registry: &mut CircuitRegistry,
+        now_unix: u64,
+    ) -> Result<ReplacementCircuit, RecoveryError> {
+        // 1. The §11 zeroization gate.
+        self.zeroization(&route.revoked_circuit_id)
+            .ok_or(RecoveryError::ZeroizationMissing {
+                circuit_id: route.revoked_circuit_id,
+            })?;
+
+        // 2. The binding to the driver's OWN durable record: the terminal
+        // succeeded attempt's recorded fresh route.
+        let latest = self
+            .attempts
+            .latest_attempt(&route.revoked_circuit_id)
+            .ok_or(RecoveryError::NoSucceededAttempt {
+                circuit_id: route.revoked_circuit_id,
+            })?;
+        if latest.state() != AttemptState::Succeeded {
+            return Err(RecoveryError::NoSucceededAttempt {
+                circuit_id: route.revoked_circuit_id,
+            });
+        }
+        let recorded_route = *latest
+            .fresh_route_id()
+            .expect("succeeded attempts carry a route ref");
+        if recorded_route != route.route_id {
+            return Err(RecoveryError::ReplacementRouteMismatch {
+                circuit_id: route.revoked_circuit_id,
+                expected_route_id: recorded_route,
+                offered_route_id: route.route_id,
+            });
+        }
+
+        // 3. The offered setup envelope: strict parse, the embedded
+        // commitment verified in full (R3-004 — construction held to the
+        // receiver's standard), and its route bound to the same fresh
+        // route (the setup the replacement rides, never a foreign one).
+        let setup = CircuitSetup::from_wire_bytes(setup_envelope.bytes())
+            .map_err(|source| RecoveryError::ReplacementSetupInvalid { source })?;
+        let commitment = RouteCommitment::from_wire_bytes(setup.route_commitment_bytes())
+            .map_err(|source| RecoveryError::ReplacementSetupInvalid {
+                source: source.into(),
+            })?;
+        let verified = commitment
+            .verify(now_unix)
+            .map_err(|source| RecoveryError::ReplacementSetupInvalid {
+                source: source.into(),
+            })?;
+        if verified.route_id != recorded_route {
+            return Err(RecoveryError::ReplacementRouteMismatch {
+                circuit_id: route.revoked_circuit_id,
+                expected_route_id: recorded_route,
+                offered_route_id: verified.route_id,
+            });
+        }
+
+        // 4. L014: fresh session identity — the derived replacement id
+        // must never be the revoked circuit's own.
+        let replacement_circuit_id =
+            derive_circuit_id(&verified.route_id, setup.setup_nonce());
+        if replacement_circuit_id == route.revoked_circuit_id {
+            return Err(RecoveryError::ReplacementCircuitNotFresh {
+                revoked_circuit_id: route.revoked_circuit_id,
+                replacement_circuit_id,
+            });
+        }
+
+        // 5. The gated registry: the driver installs its own R7-001
+        // ledger view (L015 live by construction), then the full R4-002
+        // admission chain runs — setup first.
+        registry.install_revocation_ledger(&self.ledger.ledger());
+        let admitted = registry
+            .admit_setup(now_unix, setup_envelope)
+            .map_err(|source| RecoveryError::CircuitAdmissionRefused { source })?;
+        if admitted != replacement_circuit_id {
+            return Err(RecoveryError::InternalInconsistent {
+                what: "the registry derived a different replacement circuit id",
+            });
+        }
+        // Then every ack (exact position coverage → established).
+        for ack_envelope in ack_envelopes {
+            registry
+                .admit_ack(now_unix, ack_envelope)
+                .map_err(|source| RecoveryError::CircuitAdmissionRefused { source })?;
+        }
+        if !registry.is_established(&replacement_circuit_id) {
+            let unacked = registry
+                .circuit(&replacement_circuit_id)
+                .map(|state| state.unacked_positions().to_vec())
+                .unwrap_or_default();
+            return Err(RecoveryError::ReplacementCircuitNotEstablished {
+                circuit_id: replacement_circuit_id,
+                unacked_positions: unacked,
+            });
+        }
+
+        // 6. The durable outcome: the succeeded attempt carries the
+        // replacement circuit id (single replacement per recovery).
+        let attempt_seq = self.attempts.record_replacement_circuit(
+            &route.revoked_circuit_id,
+            &recorded_route,
+            &replacement_circuit_id,
+            now_unix,
+        )?;
+        Ok(ReplacementCircuit {
+            revoked_circuit_id: route.revoked_circuit_id,
+            replacement_circuit_id,
+            fresh_route_id: recorded_route,
+            attempt_seq,
+        })
     }
 
     /// The durable revocation ledger (the R7-002 durable layer).
@@ -419,12 +631,41 @@ pub struct SelectedGateway {
 /// fresh circuit session).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FreshRoute {
+    /// The revoked circuit this fresh route recovers (the replacement
+    /// circuit will retire it — never resurrected, L015).
+    pub revoked_circuit_id: [u8; 32],
     /// The fresh route's commitment-derived id (L013).
     pub route_id: [u8; 32],
     /// The recovery attempt this route succeeded.
     pub attempt_seq: u64,
     /// The selected gateway the committed path contains.
     pub gateway_node_id: [u8; 32],
+}
+
+/// The established replacement circuit (the output of
+/// [`RecoveryDriver::establish_replacement_circuit`] — the §11 `fresh
+/// circuit session` stage): the NEW circuit's R4-002 derived id (a
+/// fresh session identity, never the revoked one — L014), the fresh
+/// route it rides (the commitment-derived route id, L013), and the
+/// succeeded recovery attempt the replacement was durably recorded on.
+///
+/// The registry state (`CircuitRegistry`) the session lives in is
+/// RUNTIME state by R4-002 design; the durable facts (the replacement
+/// id on the attempt record, the zeroization of the revoked circuit)
+/// survive restarts in the driver's files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplacementCircuit {
+    /// The revoked circuit this replacement retires (never resurrected
+    /// — L015).
+    pub revoked_circuit_id: [u8; 32],
+    /// The replacement circuit's R4-002 derived id — DIFFERENT from the
+    /// revoked one (L014 fresh session identity and replay namespace).
+    pub replacement_circuit_id: [u8; 32],
+    /// The fresh route the replacement rides (the commitment-derived
+    /// route id, L013 — the succeeded attempt's recorded route).
+    pub fresh_route_id: [u8; 32],
+    /// The succeeded recovery attempt the replacement was recorded on.
+    pub attempt_seq: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -754,5 +995,414 @@ mod tests {
             2
         );
         assert_eq!(std::fs::read(&attempts_path).unwrap(), before);
+    }
+
+    // -- R7-004: the zeroization fact + the replacement circuit session ----
+
+    /// Drive the §11 pipeline through zeroization + the replacement
+    /// circuit: revocation → zeroize (the step between invalidation and
+    /// the new session) → attempt → select → fresh route → the
+    /// replacement circuit established through a FRESH registry the
+    /// driver itself gates. L014 verified (the replacement id differs
+    /// from the revoked one), the durable record carries the outcome,
+    /// and the gated registry still refuses the REVOKED circuit's setup.
+    #[test]
+    fn r7004_replacement_flow_end_to_end() {
+        let dir = tk::TempDir::new("driver-r7004-flow");
+        let (driver, _) = RecoveryDriver::open(&dir.path).expect("open");
+        let w = tk::world(tk::NOW);
+        let mut registry = CircuitRegistry::new();
+        let revoked = tk::admit_circuit(&w, &mut registry, tk::NOW, [0x76; 32]);
+        driver
+            .admit_revocation_envelope(
+                tk::NOW + 1,
+                &tk::link_failure_revocation(&w, revoked, tk::NOW + 1).to_envelope_bytes(),
+                &registry,
+            )
+            .expect("admit");
+
+        // The §11 zeroization step: after the durable invalidation, before
+        // anything else moves.
+        let zeroization = driver.record_zeroization(&revoked, tk::NOW + 2).expect("zeroize");
+        assert_eq!(zeroization.revoked_circuit_id(), &revoked);
+        assert_eq!(driver.zeroization(&revoked).map(|z| z.zeroized_at_unix()), Some(tk::NOW + 2));
+
+        let step = driver.attempt_next(&revoked, tk::NOW + 3).expect("attempt");
+        let gw = tk::gateway_world(tk::NOW);
+        let candidates = vec![gw.candidate_no_backhaul(), gw.candidate_eligible()];
+        let selected =
+            driver.select_gateway(&step, &candidates, &tk::admission_policy(), tk::NOW + 4)
+                .expect("selection");
+        let route_material = tk::fresh_route_material(&gw, &selected, tk::NOW + 5);
+        let route = driver
+            .establish_fresh_route(
+                &selected,
+                &route_material.proposal_env,
+                &route_material.acceptance_envs,
+                tk::NOW + 5,
+            )
+            .expect("fresh route");
+        assert_eq!(route.revoked_circuit_id, revoked);
+
+        // The replacement circuit: signed R4-002 material over the fresh
+        // commitment, admitted through a FRESH registry (runtime state —
+        // exactly what a restarted daemon holds).
+        let replacement_material = tk::replacement_material_over(
+            &route_material,
+            &gw,
+            &selected.gateway_node_id,
+            [0x93; 32],
+            tk::NOW + 5,
+        );
+        let mut replacement_registry = CircuitRegistry::new();
+        let replacement = driver
+            .establish_replacement_circuit(
+                &route,
+                &replacement_material.setup_env,
+                &replacement_material.ack_envs,
+                &mut replacement_registry,
+                tk::NOW + 6,
+            )
+            .expect("replacement");
+        assert_eq!(replacement.revoked_circuit_id, revoked);
+        assert_eq!(replacement.fresh_route_id, route.route_id);
+        assert_eq!(replacement.attempt_seq, 1);
+        // L014: the replacement's id is the R4-002 derivation over the
+        // FRESH route — never the revoked circuit's own.
+        assert_eq!(replacement.replacement_circuit_id, replacement_material.circuit_id);
+        assert_ne!(replacement.replacement_circuit_id, revoked);
+        assert!(replacement_registry.is_established(&replacement.replacement_circuit_id));
+
+        // The gated registry: the driver's own ledger view makes the
+        // REVOKED circuit's setup refuse (L015) even in the fresh runtime.
+        let revoked_env = tk::setup_envelope_for(&w, tk::NOW, [0x76; 32]);
+        let err = replacement_registry.admit_setup(tk::NOW + 6, &revoked_env).unwrap_err();
+        assert_eq!(err.name(), "circuit_revoked");
+
+        // The durable record: the terminal attempt carries the replacement.
+        let latest = driver.attempt_log().latest_attempt(&revoked).expect("latest");
+        assert_eq!(latest.state(), crate::attempt::AttemptState::Succeeded);
+        assert_eq!(latest.replacement_circuit_id(), Some(&replacement.replacement_circuit_id));
+        assert_eq!(
+            driver.attempt_next(&revoked, tk::NOW + 7).unwrap_err().name(),
+            "recovery_already_complete"
+        );
+
+        // Recovery is terminal WITH its replacement: a second replacement
+        // call is the typed single-flight refusal.
+        let err = driver
+            .establish_replacement_circuit(
+                &route,
+                &replacement_material.setup_env,
+                &replacement_material.ack_envs,
+                &mut CircuitRegistry::new(),
+                tk::NOW + 8,
+            )
+            .unwrap_err();
+        assert_eq!(err.name(), "replacement_already_established");
+    }
+
+    /// The R7-004 refusal surface, typed and leaving the durable state
+    /// untouched: missing zeroization, no succeeded attempt, a stale or
+    /// revoked-circuit route (mismatch), the L014 collision (a setup
+    /// deriving the revoked id itself), a forged envelope, an expired
+    /// setup, and an incomplete ack set.
+    #[test]
+    fn r7004_refusals_are_typed() {
+        let dir = tk::TempDir::new("driver-r7004-refuse");
+        let (driver, _) = RecoveryDriver::open(&dir.path).expect("open");
+        let w = tk::world(tk::NOW);
+        let mut registry = CircuitRegistry::new();
+        let revoked = tk::admit_circuit(&w, &mut registry, tk::NOW, [0x77; 32]);
+        driver
+            .admit_revocation_envelope(
+                tk::NOW + 1,
+                &tk::link_failure_revocation(&w, revoked, tk::NOW + 1).to_envelope_bytes(),
+                &registry,
+            )
+            .expect("admit");
+        let (_, attempts_path) = driver.paths();
+
+        // The §11 zeroization gate: a completed route but NO zeroization
+        // fact → the replacement session never opens.
+        let step = driver.attempt_next(&revoked, tk::NOW + 2).expect("attempt");
+        let gw = tk::gateway_world(tk::NOW);
+        let selected =
+            driver.select_gateway(&step, &[gw.candidate_eligible()], &tk::admission_policy(), tk::NOW + 3)
+                .expect("selection");
+        let route_material = tk::fresh_route_material(&gw, &selected, tk::NOW + 4);
+        let route = driver
+            .establish_fresh_route(
+                &selected,
+                &route_material.proposal_env,
+                &route_material.acceptance_envs,
+                tk::NOW + 4,
+            )
+            .expect("fresh route");
+        let good = tk::replacement_material_over(
+            &route_material,
+            &gw,
+            &selected.gateway_node_id,
+            [0x93; 32],
+            tk::NOW + 4,
+        );
+        let err = driver
+            .establish_replacement_circuit(
+                &route,
+                &good.setup_env,
+                &good.ack_envs,
+                &mut CircuitRegistry::new(),
+                tk::NOW + 5,
+            )
+            .unwrap_err();
+        assert_eq!(err.name(), "zeroization_missing");
+
+        // Zeroized now — a second revoked circuit of the same driver (also
+        // zeroized, but with NO attempt at all, let alone a succeeded one)
+        // is the typed no-succeeded refusal.
+        driver.record_zeroization(&revoked, tk::NOW + 5).expect("zeroize");
+        let (w2, mut registry2, revoked2) = tk::established(tk::NOW, [0x87; 32]);
+        driver
+            .admit_revocation_envelope(
+                tk::NOW + 5,
+                &tk::link_failure_revocation(&w2, revoked2, tk::NOW + 5).to_envelope_bytes(),
+                &registry2,
+            )
+            .expect("admit 2");
+        driver.record_zeroization(&revoked2, tk::NOW + 5).expect("zeroize 2");
+        let no_attempt_route = crate::driver::FreshRoute {
+            revoked_circuit_id: revoked2,
+            route_id: route.route_id,
+            attempt_seq: 1,
+            gateway_node_id: selected.gateway_node_id,
+        };
+        let err = driver
+            .establish_replacement_circuit(
+                &no_attempt_route,
+                &good.setup_env,
+                &good.ack_envs,
+                &mut CircuitRegistry::new(),
+                tk::NOW + 6,
+            )
+            .unwrap_err();
+        assert_eq!(err.name(), "no_succeeded_attempt");
+        let _ = (&w2, &mut registry2);
+
+        // A STALE route: the hand-off names a route the record does not
+        // carry (the revoked circuit's own world commitment).
+        let stale_route = crate::driver::FreshRoute {
+            revoked_circuit_id: revoked,
+            route_id: *w.commitment.route_id(),
+            attempt_seq: 1,
+            gateway_node_id: selected.gateway_node_id,
+        };
+        let err = driver
+            .establish_replacement_circuit(
+                &stale_route,
+                &good.setup_env,
+                &good.ack_envs,
+                &mut CircuitRegistry::new(),
+                tk::NOW + 6,
+            )
+            .unwrap_err();
+        assert_eq!(err.name(), "replacement_route_mismatch");
+
+        // A setup over the REVOKED circuit's own (old) route: well-formed
+        // and fully signed, but the binding to the recorded fresh route
+        // refuses it.
+        let revoked_route_setup = tk::replacement_material(
+            &w.commitment,
+            &w.proposer,
+            &[&w.proposer, &w.hop1, &w.hop2],
+            [0x78; 32],
+            tk::NOW + 6,
+        );
+        let err = driver
+            .establish_replacement_circuit(
+                &route,
+                &revoked_route_setup.setup_env,
+                &revoked_route_setup.ack_envs,
+                &mut CircuitRegistry::new(),
+                tk::NOW + 6,
+            )
+            .unwrap_err();
+        assert_eq!(err.name(), "replacement_route_mismatch");
+
+        // A FORGED setup envelope (one signature byte flipped): the
+        // gated registry's R4-002 chain refuses it.
+        let mut forged_sig = *good.setup_env.signature();
+        forged_sig[0] ^= 0x01;
+        let forged = SignedEnvelope::new(good.setup_env.bytes().to_vec(), forged_sig);
+        let err = driver
+            .establish_replacement_circuit(
+                &route,
+                &forged,
+                &good.ack_envs,
+                &mut CircuitRegistry::new(),
+                tk::NOW + 6,
+            )
+            .unwrap_err();
+        assert_eq!(err.name(), "circuit_admission_refused");
+
+        // Garbage bytes are the typed parse refusal (nothing admitted).
+        let garbage = SignedEnvelope::new(vec![0xDE, 0xAD, 0xBE, 0xEF], [0u8; 64]);
+        let err = driver
+            .establish_replacement_circuit(
+                &route,
+                &garbage,
+                &good.ack_envs,
+                &mut CircuitRegistry::new(),
+                tk::NOW + 6,
+            )
+            .unwrap_err();
+        assert_eq!(err.name(), "replacement_setup_invalid");
+
+        // An EXPIRED setup: issued at NOW+4 with a 1-second window, the
+        // replacement arrives at NOW+6 → the registry refuses typed.
+        let expired_setup = CircuitSetup::new(
+            &tk::rebuilt_commitment(&route_material),
+            &gw.recovering,
+            [0x94; 32],
+            tk::NOW + 4,
+            1,
+        )
+        .expect("setup");
+        let expired_env = expired_setup.sign(&gw.recovering).expect("sign");
+        let err = driver
+            .establish_replacement_circuit(
+                &route,
+                &expired_env,
+                &[],
+                &mut CircuitRegistry::new(),
+                tk::NOW + 6,
+            )
+            .unwrap_err();
+        assert_eq!(err.name(), "circuit_admission_refused");
+
+        // An incomplete ack set: the setup admits but the session never
+        // establishes (one of the two positions unacked).
+        let err = driver
+            .establish_replacement_circuit(
+                &route,
+                &good.setup_env,
+                &good.ack_envs[..1],
+                &mut CircuitRegistry::new(),
+                tk::NOW + 6,
+            )
+            .unwrap_err();
+        assert_eq!(err.name(), "replacement_circuit_not_established");
+
+        // None of the refusals wrote a byte; the durable record still
+        // carries no replacement.
+        let latest = driver.attempt_log().latest_attempt(&revoked).expect("latest");
+        assert_eq!(latest.replacement_circuit_id(), None);
+        assert!(
+            std::fs::read(&attempts_path).unwrap().len() > 0,
+            "the store file exists (created by the successful route)"
+        );
+
+        // The honest replacement then succeeds on the first call.
+        let replacement = driver
+            .establish_replacement_circuit(
+                &route,
+                &good.setup_env,
+                &good.ack_envs,
+                &mut CircuitRegistry::new(),
+                tk::NOW + 7,
+            )
+            .expect("replacement");
+        assert_ne!(replacement.replacement_circuit_id, revoked);
+    }
+
+    /// L014 enforced at the driver: a setup that derives the REVOKED
+    /// circuit's own id is refused even when the route binding would
+    /// otherwise pass. The constructible path is the documented R7-003
+    /// bare-`RouteRef` seam (caller-verified routes): a caller that
+    /// recorded the revoked circuit's own route as "fresh" and then
+    /// offers the revoked circuit's own (route, nonce) setup — the
+    /// driver still refuses (never the failed circuit again).
+    #[test]
+    fn r7004_replacement_never_the_revoked_circuit() {
+        let dir = tk::TempDir::new("driver-r7004-l014");
+        let (driver, _) = RecoveryDriver::open(&dir.path).expect("open");
+        let (w, registry, revoked) = tk::established(tk::NOW, [0x71; 32]);
+        driver
+            .admit_revocation_envelope(
+                tk::NOW + 1,
+                &tk::link_failure_revocation(&w, revoked, tk::NOW + 1).to_envelope_bytes(),
+                &registry,
+            )
+            .expect("admit");
+        driver.record_zeroization(&revoked, tk::NOW + 2).expect("zeroize");
+        driver.attempt_next(&revoked, tk::NOW + 3).expect("attempt");
+        // The caller-verified seam: a bare route ref pointing at the
+        // revoked circuit's own commitment route (the documented trust
+        // the seam leaves with the caller — exactly why the L014 check
+        // below must live in the driver, not the caller).
+        driver
+            .attempt_succeeded(
+                &revoked,
+                crate::attempt::FreshRouteEvidence::RouteRef(*w.commitment.route_id()),
+                tk::NOW + 4,
+            )
+            .expect("succeeded");
+        let route = crate::driver::FreshRoute {
+            revoked_circuit_id: revoked,
+            route_id: *w.commitment.route_id(),
+            attempt_seq: 1,
+            gateway_node_id: [0u8; 32],
+        };
+
+        // The (route, nonce) of the REVOKED circuit derives exactly the
+        // revoked id → the typed L014 refusal.
+        let same = tk::replacement_material(
+            &w.commitment,
+            &w.proposer,
+            &[&w.proposer, &w.hop1, &w.hop2],
+            [0x71; 32],
+            tk::NOW + 5,
+        );
+        assert_eq!(same.circuit_id, revoked, "the testkit derives the revoked circuit");
+        let err = driver
+            .establish_replacement_circuit(
+                &route,
+                &same.setup_env,
+                &same.ack_envs,
+                &mut CircuitRegistry::new(),
+                tk::NOW + 6,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RecoveryError::ReplacementCircuitNotFresh {
+                revoked_circuit_id,
+                replacement_circuit_id,
+            } if revoked_circuit_id == revoked && replacement_circuit_id == revoked
+        ));
+        assert_eq!(err.name(), "replacement_circuit_id_not_fresh");
+
+        // A FRESH nonce over the same route derives a different id — but
+        // the driver's durable binding has the last word here only for
+        // identity: it admits (the record, poisoned through the documented
+        // seam, is the caller's responsibility; the L015 ledger view still
+        // refuses the revoked circuit itself everywhere else).
+        let fresh_nonce = tk::replacement_material(
+            &w.commitment,
+            &w.proposer,
+            &[&w.proposer, &w.hop1, &w.hop2],
+            [0x79; 32],
+            tk::NOW + 5,
+        );
+        assert_ne!(fresh_nonce.circuit_id, revoked);
+        let replacement = driver
+            .establish_replacement_circuit(
+                &route,
+                &fresh_nonce.setup_env,
+                &fresh_nonce.ack_envs,
+                &mut CircuitRegistry::new(),
+                tk::NOW + 6,
+            )
+            .expect("a fresh nonce over the recorded (seam-supplied) route");
+        assert_ne!(replacement.replacement_circuit_id, revoked);
     }
 }

@@ -1,0 +1,26 @@
+[package]
+name = "sharenet-recovery"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet durable recovery attempts (R7-002): the durable-file layer for the R7-001 revocation ledger (append-only log, chain-verified, snapshot round-trip through the R7-001 seam) plus the bounded, durable RecoveryAttemptLog and the architecture-§11 recovery-driver skeleton. Deps: sharenet-protocol + std only."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_recovery"
+path = "src/lib.rs"
+
+# One dependency, deliberate, ShareNet:
+# - sharenet-protocol (the reference core): the R7-001 revocation authority
+#   this crate MAKES DURABLE (RevocationLedger + its snapshot seam,
+#   SignedCircuitRevocation, CircuitRegistry for path verification at
+#   admission) and the R3-004 RouteCommitment the §11 fresh-route evidence
+#   verifies. "Security-critical facts must be derived from authenticated
+#   protocol state" (AGENTS.md) - the durable layer re-verifies signatures
+#   at every boundary and never takes a caller's word.
+#
+# Nothing else: no async runtime, no serde, no wall clock, no I/O beyond
+# std::fs on the store's own two files.
+[dependencies]
+sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }

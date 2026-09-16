@@ -10,10 +10,16 @@
 // spec/architecture.md §16). macOS 13 is declared so `swift test` can run the
 // pure-logic XCTest suite on a Mac (Network.framework exists on both).
 //
-// HONEST SCOPE: this package was authored in a Linux sandbox with NO Swift
-// toolchain — it has NOT been compiled or executed here. Building/testing
-// requires macOS 13+ with Xcode 15+ (or a Swift 5.9+ toolchain). See
-// README.md ("Sandbox honesty") for the recorded gaps.
+// HONEST SCOPE (updated 2026-09-16, closure verification): the pure-Foundation
+// layers (Contract/, Link/, ParticipantConfiguration) now COMPILE and the full
+// pure-logic XCTest suite (32 functions) EXECUTES GREEN on Linux with
+// Swift 6.1.2 (see README.md "Sandbox honesty" for the evidence record and
+// the exact repro). The Network.framework adapter layer (Participant/
+// NW* files) is guarded with `#if canImport(Network)` — it compiles only on
+// Apple platforms (identical code when present) and its execution, plus any
+// macOS/iOS compile of it, remains the operator step: macOS 13+ / Xcode 15+.
+// The "ios" verification level of R9-001 stays OPEN, now narrowed to the
+// Apple-only adapter layer over an executed logic core.
 import PackageDescription
 
 let package = Package(

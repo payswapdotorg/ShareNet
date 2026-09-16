@@ -55,8 +55,8 @@ public final class SendWindow {
     private let limits: Limits
     private var inFlightBytes = 0
     private var inFlightFrames = 0
-    private var exhaustionCount = 0
-    private var overReleaseCount = 0
+    private var _exhaustionCount = 0
+    private var _overReleaseCount = 0
 
     public init(limits: Limits) {
         self.limits = limits
@@ -77,14 +77,14 @@ public final class SendWindow {
     /// How many times the window refused a send because it was full.
     public var exhaustionCount: Int {
         lock.lock(); defer { lock.unlock() }
-        return exhaustionCount
+        return _exhaustionCount
     }
 
     /// How many releases arrived with nothing in flight (defensive
     /// diagnostics — should stay zero in a correct pairing).
     public var overReleaseCount: Int {
         lock.lock(); defer { lock.unlock() }
-        return overReleaseCount
+        return _overReleaseCount
     }
 
     /// Bytes still admissible at this instant.
@@ -114,7 +114,7 @@ public final class SendWindow {
         }
         guard inFlightBytes + frameBytes <= limits.maxInFlightBytes,
               inFlightFrames + 1 <= limits.maxInFlightFrames else {
-            exhaustionCount += 1
+            _exhaustionCount += 1
             throw TransportError.sendWindowExhausted(
                 inFlightBytes: inFlightBytes,
                 maximumBytes: limits.maxInFlightBytes
@@ -130,7 +130,7 @@ public final class SendWindow {
     public func release(frameBytes: Int) {
         lock.lock(); defer { lock.unlock() }
         if inFlightBytes == 0 || inFlightFrames == 0 {
-            overReleaseCount += 1
+            _overReleaseCount += 1
         }
         inFlightBytes = max(0, inFlightBytes - frameBytes)
         inFlightFrames = max(0, inFlightFrames - 1)

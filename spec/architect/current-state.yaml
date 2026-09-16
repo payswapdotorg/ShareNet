@@ -25,11 +25,17 @@ active_gate: NONE
 completed_gates: [R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10]
 honest_gaps:
   - id: R9-001-ios
-    what: the Swift Package architecture is delivered and
-      review-verified, but no Swift/XCTest toolchain exists in the
-      build sandbox to execute the test suite
-    operator_step: swift test in the ShareNetParticipant package on
-      any macOS/Linux host with Swift 5.9+
+    what: NARROWED AT CLOSURE VERIFICATION (2026-09-16) — the
+      pure-logic XCTest suite (32 functions) now EXECUTES GREEN on
+      Linux Swift 6.1.2 (two real never-compiled defects found and
+      fixed; evidence + repro in transport/ios/README.md "Sandbox
+      honesty"); what remains open is the Apple-only
+      Network.framework adapter layer (guarded #if
+      canImport(Network)) — never compiled or executed without
+      macOS/iOS
+    operator_step: swift test on macOS 13+ / Xcode 15+ compiles and
+      exercises the Network adapter layer (the logic core already
+      runs on Linux)
   - id: R9-002-platform
     what: the iOS Packet Tunnel evaluation criteria are delivered
       (docs/architecture/wave20-platform-items.md); the platform leg

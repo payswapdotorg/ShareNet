@@ -1555,15 +1555,62 @@ string). Honest note: sharenet-conformance's bin carries pre-existing
 dead-code warnings in its vector scaffolding (present since its wave;
 untouched by the closure).
 
+## Closure verification addendum (2026-09-16, post-closure audit session)
+
+- **iOS honest gap materially narrowed (R9-001).** A Swift toolchain was
+  installed in the sandbox (Swift 6.1.2, x86_64-unknown-linux-gnu,
+  user-local tarball + locally extracted libncurses6/libtinfo6 — no sudo;
+  exact repro recorded). The ShareNetParticipant package now COMPILES and
+  its full pure-logic XCTest suite EXECUTES GREEN on Linux:
+  `Executed 32 tests, with 0 failures (0 unexpected) in 0.413s`
+  (ConnectionTracker 14, FrameCodec 10, SendWindow 8). Process and findings:
+  (1) the baseline unguarded build failed exactly as the gap recorded
+  (`no such module 'Network'`) — now hard evidence; (2) the four
+  Network.framework adapter files are guarded `#if canImport(Network)`
+  (identical compilation where Network.framework exists; excluded on
+  Linux); (3) compiling surfaced and fixed TWO real never-compiled
+  defects — a SendWindow stored/computed property name collision, and
+  unqualified `guard case .case = error` test patterns that do not resolve
+  against untyped error existentials (qualified to `TransportError.`).
+  The "ios" verify level of R9-001 REMAINS OPEN, narrowed to the Apple-only
+  adapter layer (its compile/execution and any Apple-platform compile of
+  the guarded files require macOS 13+/Xcode 15+). Updated: transport/ios
+  Package.swift + README.md ("Sandbox honesty" — evidence record),
+  docs/architecture/ios-participant.md, spec/architect/current-state.yaml
+  (honest_gaps R9-001-ios). R9-002's platform leg is unchanged
+  (entitlement-gated).
+- **Definitive work-item count ladder (registry-computed).** The final
+  closure record's "46 of 48 fully verified + 2 at delivered scope" was
+  computed directly against the 48-item registry and is CORRECT
+  (R2-002 is not a registry item — it is the roadmap-noted optional
+  off-path item; the registry's R2 gate has three items). This addendum
+  records the registry-computed ladder for the intermediate wave records,
+  closing the residual drift the Wave 21 correction diagnosed but did not
+  fully eliminate (its own corrected counter still carried a +1 residual,
+  inherited by the Wave 22/23 records): fully-verified counts were
+  after Wave 20 → 40 (not 41), after Wave 21 → 41 (not 42), after Wave 22
+  → 43 (not 44), after Wave 23 → 45 (not 46), after Wave 24 → 46 ✓
+  (+ R9-001/R9-002 at delivered scope = 48). Same lesson as the Wave 21
+  correction, now fully applied: the ready-set open lists were always
+  right; only the summary counters drifted, and the closure number was
+  computed against the registry, not the ladder.
+- **Open Architect Decisions section corrected.** The standing section
+  below still listed the two decisions as open (stale from the wave-1/2
+  era); both were RESOLVED by the PROGRAM CLOSURE record above and are
+  now marked resolved in place.
+
 ## Open Architect Decisions
 
-1. `spec/architect/current-state.yaml` still declares
-   `ARCHITECTURE_FROZEN_IMPLEMENTATION_NOT_STARTED` (pinned verbatim by
-   `tools/architecture_check.py`). Implementation has now started and
-   Wave 1 items are complete with evidence. The Architect should define
-   the next status string and update the governance check together.
-2. NodeIdentity wire schema is now recorded in the protocol registry
-   (Tech Lead integration edit, evidence-based). Architect review
+1. RESOLVED at closure (see PROGRAM CLOSURE above):
+   `spec/architect/current-state.yaml` now declares
+   `FROZEN_PATH_EXECUTION_COMPLETE`; `tools/architecture_check.py` pins the
+   new status string verbatim (updated in the same change as the status
+   flip, per this decision's own requirement). The NodeIdentity
+   wire-schema registry review request (decision 2) is folded into the
+   registry's own status_note trail (registered at Wave 17 integration;
+   the schema carries three-language conformance since R8-001).
+2. RESOLVED at closure: NodeIdentity wire schema recorded in the protocol
+   registry with evidence-based status notes; no further Architect action
    requested.
 
 ## Evidence index

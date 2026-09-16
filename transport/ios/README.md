@@ -99,28 +99,73 @@ transport/ios/
 - All typed errors (`TransportError`) carry machine-readable cases; no
   `Network.framework` error type crosses a seam boundary.
 
-## Sandbox honesty (recorded gaps)
+## Sandbox honesty (evidence record)
 
-This package was authored in a Linux sandbox with **no Swift toolchain**
-(`which swift` fails there). Therefore:
+**Updated at closure (2026-09-16): the package now COMPILES and its full
+pure-logic XCTest suite EXECUTES GREEN in this Linux sandbox.** The original
+honest gap ("authored with no Swift toolchain — not compiled, not executed")
+was materially narrowed by installing Swift 6.1.2 (swift-6.1.2-RELEASE,
+x86_64-unknown-linux-gnu) user-locally and running the suite:
 
-- **NOT compiled, NOT executed** in this environment. Building and running
-  requires macOS 13+ with Xcode 15+ (or a Swift 5.9+ toolchain):
-  `cd transport/ios && swift test`.
-- The 32 XCTest functions (`ConnectionTracker` 14, `FrameCodec` 10,
-  `SendWindow` 8) are written to run there — their results are **not
-  claimed here**. No test output has been fabricated.
-- The "ios" verification level of R9-001 (compile + run on iOS) is
-  **honestly OUT OF SCOPE in this sandbox** and remains open until a Mac
-  runner exists. The "architecture" verification level IS delivered: the
-  seam/isolation mapping above + `docs/architecture/ios-participant.md`.
-- macOS 13 is declared as a second platform so `swift test` can execute the
-  pure-logic suite on a Mac (Network.framework exists on both); iOS 15 is
-  the product floor.
-- The engine seams have NO production implementation in this wave (the
-  Rust-core FFI bridge is the same deferred integration the Android wave
-  recorded for R10-002). Until then the package is participant scaffolding
-  + the adapter layer, not a runnable node.
+```
+$ swift test
+Test Suite 'All tests' passed at 2026-09-16 10:21:18.434
+         Executed 32 tests, with 0 failures (0 unexpected) in 0.413 (0.413) seconds
+```
+
+(FrameCodec 10, SendWindow 8, ConnectionTracker 14 — all green.)
+
+What this required, and what it found:
+
+- **Baseline honesty check first**: before any change, `swift build` failed
+  exactly as the original gap recorded — `error: no such module 'Network'`
+  in the four `Participant/` adapter files. Network.framework is
+  Apple-only; the failure is now hard evidence, not a prediction.
+- **Platform guards**: the four Network adapter files
+  (`BonjourAdvertiser`, `BonjourBrowser`, `NWLinkTransport`,
+  `NWParticipantTransport`) are wrapped in `#if canImport(Network)` …
+  `#endif`. On macOS/iOS `canImport(Network)` is always true and the files
+  compile exactly as authored; on Linux they contribute nothing, which is
+  what makes the pure-Foundation layers (`Contract/`, `Link/`,
+  `ParticipantConfiguration`) buildable and testable there. Nothing else
+  in the package changed semantically.
+- **Compiling found two real defects** (the code had never been compiled
+  anywhere):
+  1. `SendWindow` declared stored properties with the same names as its
+     public computed accessors (`exhaustionCount`, `overReleaseCount`) —
+     invalid redeclaration. Fixed by renaming the private storage
+     (`_exhaustionCount`, `_overReleaseCount`); the public API is
+     unchanged.
+  2. The tests' unqualified error-pattern matches (`guard case
+     .illegalState = error`) do not resolve against an untyped `error`
+     existential on Linux Swift — qualified to
+     `guard case TransportError.illegalState = error` (portable; compiles
+     identically on Apple platforms).
+
+**Reproducibility (the exact environment):** Debian 13 sandbox, no sudo:
+
+```
+curl -sL https://download.swift.org/swift-6.1.2-release/ubuntu2404/swift-6.1.2-RELEASE/swift-6.1.2-RELEASE-ubuntu24.04.tar.gz | tar xz
+# the toolchain needs libncurses.so.6, absent in the sandbox — extract locally:
+#   apt download libncurses6 libtinfo6 && dpkg-deb -x each into a prefix dir
+export PATH=<toolchain>/usr/bin:$PATH
+export LD_LIBRARY_PATH=<ncurses-prefix>/usr/lib/x86_64-linux-gnu:<toolchain>/usr/lib/swift/linux
+cd transport/ios && swift test
+```
+
+**What remains honestly open (the narrowed gap):**
+
+- The Network.framework adapter layer (the four guarded files — the actual
+  `NWBrowser`/`NWListener`/`NWConnection` behavior) has STILL never been
+  compiled or executed: it requires macOS 13+ / Xcode 15+ (or iOS 15+).
+  The Apple-platform compile of the guarded files is also operator-verified
+  (Linux cannot type-check Apple SDKs).
+- The "ios" verification level of R9-001 stays **OPEN**, now narrowed to the
+  Apple-only adapter layer over an executed, tested logic core.
+- The engine seams have NO production implementation (the Rust-core FFI
+  bridge is the same deferred integration the Android wave recorded for
+  R10-002). Until then the package is participant scaffolding + the adapter
+  layer, not a runnable node.
 
 ## Production caller
 

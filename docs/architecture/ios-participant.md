@@ -44,12 +44,21 @@ no second source of truth:
 
 ## Honest scope and recorded gaps
 
-1. **Not compiled, not executed here.** The authoring environment is a
-   Linux sandbox with no Swift toolchain. `swift test` requires macOS 13+ /
-   Xcode 15+. The 32 written XCTest functions have NO claimed results. The
-   "ios" verification level of R9-001 is OPEN until a Mac runner executes
-   the suite (tracked as the integration gap, same category as the Android
-   JNI bridge being R10-002's).
+1. **Logic core now EXECUTED (closure update 2026-09-16).** The authoring
+   sandbox had no Swift toolchain when this package was written; at closure
+   verification, Swift 6.1.2 was installed user-locally (Debian 13, no sudo)
+   and the package was compiled and tested on Linux: the pure-Foundation
+   layers (`Contract/`, `Link/`, `ParticipantConfiguration`) build clean and
+   the full pure-logic XCTest suite — 32 functions — executes green
+   (0 failures, 0.413s). Compiling surfaced and fixed two real
+   never-compiled defects (a `SendWindow` stored/computed property name
+   collision; unqualified test error-pattern matches). The Network adapter
+   files are guarded `#if canImport(Network)` (no-op where Network.framework
+   exists). **The "ios" verification level of R9-001 remains OPEN**, now
+   narrowed to the Apple-only adapter layer: `NWBrowser`/`NWListener`/
+   `NWConnection` behavior and any Apple-platform compile of those files
+   require macOS 13+ / Xcode 15+ (operator step; see
+   `transport/ios/README.md` "Sandbox honesty" for the evidence record).
 2. **No production engine.** The engine seams have no FFI implementation
    this wave; until the Rust-core FFI bridge exists, the package is
    participant scaffolding + the adapter layer, not a runnable node. (The

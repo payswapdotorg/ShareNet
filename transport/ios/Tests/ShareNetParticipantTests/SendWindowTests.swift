@@ -51,7 +51,7 @@ final class SendWindowTests: XCTestCase {
         try window.tryAcquire(frameBytes: 1)
         // Bytes available, but no frame slots.
         XCTAssertThrowsError(try window.tryAcquire(frameBytes: 1)) { error in
-            guard case .sendWindowExhausted = error else {
+            guard case TransportError.sendWindowExhausted = error else {
                 return XCTFail("expected sendWindowExhausted, got \(error)")
             }
         }
@@ -74,7 +74,7 @@ final class SendWindowTests: XCTestCase {
     func testNegativeFrameBytesRefused() throws {
         let window = SendWindow(limits: try .init(maxInFlightBytes: 100, maxInFlightFrames: 10))
         XCTAssertThrowsError(try window.tryAcquire(frameBytes: -1)) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }
@@ -82,12 +82,12 @@ final class SendWindowTests: XCTestCase {
 
     func testLimitsValidationIsTyped() {
         XCTAssertThrowsError(try SendWindow.Limits(maxInFlightBytes: 0, maxInFlightFrames: 10)) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }
         XCTAssertThrowsError(try SendWindow.Limits(maxInFlightBytes: 10, maxInFlightFrames: 0)) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }

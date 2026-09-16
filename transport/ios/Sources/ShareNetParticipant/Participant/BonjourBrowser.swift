@@ -1,3 +1,11 @@
+// Platform guard: Network.framework exists only on Apple platforms, so this
+// whole file (the Network adapter layer) compiles only where it exists. On
+// macOS/iOS `canImport(Network)` is always true and the file compiles exactly
+// as authored; on Linux it contributes nothing, keeping the pure-Foundation
+// Contract/Link layers buildable and testable (`swift test`). Executing the
+// Network layer itself still requires Apple hardware (the recorded R9-001
+// honest gap).
+#if canImport(Network)
 import Foundation
 import Network
 
@@ -162,3 +170,5 @@ final class BonjourBrowser {
         return nil
     }
 }
+
+#endif  // canImport(Network)

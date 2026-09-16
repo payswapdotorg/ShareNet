@@ -20,7 +20,7 @@ final class ConnectionTrackerTests: XCTestCase {
         try tracker.startAdvertising()
         XCTAssertTrue(tracker.isAdvertising)
         XCTAssertThrowsError(try tracker.startAdvertising()) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }
@@ -31,14 +31,14 @@ final class ConnectionTrackerTests: XCTestCase {
 
         try tracker.stopDiscovery()
         XCTAssertThrowsError(try tracker.stopDiscovery()) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }
 
         try tracker.stopAdvertising()
         XCTAssertThrowsError(try tracker.stopAdvertising()) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }
@@ -92,7 +92,7 @@ final class ConnectionTrackerTests: XCTestCase {
     func testAcceptWithoutRequestThrows() {
         let tracker = ConnectionTracker()
         XCTAssertThrowsError(try tracker.acceptConnection(anyEndpoint("unknown"))) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }
@@ -103,7 +103,7 @@ final class ConnectionTrackerTests: XCTestCase {
         let endpoint = anyEndpoint("dup")
         try tracker.onConnectionRequested(endpoint)
         XCTAssertThrowsError(try tracker.onConnectionRequested(endpoint)) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }
@@ -115,7 +115,7 @@ final class ConnectionTrackerTests: XCTestCase {
         try tracker.onConnectionRequested(endpoint)
         try tracker.acceptConnection(endpoint)
         XCTAssertThrowsError(try tracker.acceptConnection(endpoint)) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }
@@ -127,7 +127,7 @@ final class ConnectionTrackerTests: XCTestCase {
         try tracker.onConnectionRequested(endpoint)
         try tracker.acceptConnection(endpoint)
         XCTAssertThrowsError(try tracker.rejectConnection(endpoint)) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }
@@ -144,7 +144,7 @@ final class ConnectionTrackerTests: XCTestCase {
     func testUnknownDisconnectThrows() {
         let tracker = ConnectionTracker()
         XCTAssertThrowsError(try tracker.onDisconnected(anyEndpoint("ghost"))) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }
@@ -156,7 +156,7 @@ final class ConnectionTrackerTests: XCTestCase {
         try tracker.onConnectionRequested(endpoint)
         try tracker.onConnectionAccepted(endpoint)
         XCTAssertThrowsError(try tracker.onConnectionAccepted(endpoint)) { error in
-            guard case .illegalState = error else {
+            guard case TransportError.illegalState = error else {
                 return XCTFail("expected illegalState, got \(error)")
             }
         }

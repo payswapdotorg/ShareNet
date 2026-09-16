@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Wi-Fi Aware transport permissions (R2-002), following the platform
+      guidance for publish/subscribe discovery and aware datapaths:
+
+      * Always: ACCESS_WIFI_STATE / CHANGE_WIFI_STATE — required to use the
+        Wi-Fi Aware API at all (attach).
+      * Android 12 and below (API <= 32): ACCESS_FINE_LOCATION at runtime —
+        Wi-Fi Aware discovery required fine location before API 33.
+      * Android 13+ (API 33+): NEARBY_WIFI_DEVICES replaces the fine-location
+        requirement for nearby-device discovery, with neverForLocation so
+        discovery stays usable without location.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+
+    <application>
+        <!--
+          Production caller: the ShareNet Android app embeds this service
+          (started via Context.startService with the ACTION_* intents).
+          exported=false: only the host app may start it.
+        -->
+        <service
+            android:name="org.sharenet.transport.aware.ShareNetAwareService"
+            android:exported="false" />
+    </application>
+
+</manifest>

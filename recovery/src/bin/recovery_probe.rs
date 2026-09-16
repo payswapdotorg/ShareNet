@@ -35,6 +35,10 @@
 //! recovery_probe select-none           <dir> <now>
 //! recovery_probe establish             <dir> <now> <gateway_hex>
 //! recovery_probe establish-replacement <dir> <now> <route_at>
+//! recovery_probe revoke-replacement     <dir> <now> <route_at>   (the second failure)
+//! recovery_probe abandon               <dir> <now> <reason>     (fail the pending attempt)
+//! recovery_probe recoveries             <dir> <now>              (the coordination view)
+//! recovery_probe cleanup                <dir> <now> <min_age_s>
 //! recovery_probe state                  <dir>
 //! ```
 //!
@@ -78,7 +82,7 @@ use sharenet_connectivity::{
     AcceptOutcome, ConnectivityContractRef, ConnectivityObservation, DurableProjectionStore,
     ObservationKind, RefKind,
 };
-use sharenet_recovery::{select_eligible_gateway, 
+use sharenet_recovery::{AttemptFailure, select_eligible_gateway, 
     FreshRoute, GatewayCandidate, RecoveryDriver, RecoveryError, RecoveryStep, SelectedGateway,
 };
 use sharenet_protocol::circuit::{derive_circuit_id, CircuitRegistry, CircuitSetup, CircuitSetupAck};
@@ -476,6 +480,10 @@ fn usage() {
     eprintln!("       recovery_probe select-none <dir> <now>");
     eprintln!("       recovery_probe establish <dir> <now> <gateway_hex>");
     eprintln!("       recovery_probe establish-replacement <dir> <now> <route_at>");
+    eprintln!("       recovery_probe revoke-replacement <dir> <now> <route_at>");
+    eprintln!("       recovery_probe abandon <dir> <now> <reason>");
+    eprintln!("       recovery_probe recoveries <dir> <now>");
+    eprintln!("       recovery_probe cleanup <dir> <now> <min_age_s>");
     eprintln!("       recovery_probe state <dir>");
 }
 
@@ -488,6 +496,10 @@ fn dispatch(cmd: &str, rest: &[String]) -> ExitCode {
         "select-none" => cmd_select(rest, true),
         "establish" => cmd_establish(rest),
         "establish-replacement" => cmd_establish_replacement(rest),
+        "revoke-replacement" => cmd_revoke_replacement(rest),
+        "abandon" => cmd_abandon(rest),
+        "recoveries" => cmd_recoveries(rest),
+        "cleanup" => cmd_cleanup(rest),
         "state" => cmd_state(rest),
         _ => {
             usage();
@@ -856,6 +868,207 @@ fn cmd_establish_replacement(rest: &[String]) -> ExitCode {
             println!("REPLACEMENT {}", hex(&replacement.replacement_circuit_id));
             println!("REPLACEMENT-ATTEMPT {}", replacement.attempt_seq);
             println!("ESTABLISHED {}", if registry.is_established(&replacement.replacement_circuit_id) { "yes" } else { "no" });
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(&err),
+    }
+}
+
+/// Fail the circuit's pending attempt with a typed reason (the
+/// retry/backoff cycle's failure leg — feeds R7-005's schedule and
+/// R7-006's abandoned history).
+fn cmd_abandon(rest: &[String]) -> ExitCode {
+    let [dir, now_s, reason_s] = rest else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let Some(now) = parse_now(now_s) else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let Some(reason) = AttemptFailure::from_name(reason_s) else {
+        eprintln!("error: unknown failure reason {reason_s:?}");
+        return ExitCode::from(2);
+    };
+    let (driver, _) = match RecoveryDriver::open(std::path::Path::new(dir)) {
+        Ok(opened) => opened,
+        Err(err) => return fail(&err),
+    };
+    let circuit = revoked_circuit_id();
+    match driver.attempt_failed(&circuit, reason, now) {
+        Ok(seq) => {
+            println!("ABANDONED {seq}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(&err),
+    }
+}
+
+/// R7-006, the SECOND FAILURE across processes: the replacement
+/// circuit (established by `establish-replacement` with the fixed
+/// deterministic material) is revoked in turn — signed by the
+/// RECOVERING node (a committed-path member of the replacement's own
+/// route: recovering + gateway) — and a FRESH recovery attempt opens for
+/// the replacement's own circuit id. Prints the replacement id and the
+/// new attempt step.
+fn cmd_revoke_replacement(rest: &[String]) -> ExitCode {
+    let [dir, now_s, route_at_s] = rest else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let Some(now) = parse_now(now_s) else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let Some(route_at) = parse_now(route_at_s) else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let (driver, _) = match RecoveryDriver::open(std::path::Path::new(dir)) {
+        Ok(opened) => opened,
+        Err(err) => return fail(&err),
+    };
+    let circuit = revoked_circuit_id();
+    // Rebuild the replacement's route + registry exactly as
+    // establish-replacement did (deterministic seeds + clocks).
+    let stores = TempDir::new("second-failure");
+    let material = default_candidates(&stores.path);
+    let candidates: Vec<GatewayCandidate<'_>> = material.iter().map(|c| c.candidate()).collect();
+    let selected = match select_eligible_gateway(&admission_policy(), &candidates, route_at) {
+        Ok(found) => found,
+        Err(err) => return fail(&err),
+    };
+    let recovering = ident(SEED_RECOVERING);
+    let gateway_identity = [ident(SEED_G1), ident(SEED_G2), ident(SEED_G3), ident(SEED_G4)]
+        .into_iter()
+        .find(|g| node_id(g) == selected.gateway_node_id)
+        .expect("a probe gateway");
+    let mut path: Vec<[u8; 32]> = [node_id(&recovering), selected.gateway_node_id].to_vec();
+    path.sort();
+    let proposal =
+        RouteProposal::new(&recovering, path, "live", route_at, 3600, [0x43; 32])
+            .expect("proposal");
+    let proposal_env = proposal.sign(&recovering).expect("sign");
+    let proposal_id = derive_proposal_id(proposal_env.bytes());
+    let mut members: Vec<&Identity> = vec![&recovering, &gateway_identity];
+    members.sort_by_key(|m| node_id(m));
+    let acceptance_envs: Vec<SignedEnvelope> = members
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let acceptance =
+                RouteAcceptance::new(m, proposal_id, i as u64, route_at, 3600)
+                    .expect("acceptance");
+            acceptance.sign(m).expect("sign")
+        })
+        .collect();
+    let commitment =
+        RouteCommitment::build(route_at, proposal_env, acceptance_envs).expect("commitment");
+    let replacement_id = derive_circuit_id(commitment.route_id(), &REPLACEMENT_NONCE);
+    // The registry carrying the replacement (the R7-001 chain's
+    // committed-path membership check reads it).
+    let setup =
+        CircuitSetup::new(&commitment, &recovering, REPLACEMENT_NONCE, route_at, 600)
+            .expect("setup");
+    let setup_env = setup.sign(&recovering).expect("sign setup");
+    let mut registry = CircuitRegistry::new();
+    registry.install_revocation_ledger(&driver.revocation_ledger().ledger());
+    registry.admit_setup(route_at, &setup_env).expect("admit replacement");
+
+    // The second-failure revocation: the recovering node (a path member
+    // of the replacement's route) signs over the replacement id.
+    let second = CircuitRevocation::new(
+        &recovering,
+        replacement_id,
+        RevocationReason::LinkFailure,
+        None,
+        now,
+    )
+    .expect("second revocation")
+    .sign(&recovering)
+    .expect("sign");
+    match driver.admit_revocation_envelope(now, &second.to_envelope_bytes(), &registry) {
+        Ok(outcome) => println!("OUTCOME {}", outcome.as_str()),
+        Err(err) => return fail(&err),
+    }
+    // The fresh recovery opens for the REPLACEMENT's own id.
+    match driver.attempt_next(&replacement_id, now + 1) {
+        Ok(RecoveryStep::SelectFreshGateway { revoked_circuit_id, attempt_seq }) => {
+            println!("SECOND-FAILURE {}", hex(&replacement_id));
+            println!(
+                "STEP select_fresh_gateway {} {}",
+                hex(&revoked_circuit_id),
+                attempt_seq
+            );
+            let _ = circuit;
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(&err),
+    }
+}
+
+/// R7-006: the cross-circuit coordination view (deterministic id order).
+fn cmd_recoveries(rest: &[String]) -> ExitCode {
+    let [dir, now_s] = rest else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let Some(now) = parse_now(now_s) else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let (driver, _) = match RecoveryDriver::open(std::path::Path::new(dir)) {
+        Ok(opened) => opened,
+        Err(err) => return fail(&err),
+    };
+    let policy = sharenet_recovery::BackoffPolicy::new(
+        sharenet_recovery::BackoffSchedule::Fixed { delay_s: 30 },
+        None,
+    )
+    .expect("policy");
+    for status in driver.recoveries(now, &policy) {
+        let extra = match status.state {
+            sharenet_recovery::RecoveryStatusState::AttemptInFlight { attempt_seq } => {
+                format!("seq={attempt_seq}")
+            }
+            sharenet_recovery::RecoveryStatusState::AwaitingRetry { retry_at_unix } => {
+                format!("retry_at={retry_at_unix}")
+            }
+            _ => "-".to_string(),
+        };
+        println!(
+            "RECOVERY {} {} {} {}",
+            hex(&status.circuit_id),
+            status.state.name(),
+            status.abandoned,
+            extra
+        );
+    }
+    println!("DONE {}", driver.attempt_log().record_count());
+    ExitCode::SUCCESS
+}
+
+/// R7-006: cleanup of terminal recovery history (the attempt log only —
+/// the L015 ledger is never touched).
+fn cmd_cleanup(rest: &[String]) -> ExitCode {
+    let [dir, now_s, min_age_s] = rest else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let (Some(now), Ok(min_age)) = (parse_now(now_s), min_age_s.parse::<u64>()) else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let (driver, _) = match RecoveryDriver::open(std::path::Path::new(dir)) {
+        Ok(opened) => opened,
+        Err(err) => return fail(&err),
+    };
+    match driver.cleanup_terminal(now, min_age) {
+        Ok(cleaned) => {
+            for circuit_id in &cleaned {
+                println!("CLEANED {}", hex(circuit_id));
+            }
+            println!("DONE {}", cleaned.len());
             ExitCode::SUCCESS
         }
         Err(err) => fail(&err),

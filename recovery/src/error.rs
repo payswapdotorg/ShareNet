@@ -213,6 +213,16 @@ pub enum RecoveryError {
     /// R7-004: the circuit's recovery already has its replacement circuit
     /// — single replacement per succeeded attempt (a further failure of
     /// the replacement is a NEW revocation + NEW recovery, L014).
+    /// R7-006 cleanup refused: the terminal record is too fresh (its
+    /// full context is retained until the age bound elapses).
+    CleanupTooEarly {
+        /// The circuit.
+        circuit_id: [u8; 32],
+        /// When the terminal record finished.
+        finished_at_unix: u64,
+        /// The caller's clock at the refused cleanup.
+        now_unix: u64,
+    },
     /// The R7-005 gate refused: the backoff window has not elapsed
     /// (the earliest permitted time is the daemon's timer input).
     RetryNotPermitted {
@@ -312,6 +322,7 @@ impl RecoveryError {
             }
             RecoveryError::ReplacementAlreadyEstablished { .. } => "replacement_already_established",
             RecoveryError::RetryNotPermitted { .. } => "retry_not_yet",
+            RecoveryError::CleanupTooEarly { .. } => "cleanup_too_early",
             RecoveryError::RetryExhausted { .. } => "retry_exhausted",
         }
     }
@@ -491,6 +502,11 @@ impl fmt::Display for RecoveryError {
                 "replacement circuit {} was not established (unacked positions: {:?})",
                 hex(circuit_id),
                 unacked_positions
+            ),
+            RecoveryError::CleanupTooEarly { circuit_id, finished_at_unix, now_unix } => write!(
+                f,
+                "circuit {}'s terminal recovery finished at {finished_at_unix} — too fresh to clean at {now_unix}",
+                hex(circuit_id)
             ),
             RecoveryError::RetryNotPermitted { retry_at_unix, now_unix } => write!(
                 f,

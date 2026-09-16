@@ -453,3 +453,98 @@ fn backoff_gate_is_pure_and_composed_open_is_single_flight() {
     assert_eq!(attempts[1].attempt_seq(), 2);
     assert_eq!(attempts[1].state(), sharenet_recovery::AttemptState::Pending);
 }
+
+/// R7-006 under concurrency: the coordination view is a consistent pure
+/// query while recoveries mutate underneath (racing readers + writers),
+/// and racing cleanups are exactly-once per circuit (the first prunes,
+/// the rest see nothing left; the terminal fact survives every racer).
+#[test]
+fn coordination_view_and_cleanup_under_concurrent_mutation() {
+    use sharenet_recovery::{
+        BackoffPolicy, BackoffSchedule, RecoveryStatusState, TerminalReason,
+    };
+
+    let dir = TempDir::new("conc-r7006");
+    let (w, mut registry, base) = established(NOW, [0x78; 32]);
+    let mut circuits = vec![base];
+    for i in 0..2 {
+        circuits.push(admit_circuit(&w, &mut registry, NOW, [0x79 + i; 32]));
+    }
+    let (driver, _) = RecoveryDriver::open(&dir.path).expect("open");
+    for circuit in &circuits {
+        driver
+            .admit_revocation_envelope(
+                NOW,
+                &link_failure_revocation(&w, *circuit, NOW).to_envelope_bytes(),
+                &registry,
+            )
+            .expect("admit");
+        // Every circuit fails one attempt (abandoned at NOW+2).
+        driver.attempt_next(circuit, NOW + 1).expect("attempt");
+        driver
+            .attempt_failed(circuit, AttemptFailure::NoGatewayAvailable, NOW + 2)
+            .expect("abandon");
+        // ...then recovers to TERMINAL (succeeded at NOW+10).
+        driver.attempt_next(circuit, NOW + 5).expect("attempt 2");
+        driver
+            .attempt_succeeded(
+                circuit,
+                FreshRouteEvidence::Commitment(&w.commitment),
+                NOW + 10,
+            )
+            .expect("succeed");
+    }
+    let policy = BackoffPolicy::new(BackoffSchedule::Fixed { delay_s: 30 }, None).expect("policy");
+
+    // Writers: racing per-circuit cleanups (3 racers per circuit).
+    let readers_done = AtomicBool::new(false);
+    let driver = &driver;
+    let circuits = &circuits;
+    let readers_done = &readers_done;
+    scope(|s| {
+        s.spawn(move || {
+            for _ in 0..9 {
+                // The age law passes (finished NOW+10, now NOW+200);
+                // cleanup covers every terminal circuit itself.
+                let _ = driver.cleanup_terminal(NOW + 200, 60);
+            }
+            readers_done.store(true, Ordering::SeqCst);
+        });
+        // Readers: the coordination view while the cleanups race.
+        for _ in 0..2 {
+            s.spawn(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while !readers_done.load(Ordering::SeqCst) {
+                    if std::time::Instant::now() > deadline {
+                        panic!("view reader raced past its deadline");
+                    }
+                    let view = driver.recoveries(NOW + 200, &policy);
+                    // Every circuit is present and terminal — the view
+                    // is never torn by the racing prunes (a pruned
+                    // history still reports Terminal).
+                    assert_eq!(view.len(), 3, "no circuit disappears mid-cleanup");
+                    for status in &view {
+                        assert_eq!(
+                            status.state,
+                            RecoveryStatusState::Terminal {
+                                reason: TerminalReason::AlreadySucceeded
+                            }
+                        );
+                    }
+                }
+            });
+        }
+    });
+
+    // After the race: every circuit pruned to exactly its terminal
+    // record, still recovery_already_complete (the terminal fact won).
+    for circuit in circuits.iter() {
+        let history = driver.attempt_log().attempts_for(circuit);
+        assert_eq!(history.len(), 1, "only the terminal record survives: {history:?}");
+        assert_eq!(history[0].state(), AttemptState::Succeeded);
+        assert_eq!(
+            driver.attempt_next(circuit, NOW + 300).unwrap_err().name(),
+            "recovery_already_complete"
+        );
+    }
+}

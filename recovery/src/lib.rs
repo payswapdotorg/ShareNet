@@ -137,8 +137,8 @@ pub use backoff::{
     BackoffError, BackoffPolicy, BackoffSchedule, RetryDecision, TerminalReason,
 };
 pub use driver::{
-    FreshRoute, RecoveryDriver, RecoveryStep, ReplacementCircuit, SelectedGateway,
-    ATTEMPT_LOG_FILE_NAME, LEDGER_FILE_NAME,
+    CircuitRecoveryStatus, FreshRoute, RecoveryDriver, RecoveryStep, RecoveryStatusState,
+    ReplacementCircuit, SelectedGateway, ATTEMPT_LOG_FILE_NAME, LEDGER_FILE_NAME,
 };
 pub use error::{AttemptStateTag, RecoveryError, RecoveryIoOp};
 pub use gateway::{select_eligible_gateway, GatewayCandidate, GatewaySelection};

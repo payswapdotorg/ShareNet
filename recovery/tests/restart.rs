@@ -248,3 +248,60 @@ fn torn_tail_crash_residue_across_restart() {
     assert_eq!(report.truncated_tail_bytes, 0);
     assert_eq!(driver.revocation_ledger().revoker_count(&revoked), 3);
 }
+
+/// R7-005 across a full teardown: the backoff decision is a pure
+/// function of the DURABLE history — the same (state, policy, clock)
+/// decides the same before and after a restart, and a circuit whose
+/// backoff window elapsed while the node was offline is IMMEDIATELY
+/// retryable on reload (offline time counts; the daemon owes no
+/// catch-up sleeps).
+#[test]
+fn backoff_decision_survives_restart_and_offline_time_counts() {
+    let dir = TempDir::new("restart-backoff");
+    let policy = sharenet_recovery::BackoffPolicy::new(
+        sharenet_recovery::BackoffSchedule::Fixed { delay_s: 60 },
+        None,
+    )
+    .expect("policy");
+    let (w, registry, revoked) = established(NOW, [0x73; 32]);
+    {
+        let (driver, _) = RecoveryDriver::open(&dir.path).expect("open");
+        driver
+            .admit_revocation_envelope(
+                NOW,
+                &link_failure_revocation(&w, revoked, NOW).to_envelope_bytes(),
+                &registry,
+            )
+            .expect("admit");
+        driver.attempt_next(&revoked, NOW + 1).expect("attempt");
+        driver
+            .attempt_failed(&revoked, AttemptFailure::NoGatewayAvailable, NOW + 2)
+            .expect("abandon");
+        // Inside the window: NotYet, anchored at NOW+62.
+        assert_eq!(
+            driver.when_may_retry(&revoked, NOW + 61, &policy),
+            sharenet_recovery::RetryDecision::NotYet { retry_at_unix: NOW + 62 }
+        );
+    } // teardown — the process ends mid-backoff
+
+    // Reload AFTER the window elapsed while offline: immediately RetryNow.
+    let (driver, _) = RecoveryDriver::open(&dir.path).expect("reopen");
+    assert_eq!(
+        driver.when_may_retry(&revoked, NOW + 5_000, &policy),
+        sharenet_recovery::RetryDecision::RetryNow
+    );
+    // Purity across the boundary: the same query, same verdict.
+    assert_eq!(
+        driver.when_may_retry(&revoked, NOW + 61, &policy),
+        sharenet_recovery::RetryDecision::NotYet { retry_at_unix: NOW + 62 }
+    );
+    // And the composed call opens the second attempt from the reloaded
+    // state.
+    let step = driver
+        .attempt_next_when_permitted(&revoked, NOW + 5_001, &policy)
+        .expect("retry after offline");
+    assert_eq!(
+        step,
+        RecoveryStep::SelectFreshGateway { revoked_circuit_id: revoked, attempt_seq: 2 }
+    );
+}

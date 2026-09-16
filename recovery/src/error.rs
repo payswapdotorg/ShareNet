@@ -144,6 +144,30 @@ pub enum RecoveryError {
     /// The in-memory state and the just-written durable image disagree —
     /// an internal invariant violation (a bug, surfaced fail-closed).
     InternalInconsistent { what: &'static str },
+    /// R7-003: no candidate in the supplied set was judged `Eligible` by
+    /// the R5-005 admission policy (an empty set included) — fail-closed;
+    /// the typed input to the R7-005 retry/backoff policy.
+    NoEligibleGateway { candidate_count: usize },
+    /// R7-003: the candidate set carries two candidates with the same
+    /// gateway node id — ambiguous input; deterministic selection refuses
+    /// rather than silently picking one of them.
+    DuplicateGatewayCandidate { gateway_node_id: [u8; 32] },
+    /// R7-003: the fresh-route material offered does not commit to the
+    /// selected gateway (path membership, DERIVED from the verified
+    /// commitment — never caller-asserted).
+    GatewayNotOnRoute { gateway_node_id: [u8; 32], route_id: [u8; 32] },
+    /// R7-003: the selected gateway's admission evidence expired before
+    /// the fresh route was established (the R5-005 decision's
+    /// `valid_until_unix` anchor — selection evidence must still hold at
+    /// construction time).
+    GatewayAdmissionExpired { now_unix: u64, valid_until_unix: u64 },
+    /// R7-003: the recovery step names an attempt that is no longer the
+    /// circuit's open one (a stale step held across a finish).
+    StaleRecoveryStep {
+        circuit_id: [u8; 32],
+        step_attempt_seq: u64,
+        open_attempt_seq: u64,
+    },
 }
 
 /// The persisted attempt-state tags (shared by the error surface for
@@ -205,6 +229,11 @@ impl RecoveryError {
             RecoveryError::AttemptSequenceNotIncreasing { .. } => "attempt_sequence_not_increasing",
             RecoveryError::AttemptAfterSuccessPersisted { .. } => "attempt_after_success_persisted",
             RecoveryError::InternalInconsistent { .. } => "internal_inconsistent",
+            RecoveryError::NoEligibleGateway { .. } => "no_eligible_gateway",
+            RecoveryError::DuplicateGatewayCandidate { .. } => "duplicate_gateway_candidate",
+            RecoveryError::GatewayNotOnRoute { .. } => "gateway_not_on_route",
+            RecoveryError::GatewayAdmissionExpired { .. } => "gateway_admission_expired",
+            RecoveryError::StaleRecoveryStep { .. } => "stale_recovery_step",
         }
     }
 
@@ -317,6 +346,30 @@ impl fmt::Display for RecoveryError {
             RecoveryError::InternalInconsistent { what } => {
                 write!(f, "internal invariant violated: {what}")
             }
+            RecoveryError::NoEligibleGateway { candidate_count } => write!(
+                f,
+                "no eligible gateway among {candidate_count} candidate(s); the R5-005 admission policy refused them all (§11 fresh gateway selection, fail-closed)"
+            ),
+            RecoveryError::DuplicateGatewayCandidate { gateway_node_id } => write!(
+                f,
+                "duplicate gateway candidate {} — ambiguous candidate set",
+                hex(gateway_node_id)
+            ),
+            RecoveryError::GatewayNotOnRoute { gateway_node_id, route_id } => write!(
+                f,
+                "the fresh route {} does not commit to the selected gateway {} (path membership failed)",
+                hex(route_id),
+                hex(gateway_node_id)
+            ),
+            RecoveryError::GatewayAdmissionExpired { now_unix, valid_until_unix } => write!(
+                f,
+                "the selected gateway's admission expired at {valid_until_unix} before the fresh route was established at {now_unix}"
+            ),
+            RecoveryError::StaleRecoveryStep { circuit_id, step_attempt_seq, open_attempt_seq } => write!(
+                f,
+                "stale recovery step: attempt {step_attempt_seq} for circuit {} is not the open attempt {open_attempt_seq}",
+                hex(circuit_id)
+            ),
         }
     }
 }

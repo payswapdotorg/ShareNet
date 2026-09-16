@@ -1,8 +1,22 @@
-//! # sharenet-recovery — durable recovery attempts (work item R7-002)
+//! # sharenet-recovery — durable recovery attempts (R7-002) + fresh
+//! gateway/route recovery (R7-003)
 //!
-//! The durable-file layer of ShareNet's failure handling (architecture
-//! §11), completing what R7-001's snapshot seam deferred. Two laws anchor
-//! the crate:
+//! The recovery layer of ShareNet's failure handling (architecture §11):
+//! R7-002 built the durable-file foundation, and R7-003 fills the
+//! `SelectFreshGateway` seam R7-002 deliberately deferred — the §11
+//! pipeline this crate now carries end to end is
+//!
+//! ```text
+//! recovery attempt                   (R7-002 — durable, bounded)
+//!     ↓ attempt_next → RecoveryStep::SelectFreshGateway
+//! fresh gateway selection            (R7-003 — gateway.rs, R5-005 composed in)
+//!     ↓ select_gateway → SelectedGateway
+//! fresh route commitment             (R7-003 — establish_fresh_route, R3-004 chain)
+//!     ↓ attempt_succeeded (the §11 freshness law, durable terminal record)
+//! fresh circuit session              (R7-004 — the typed hand-off)
+//! ```
+//!
+//! Three laws anchor the crate:
 //!
 //! - **L015** — *"Revocation is durable and authoritative; recovery
 //!   cannot resurrect a revoked circuit."* The durable ledger file
@@ -17,6 +31,13 @@
 //!   pending/succeeded/abandoned) durably and bounded: at most
 //!   [`attempt::MAX_ATTEMPT_RECORDS_PER_CIRCUIT`] retained attempts per
 //!   circuit (oldest abandoned compacted) and a hard file cap.
+//! - **§2 determinism** — *"The routing objective is deterministic for a
+//!   fixed evidence snapshot."* Gateway selection
+//!   ([`gateway::select_eligible_gateway`]) is a pure function of
+//!   `(policy, candidates, now)`: the R5-005 verdict is derived per
+//!   candidate (never a caller-supplied boolean), and the tie-break
+//!   between eligible gateways is the fixed key of ascending gateway
+//!   node-id bytes — input order never matters.
 //!
 //! And one ordering rule enforced at every admission: **no attempt may
 //! resurrect the revoked circuit** — an attempt record referencing a
@@ -24,49 +45,64 @@
 //! (`circuit_not_revoked`), and recovery only ever *follows* durable
 //! invalidation. Success is terminal per circuit; a new failure of the
 //! fresh circuit is a new revocation and a new recovery (L014: fresh
-//! session identity).
+//! session identity). The fresh route itself must not predate the
+//! revocation that started the recovery (the §11 freshness law,
+//! `route_not_fresh`, enforced against the ledger-sourced anchor at
+//! `attempt_succeeded`).
 //!
-//! The [`driver::RecoveryDriver`] composes the two stores and exposes
-//! the §11 lifecycle as far as R7-002's scope reaches:
-//! `attempt_next → SelectFreshGateway` (the R7-003 seam) →
-//! `attempt_succeeded` / `attempt_failed`. Gateway selection, route
-//! construction, circuit setup and verification are R7-003/R7-004
+//! The [`driver::RecoveryDriver`] composes the two stores and the two
+//! R7-003 stages and exposes the §11 lifecycle:
+//! `attempt_next → SelectFreshGateway → select_gateway →
+//! establish_fresh_route → (R7-004)`, with `attempt_failed` recording
+//! the typed reasons (including `no_gateway_available`, the consumption
+//! of the `no_eligible_gateway` refusal). Circuit setup is R7-004
 //! scope; retry/backoff policy is R7-005; concurrent-recovery
 //! coordination is R7-006.
 //!
-//! # Dependency law
+//! # Dependency law (the R7-003 composition)
 //!
-//! `sharenet-protocol + std` only. The protocol core supplies the
-//! authenticated facts (signed revocations, committed paths, route
-//! commitments); everything here is durability, ordering and bounds —
-//! no second source of truth for circuit terminal state (AGENTS.md),
-//! no wall clock (caller-supplied `now`, by the crate law), no async
-//! runtime, no serde.
+//! `sharenet-protocol + sharenet-admission + sharenet-connectivity + std`
+//! — all ShareNet, all deliberate. R7-002's original posture was
+//! `sharenet-protocol + std` only; R7-003's work-item contract is that
+//! only gateways the R5-005 admission policy judges `Eligible` may be
+//! selected and that its math must not be rewritten, so the crate now
+//! COMPOSES the real policy (`sharenet-admission`) instead of mirroring
+//! it, and names the ADCOS boundary's projection types
+//! (`sharenet-connectivity`) the admission evidence borrows. The
+//! protocol core still supplies every authenticated fact (revocations,
+//! committed paths, route commitments, signed evidence); everything here
+//! is durability, ordering, bounds and composition — no second source of
+//! truth for circuit terminal state (AGENTS.md), no wall clock
+//! (caller-supplied `now`, by the crate law), no async runtime, no
+//! serde. Native by design (durable files): there is no wasm story to
+//! claim — the durable layer is the host's.
 //!
-//! # Verification levels (R7-002: unit, restart, concurrency)
+//! # Verification levels
 //!
-//! - **unit**: format/codec round-trips, corruption fail-closed at
-//!   every region (both files), attempt-number monotonicity, the §11
-//!   cross-check refusals (unknown circuit, attempt after success,
-//!   duplicate/in-flight attempt), state-machine consistency, the
-//!   SHA-256 chain construction against standard vectors;
-//! - **restart**: full teardown → reload from disk — the ledger stays
-//!   authoritative (a revoked circuit stays revoked across restarts,
-//!   L015 END-TO-END), the attempt log continues its numbering, and
-//!   the bounded log compacts old abandoned attempts;
-//! - **concurrency**: multi-threaded admit/finish/begin interleavings
-//!   against shared stores — no lost updates, no torn files (concurrent
-//!   loads always succeed or fail typed, never parse garbage), and
-//!   idempotence under racing threads.
+//! - **R7-002 (unit, restart, concurrency)**: format/codec round-trips,
+//!   corruption fail-closed at every region (both files), attempt-number
+//!   monotonicity, the §11 cross-check refusals, state-machine
+//!   consistency, full teardown → reload, multi-threaded interleavings.
+//! - **R7-003 (adversarial, multiprocess)**: ineligible candidates never
+//!   selected (even as the only candidate), lying evidence never
+//!   selected, selection determinism, duplicate/empty sets, the §11
+//!   freshness law end to end (a pre-revocation route is refused), path
+//!   membership of the selected gateway derived from the commitment —
+//!   and the whole §11 pipeline driven across REAL process boundaries
+//!   through the `recovery_probe` binary (`src/bin/recovery_probe.rs`):
+//!   process 1 admits a revocation + opens an attempt, process 2
+//!   selects a gateway from candidates + succeeds the attempt, process
+//!   3 reloads and sees the terminal state.
 
 pub mod attempt;
 pub mod driver;
 pub mod error;
+pub mod gateway;
 pub mod ledger;
 mod sha256;
 
 // In-crate test scaffolding (the world builder + byte-crafting helpers
-// shared by the three unit suites) — never compiled into the library.
+// shared by the unit suites) — never compiled into the library.
 #[cfg(test)]
 mod testkit;
 
@@ -76,9 +112,11 @@ pub use attempt::{
     MAX_ATTEMPT_RECORDS_PER_CIRCUIT,
 };
 pub use driver::{
-    RecoveryDriver, RecoveryStep, ATTEMPT_LOG_FILE_NAME, LEDGER_FILE_NAME,
+    FreshRoute, RecoveryDriver, RecoveryStep, SelectedGateway, ATTEMPT_LOG_FILE_NAME,
+    LEDGER_FILE_NAME,
 };
 pub use error::{AttemptStateTag, RecoveryError, RecoveryIoOp};
+pub use gateway::{select_eligible_gateway, GatewayCandidate, GatewaySelection};
 pub use ledger::{
     DurableRevocationLedger, LedgerLoadReport, LEDGER_FORMAT_VERSION, LEDGER_MAGIC,
     MAX_LEDGER_FILE_BYTES,

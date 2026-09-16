@@ -1,4 +1,4 @@
-//! The recovery-driver skeleton — work item R7-002's composition layer.
+//! The recovery driver — the §11 composition layer.
 //!
 //! Architecture §11's failure pipeline:
 //!
@@ -9,11 +9,11 @@
 //!     ↓
 //! zeroization                       ← R7-004 (replacement circuit)
 //!     ↓
-//! recovery attempt                   ← THIS CRATE (durable, bounded)
+//! recovery attempt                   ← R7-002 (durable, bounded)
 //!     ↓
-//! fresh gateway selection            ← R7-003 (the seam below)
+//! fresh gateway selection            ← R7-003 (gateway.rs — THIS CRATE)
 //!     ↓
-//! fresh route commitment             ← R7-003 (verified here when in hand)
+//! fresh route commitment             ← R7-003 (established + verified here)
 //!     ↓
 //! fresh circuit session              ← R7-004
 //!     ↓
@@ -21,18 +21,33 @@
 //! ```
 //!
 //! The driver owns the two durable stores (the ledger file + the attempt
-//! log) and exposes the attempt lifecycle exactly as far as R7-002's
-//! scope reaches:
+//! log) and exposes the attempt lifecycle:
 //!
 //! - [`Self::attempt_next`] — the §11 entry point: it cross-checks the
 //!   DURABLE ledger (only a durably revoked circuit may enter
 //!   recovery), refuses when recovery is already complete or an
 //!   attempt is in flight, opens and DURABLY records the next
 //!   per-circuit attempt (pending), and returns the typed next step —
-//!   [`RecoveryStep::SelectFreshGateway`]. **Fresh gateway selection
-//!   itself is R7-003 scope**: this is the documented seam. The caller
-//!   (R7-003) selects a fresh gateway, builds the fresh route
-//!   commitment, and reports back;
+//!   [`RecoveryStep::SelectFreshGateway`];
+//! - [`Self::select_gateway`] — the R7-003 stage after that step: from a
+//!   caller-supplied candidate set, only a gateway the R5-005 admission
+//!   policy judges `Eligible` can be selected (the policy is COMPOSED,
+//!   not rewritten — see [`crate::gateway`]), the tie-break is
+//!   deterministic (ascending gateway node id), and the outcome is
+//!   bound to the open attempt ([`SelectedGateway`]). When NO eligible
+//!   gateway exists the typed refusal `no_eligible_gateway` is the
+//!   input to the R7-005 retry policy — or, immediately, to
+//!   [`Self::attempt_failed`] with [`AttemptFailure::NoGatewayAvailable`];
+//! - [`Self::establish_fresh_route`] — the R7-003 construction stage:
+//!   builds the fresh [`RouteCommitment`] from the signed R3-004
+//!   material (proposal envelope + acceptance envelopes — every
+//!   signature verified by the protocol core's build), DERIVES that the
+//!   committed path actually contains the selected gateway (path
+//!   membership, never caller-asserted), checks the selection's
+//!   admission is still valid at construction time, and hands the
+//!   commitment to [`Self::attempt_succeeded`] — which enforces the §11
+//!   freshness law (the route must not predate the revocation anchor)
+//!   and durably records the terminal success;
 //! - [`Self::attempt_succeeded`] — the fresh route commitment evidence
 //!   is recorded (verified in full when the commitment is in hand:
 //!   R3-004 chain + §11 freshness vs. the revocation anchor);
@@ -43,18 +58,24 @@
 //!   install into a `CircuitRegistry` (`install_revocation_ledger`) so
 //!   the L015 gate is live for every circuit admission in this process.
 //!
-//! What the skeleton deliberately does NOT do: gateway selection,
-//! route construction, circuit setup, verification driving (R7-003 +
-//! R7-004), retry/backoff (R7-005), concurrent-recovery coordination
-//! (R7-006). The seams are the typed parameters the callers bring back.
+//! What the driver deliberately does NOT do: circuit setup (R7-004 — the
+//! fresh route commitment here is the typed input its replacement
+//! circuit consumes), retry/backoff (R7-005), concurrent-recovery
+//! coordination (R7-006). The seams are the typed parameters the callers
+//! bring back.
 
 use std::path::{Path, PathBuf};
 
+use sharenet_admission::{
+    AdcosEvidenceAnchor, GatewayAdmissionPolicy, ShareNetEvidenceAnchor,
+};
 use sharenet_protocol::circuit::CircuitRegistry;
 use sharenet_protocol::revocation::RevocationAdmitOutcome;
+use sharenet_protocol::route::{RouteCommitment, SignedEnvelope};
 
-use crate::attempt::{FreshRouteEvidence, RecoveryAttemptLog, AttemptFailure};
+use crate::attempt::{AttemptFailure, FreshRouteEvidence, RecoveryAttemptLog};
 use crate::error::RecoveryError;
+use crate::gateway::{select_eligible_gateway, GatewayCandidate, GatewaySelection};
 use crate::ledger::{DurableRevocationLedger, LedgerLoadReport};
 
 /// The ledger file name inside the driver's directory.
@@ -85,6 +106,20 @@ impl RecoveryStep {
     pub fn as_str(&self) -> &'static str {
         match self {
             RecoveryStep::SelectFreshGateway { .. } => "select_fresh_gateway",
+        }
+    }
+
+    /// The revoked circuit this step names (the §11 binding).
+    pub fn revoked_circuit_id(&self) -> &[u8; 32] {
+        match self {
+            RecoveryStep::SelectFreshGateway { revoked_circuit_id, .. } => revoked_circuit_id,
+        }
+    }
+
+    /// The per-circuit attempt number this step opened.
+    pub fn attempt_seq(&self) -> u64 {
+        match self {
+            RecoveryStep::SelectFreshGateway { attempt_seq, .. } => *attempt_seq,
         }
     }
 }
@@ -185,6 +220,153 @@ impl RecoveryDriver {
         self.attempts.finish_attempt_with_failure(revoked_circuit_id, reason, now_unix)
     }
 
+    /// The R7-003 §11 stage `fresh gateway selection`: from the
+    /// caller-supplied candidate set, select a gateway the R5-005
+    /// admission `policy` judges `Eligible` at `now_unix`, bound to the
+    /// attempt `step` opened (see [`RecoveryStep::SelectFreshGateway`]).
+    ///
+    /// The selection is the composed R5-005 verdict (every signature
+    /// verified by the policy itself) plus the deterministic tie-break
+    /// (ascending gateway node id); the returned [`SelectedGateway`]
+    /// carries the verified evidence anchors and the binding to the open
+    /// attempt. Selection is NOT durable state — it is the in-process
+    /// input to [`Self::establish_fresh_route`]; a crash between the two
+    /// stages leaves the attempt pending (a fresh selection may run
+    /// after the restart; the durable outcome is the recorded route
+    /// ref, which is commitment-derived).
+    ///
+    /// Typed refusals: `no_pending_attempt` (no open attempt for the
+    /// step's circuit), `stale_recovery_step` (the step names an attempt
+    /// that is no longer the open one), `no_eligible_gateway` (no
+    /// eligible candidate — empty set included; feeds the R7-005 retry
+    /// policy or `attempt_failed` with `NoGatewayAvailable`),
+    /// `duplicate_gateway_candidate` (ambiguous set).
+    pub fn select_gateway(
+        &self,
+        step: &RecoveryStep,
+        candidates: &[GatewayCandidate<'_>],
+        policy: &GatewayAdmissionPolicy,
+        now_unix: u64,
+    ) -> Result<SelectedGateway, RecoveryError> {
+        let (revoked_circuit_id, step_attempt_seq) = match *step {
+            RecoveryStep::SelectFreshGateway { revoked_circuit_id, attempt_seq } => {
+                (revoked_circuit_id, attempt_seq)
+            }
+        };
+        self.check_step_is_open(&revoked_circuit_id, step_attempt_seq)?;
+        let selection: GatewaySelection =
+            select_eligible_gateway(policy, candidates, now_unix)?;
+        Ok(SelectedGateway {
+            revoked_circuit_id,
+            attempt_seq: step_attempt_seq,
+            gateway_node_id: selection.gateway_node_id,
+            sharenet: selection.sharenet,
+            adcos: selection.adcos,
+            valid_until_unix: selection.valid_until_unix,
+        })
+    }
+
+    /// The R7-003 §11 stage `fresh route commitment`: build the fresh
+    /// [`RouteCommitment`] for the selected gateway from the signed
+    /// R3-004 material — the proposal envelope (the recovering node's
+    /// signed route proposal) and the acceptance envelopes (every path
+    /// member's signed acceptance, the selected gateway's included). The
+    /// construction runs the protocol core's own chain: proposal
+    /// signature, every acceptance's signature/binding/freshness,
+    /// exact position coverage, the Merkle root and the derived
+    /// `route_id` (L013).
+    ///
+    /// Then two DERIVED cross-checks before the durable record:
+    ///
+    /// - **path membership** — the committed path must contain the
+    ///   selected gateway's node id (typed refusal `gateway_not_on_route`;
+    ///   the claim is never taken from the caller);
+    /// - **admission validity** — the selection's evidence must still hold
+    ///   at construction time (`now_unix < valid_until_unix`; typed
+    ///   refusal `gateway_admission_expired`).
+    ///
+    /// Finally the commitment is handed to [`Self::attempt_succeeded`],
+    /// which re-verifies it in full and enforces the §11 freshness law
+    /// (the route must not predate the revocation anchor — typed refusal
+    /// `route_not_fresh`) before durably recording the terminal success.
+    /// On ANY refusal the attempt stays pending and nothing is written.
+    ///
+    /// Returns the established route (its commitment-derived `route_id`,
+    /// the attempt it succeeded, the gateway it goes through).
+    pub fn establish_fresh_route(
+        &self,
+        selected: &SelectedGateway,
+        proposal_envelope: &SignedEnvelope,
+        acceptance_envelopes: &[SignedEnvelope],
+        now_unix: u64,
+    ) -> Result<FreshRoute, RecoveryError> {
+        self.check_step_is_open(&selected.revoked_circuit_id, selected.attempt_seq)?;
+        // The selection's evidence must still hold at construction time
+        // (the R5-005 `valid_until_unix` anchor — exclusive bound).
+        if now_unix >= selected.valid_until_unix {
+            return Err(RecoveryError::GatewayAdmissionExpired {
+                now_unix,
+                valid_until_unix: selected.valid_until_unix,
+            });
+        }
+        // The R3-004 chain: build verifies the proposal signature, every
+        // acceptance signature/binding/freshness and the position
+        // coverage, and derives the Merkle root + route_id (L013).
+        let commitment = RouteCommitment::build(
+            now_unix,
+            proposal_envelope.clone(),
+            acceptance_envelopes.to_vec(),
+        )
+        .map_err(|source| RecoveryError::RouteCommitmentInvalid { source })?;
+        // The full re-verification a receiver runs (root + route_id
+        // re-derivation) — construction is held to the same standard.
+        let verified = commitment
+            .verify(now_unix)
+            .map_err(|source| RecoveryError::RouteCommitmentInvalid { source })?;
+        // Path membership, DERIVED from the verified commitment.
+        if !verified.proposal.path().contains(&selected.gateway_node_id) {
+            return Err(RecoveryError::GatewayNotOnRoute {
+                gateway_node_id: selected.gateway_node_id,
+                route_id: *commitment.route_id(),
+            });
+        }
+        // The durable terminal record (§11 freshness anchor enforced
+        // inside: `route_not_fresh` if the route predates the revocation).
+        self.attempts.finish_attempt_with_route(
+            &selected.revoked_circuit_id,
+            FreshRouteEvidence::Commitment(&commitment),
+            now_unix,
+        )?;
+        Ok(FreshRoute {
+            route_id: *commitment.route_id(),
+            attempt_seq: selected.attempt_seq,
+            gateway_node_id: selected.gateway_node_id,
+        })
+    }
+
+    /// The cross-check both R7-003 stages run: the step's attempt must be
+    /// the circuit's OPEN one (pending). A circuit with no pending attempt
+    /// is `no_pending_attempt`; a step naming a finished/superseded
+    /// attempt is `stale_recovery_step`.
+    fn check_step_is_open(
+        &self,
+        revoked_circuit_id: &[u8; 32],
+        step_attempt_seq: u64,
+    ) -> Result<(), RecoveryError> {
+        let pending = self
+            .attempts
+            .pending_attempt(revoked_circuit_id)
+            .ok_or(RecoveryError::NoPendingAttempt { circuit_id: *revoked_circuit_id })?;
+        if pending.attempt_seq() != step_attempt_seq {
+            return Err(RecoveryError::StaleRecoveryStep {
+                circuit_id: *revoked_circuit_id,
+                step_attempt_seq,
+                open_attempt_seq: pending.attempt_seq(),
+            });
+        }
+        Ok(())
+    }
+
     /// The durable revocation ledger (the R7-002 durable layer).
     pub fn revocation_ledger(&self) -> &DurableRevocationLedger {
         &self.ledger
@@ -199,6 +381,50 @@ impl RecoveryDriver {
     pub fn paths(&self) -> (PathBuf, PathBuf) {
         (self.ledger.path().to_path_buf(), self.attempts.path().to_path_buf())
     }
+}
+
+// ---------------------------------------------------------------------------
+// The R7-003 composition types
+// ---------------------------------------------------------------------------
+
+/// The selected fresh gateway, bound to the open §11 recovery attempt
+/// (the output of [`RecoveryDriver::select_gateway`]): which gateway, the
+/// verified R5-005 evidence anchors the selection rests on, and which
+/// attempt of which revoked circuit it is for.
+///
+/// Not durable state by design (see `select_gateway`): the durable
+/// outcome is the succeeded attempt's fresh-route ref.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectedGateway {
+    /// The revoked circuit this recovery (and this selection) is for.
+    pub revoked_circuit_id: [u8; 32],
+    /// The per-circuit attempt the selection belongs to.
+    pub attempt_seq: u64,
+    /// The selected gateway's derived node id (deterministic tie-break
+    /// winner among the eligible candidates).
+    pub gateway_node_id: [u8; 32],
+    /// The verified ShareNet-side link evidence anchor (R5-005).
+    pub sharenet: ShareNetEvidenceAnchor,
+    /// The verified ADCOS-side backhaul evidence anchor (R5-005).
+    pub adcos: AdcosEvidenceAnchor,
+    /// Until when (exclusive) the selection's evidence holds — the
+    /// construction stage's admission-validity bound.
+    pub valid_until_unix: u64,
+}
+
+/// The established fresh route (the output of
+/// [`RecoveryDriver::establish_fresh_route`]): the commitment-derived
+/// route id (L013), the attempt it durably succeeded, and the selected
+/// gateway it goes through (the §11 pipeline's hand-off to R7-004's
+/// fresh circuit session).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FreshRoute {
+    /// The fresh route's commitment-derived id (L013).
+    pub route_id: [u8; 32],
+    /// The recovery attempt this route succeeded.
+    pub attempt_seq: u64,
+    /// The selected gateway the committed path contains.
+    pub gateway_node_id: [u8; 32],
 }
 
 // ---------------------------------------------------------------------------
@@ -356,5 +582,177 @@ mod tests {
             before
         );
         let _ = live;
+    }
+
+    // -- R7-003: the §11 selection + construction stages -------------------
+
+    /// The composed §11 pipeline end to end: admit → attempt_next →
+    /// select_gateway (the R5-005 policy composed in — the eligible
+    /// candidate wins over the ineligible ones) → establish_fresh_route
+    /// (the R3-004 chain, the selected gateway DERIVED as a path member,
+    /// the §11 freshness law) → the durable terminal record.
+    #[test]
+    fn r7003_select_and_establish_flow_end_to_end() {
+        let dir = tk::TempDir::new("driver-r7003-flow");
+        let (driver, _) = RecoveryDriver::open(&dir.path).expect("open");
+        // The revoked circuit's world, with the revocation LATE (the
+        // fresh route below must not predate it — and does not).
+        let w = tk::world(tk::NOW);
+        let mut registry = CircuitRegistry::new();
+        let revoked = tk::admit_circuit(&w, &mut registry, tk::NOW, [0x76; 32]);
+        let env = tk::link_failure_revocation(&w, revoked, tk::NOW + 1);
+        driver
+            .admit_revocation_envelope(tk::NOW + 1, &env.to_envelope_bytes(), &registry)
+            .expect("admit");
+
+        let step = driver.attempt_next(&revoked, tk::NOW + 2).expect("attempt");
+        assert_eq!(step.attempt_seq(), 1);
+        assert_eq!(step.revoked_circuit_id(), &revoked);
+
+        // Fresh gateway selection over a mixed candidate set.
+        let gw = tk::gateway_world(tk::NOW);
+        let candidates = vec![
+            gw.candidate_no_backhaul(),
+            gw.candidate_wrong_subject(),
+            gw.candidate_eligible(),
+        ];
+        let selected =
+            driver.select_gateway(&step, &candidates, &tk::admission_policy(), tk::NOW + 3)
+                .expect("selection");
+        assert_eq!(selected.gateway_node_id, tk::node_id(&gw.g1));
+        assert_eq!(selected.revoked_circuit_id, revoked);
+        assert_eq!(selected.attempt_seq, 1);
+        assert!(selected.valid_until_unix > tk::NOW + 3);
+
+        // Fresh route construction through the selected gateway: the
+        // recovering node proposes, both path members accept (the R3-004
+        // seams), the driver builds + verifies + records.
+        let material = tk::fresh_route_material(&gw, &selected, tk::NOW + 4);
+        let route = driver
+            .establish_fresh_route(&selected, &material.proposal_env, &material.acceptance_envs, tk::NOW + 4)
+            .expect("fresh route");
+        assert_eq!(route.attempt_seq, 1);
+        assert_eq!(route.gateway_node_id, tk::node_id(&gw.g1));
+        assert_eq!(route.route_id, material.route_id);
+
+        // The durable terminal record carries the SAME commitment-derived
+        // route id (L013) — and recovery is complete.
+        let latest = driver.attempt_log().latest_attempt(&revoked).expect("latest");
+        assert_eq!(latest.state(), crate::attempt::AttemptState::Succeeded);
+        assert_eq!(latest.fresh_route_id(), Some(&route.route_id));
+        assert_eq!(
+            driver.attempt_next(&revoked, tk::NOW + 5).unwrap_err().name(),
+            "recovery_already_complete"
+        );
+    }
+
+    /// The R7-003 refusal surface around the two stages: selecting with no
+    /// open attempt, a stale step, an expired admission, and a route that
+    /// does not commit to the selected gateway — every refusal typed, and
+    /// the durable attempt state untouched (still pending).
+    #[test]
+    fn r7003_stage_refusals_are_typed() {
+        let dir = tk::TempDir::new("driver-r7003-refuse");
+        let (driver, _) = RecoveryDriver::open(&dir.path).expect("open");
+        let w = tk::world(tk::NOW);
+        let mut registry = CircuitRegistry::new();
+        let revoked = tk::admit_circuit(&w, &mut registry, tk::NOW, [0x77; 32]);
+        driver
+            .admit_revocation_envelope(
+                tk::NOW + 1,
+                &tk::link_failure_revocation(&w, revoked, tk::NOW + 1).to_envelope_bytes(),
+                &registry,
+            )
+            .expect("admit");
+        let step = driver.attempt_next(&revoked, tk::NOW + 2).expect("attempt");
+        let gw = tk::gateway_world(tk::NOW);
+        let policy = tk::admission_policy();
+        let candidates = vec![gw.candidate_eligible()];
+        let (_, attempts_path) = driver.paths();
+
+        // A selection for a circuit with NO open attempt.
+        let stranger_step = RecoveryStep::SelectFreshGateway {
+            revoked_circuit_id: [0xEE; 32],
+            attempt_seq: 1,
+        };
+        assert_eq!(
+            driver
+                .select_gateway(&stranger_step, &candidates, &policy, tk::NOW + 3)
+                .unwrap_err()
+                .name(),
+            "no_pending_attempt"
+        );
+
+        // A stale step: attempt 1 finished and attempt 2 opened — the OLD
+        // step must not select or establish anything for attempt 1.
+        let selected =
+            driver.select_gateway(&step, &candidates, &policy, tk::NOW + 3).expect("select");
+        driver
+            .attempt_failed(&revoked, AttemptFailure::GatewayUnreachable, tk::NOW + 3)
+            .unwrap();
+        // (no pending attempt at all yet: even a FRESH step is refused)
+        assert_eq!(
+            driver
+                .select_gateway(&step, &candidates, &policy, tk::NOW + 3)
+                .unwrap_err()
+                .name(),
+            "no_pending_attempt"
+        );
+        // The finished selection cannot establish either.
+        let material = tk::fresh_route_material(&gw, &selected, tk::NOW + 4);
+        assert_eq!(
+            driver
+                .establish_fresh_route(&selected, &material.proposal_env, &material.acceptance_envs, tk::NOW + 4)
+                .unwrap_err()
+                .name(),
+            "no_pending_attempt"
+        );
+        let step2 = driver.attempt_next(&revoked, tk::NOW + 5).expect("attempt 2");
+        assert_eq!(step2.attempt_seq(), 2);
+        // THE stale step: attempt 2 is the open one, the old step (and
+        // its attempt-1-bound selection) names a finished attempt.
+        assert_eq!(
+            driver
+                .select_gateway(&step, &candidates, &policy, tk::NOW + 5)
+                .unwrap_err()
+                .name(),
+            "stale_recovery_step"
+        );
+
+        // A fresh attempt, an expired admission (valid_until is NOW+592 —
+        // construction after it is refused, the attempt stays pending).
+        let selected2 =
+            driver.select_gateway(&step2, &candidates, &policy, tk::NOW + 6).expect("select 2");
+        let before = std::fs::read(&attempts_path).unwrap();
+        let late = tk::fresh_route_material(&gw, &selected2, tk::NOW + 700);
+        assert_eq!(
+            driver
+                .establish_fresh_route(&selected2, &late.proposal_env, &late.acceptance_envs, tk::NOW + 700)
+                .unwrap_err()
+                .name(),
+            "gateway_admission_expired"
+        );
+
+        // A route that does not commit to the selected gateway: the
+        // commitment is built for the recovering node + a DIFFERENT
+        // member (gateway G1 absent from the path) — path membership is
+        // derived, so the refusal names it.
+        let through_other = tk::fresh_route_material_skipping_gateway(&gw, tk::NOW + 7);
+        assert_eq!(
+            driver
+                .establish_fresh_route(&selected2, &through_other.proposal_env, &through_other.acceptance_envs, tk::NOW + 7)
+                .unwrap_err()
+                .name(),
+            "gateway_not_on_route"
+        );
+
+        // Nothing above finished attempt 2: still pending, and neither
+        // establish refusal wrote a byte (the last write was attempt 2's
+        // open + the selection, which writes nothing by design).
+        assert_eq!(
+            driver.attempt_log().pending_attempt(&revoked).expect("pending").attempt_seq(),
+            2
+        );
+        assert_eq!(std::fs::read(&attempts_path).unwrap(), before);
     }
 }

@@ -3,7 +3,7 @@ name = "sharenet-recovery"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
-description = "ShareNet durable recovery attempts (R7-002): the durable-file layer for the R7-001 revocation ledger (append-only log, chain-verified, snapshot round-trip through the R7-001 seam) plus the bounded, durable RecoveryAttemptLog and the architecture-§11 recovery-driver skeleton. Deps: sharenet-protocol + std only."
+description = "ShareNet recovery (R7-002/R7-003): the durable-file layer for the R7-001 revocation ledger (append-only, chain-verified log) plus the bounded durable RecoveryAttemptLog, and the architecture-§11 recovery driver now carrying the R7-003 fresh-gateway selection (the R5-005 admission policy composed in, deterministic tie-break, typed no_eligible_gateway) and the fresh-route establishment (R3-004 proposal → acceptance → commitment, §11 freshness vs. the revocation anchor). Deps: sharenet-protocol + sharenet-admission + sharenet-connectivity + std."
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -11,16 +11,42 @@ publish = false
 name = "sharenet_recovery"
 path = "src/lib.rs"
 
-# One dependency, deliberate, ShareNet:
+# TEST SCAFFOLDING binary for the R7-003 "multiprocess" verify level (the
+# same pattern as dtn/src/bin/dtn_probe.rs): REAL separate processes that
+# admit a revocation + open an attempt, select a fresh gateway from
+# candidates + succeed the attempt, and reload to see the terminal state —
+# every invocation seeing the recovery state ONLY through the bytes on
+# disk.
+[[bin]]
+name = "recovery_probe"
+path = "src/bin/recovery_probe.rs"
+
+# Three dependencies, all ShareNet, all deliberate:
 # - sharenet-protocol (the reference core): the R7-001 revocation authority
 #   this crate MAKES DURABLE (RevocationLedger + its snapshot seam,
 #   SignedCircuitRevocation, CircuitRegistry for path verification at
-#   admission) and the R3-004 RouteCommitment the §11 fresh-route evidence
-#   verifies. "Security-critical facts must be derived from authenticated
-#   protocol state" (AGENTS.md) - the durable layer re-verifies signatures
-#   at every boundary and never takes a caller's word.
+#   admission), the R3-004 RouteProposal/RouteAcceptance/RouteCommitment
+#   chain the §11 fresh-route stage constructs and verifies, and the signed
+#   evidence types (SignedTopologyEvidence, SignedConnectivityObservation)
+#   gateway candidates present. "Security-critical facts must be derived
+#   from authenticated protocol state" (AGENTS.md) - the durable layer
+#   re-verifies signatures at every boundary and never takes a caller's
+#   word.
+# - sharenet-admission (R5-005): the gateway admission/backhaul policy this
+#   crate COMPOSES at the §11 fresh-gateway-selection stage - added by R7-003
+#   (R7-002's original posture was protocol + std only; the work item's
+#   contract is that only gateways the R5-005 policy judges Eligible may be
+#   selected, and the policy's math is NOT rewritten here).
+# - sharenet-connectivity (the ADCOS boundary): the typed R5-003 projection
+#   the admission evidence borrows (ContractHealth) and the durable store
+#   the probe/tests feed through the verified path to build it. The
+#   boundary crate itself stays zero-dependency (ADR-001); this crate lives
+#   outside it, in the same composition position as admission/ and
+#   connectivity-client/.
 #
 # Nothing else: no async runtime, no serde, no wall clock, no I/O beyond
-# std::fs on the store's own two files.
+# std::fs on the store's own files.
 [dependencies]
+sharenet-admission = { path = "../admission" }
+sharenet-connectivity = { path = "../connectivity" }
 sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }

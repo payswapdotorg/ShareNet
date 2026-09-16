@@ -11,13 +11,20 @@ publish = false
 name = "sharenet_economics"
 path = "src/lib.rs"
 
-# TEST SCAFFOLDING binary:
+# TEST SCAFFOLDING binaries:
 # - economics_sim: the R8-002 "simulation" verify level's driver
 #   (one named scenario + seed -> the deterministic report on stdout,
 #   byte-identical run to run; the propagation_sim pattern).
+# - antigaming_sim: the R8-005 detection simulation's driver.
+# - competitor_sim: the R10-005 four-week competitor simulation's
+#   driver (simulation + reproducibility verify levels).
 [[bin]]
 name = "economics_sim"
 path = "src/bin/economics_sim.rs"
+
+[[bin]]
+name = "competitor_sim"
+path = "src/bin/competitor_sim.rs"
 
 # One dependency, deliberate:
 # - sharenet-protocol (R8-001): ContributionReceipt is the valued input -

@@ -1180,6 +1180,17 @@ impl AuditDetector {
                 contrib_windows.entry(*contributor).or_default().insert(*window);
             }
         }
+        // Per-(contributor, window) top-issuer totals in ONE pass
+        // (contrib_issuer_window is keyed (contributor, issuer,
+        // window) — a month-scale audit must not rescan it per
+        // window).
+        let mut top_issuer_per_window: BTreeMap<([u8; 32], u64), u64> = BTreeMap::new();
+        for ((contributor, _issuer, window), v) in &contrib_issuer_window {
+            let entry = top_issuer_per_window.entry((*contributor, *window)).or_insert(0);
+            if *v > *entry {
+                *entry = *v;
+            }
+        }
         for (contributor, windows) in &contrib_windows {
             // Per material window: the top issuer's share.
             let mut concentrated_windows: BTreeSet<u64> = BTreeSet::new();
@@ -1188,11 +1199,9 @@ impl AuditDetector {
                     .get(&(*contributor, *window))
                     .copied()
                     .unwrap_or(0);
-                let top = contrib_issuer_window
-                    .iter()
-                    .filter(|((c, _, w), _)| c == contributor && w == window)
-                    .map(|(_, v)| *v)
-                    .max()
+                let top = top_issuer_per_window
+                    .get(&(*contributor, *window))
+                    .copied()
                     .unwrap_or(0);
                 if top.saturating_mul(BP_DENOMINATOR) >= ap.concentration_share_bp * total {
                     concentrated_windows.insert(*window);

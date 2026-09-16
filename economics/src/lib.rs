@@ -76,6 +76,7 @@
 #![deny(unsafe_code)]
 
 pub mod antigaming;
+pub mod competitor_sim;
 pub mod consumption;
 pub mod ledger;
 pub mod sim;

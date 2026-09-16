@@ -1114,13 +1114,78 @@ Architect decision — see Open Architect Decisions).
   **GATE R7 (failure handling/recovery) IS NOW COMPLETE** — all six
   items R7-001..R7-006 integrated.
 
+## Wave 17 integration record (2026-09-16)
+
+- Two-way parallel wave, both legs completed from WIP after dispatch
+  deaths (the w13/w14 pattern):
+  * R8-001 (contribution evidence): the pre-registered
+    ContributionReceipt schema implemented in `contribution.rs` —
+    bilateral recipient-signed acknowledgement (the RECEIVING
+    counterparty signs), contributor != issuer (self-receipt excluded at
+    construction AND parse), frozen kinds {carried, delivered},
+    receipt_seq strictly increasing per (issuer, contributor) pair,
+    issued_at <= the verifying clock, receipt_id = SHA-256(canonical
+    bytes) (L013), the ReceiptLedger (admit order: signature → future →
+    receipt_id idempotency → sequence law; identical re-delivery is
+    Duplicate, a repeated sequence on different bytes is refused typed,
+    refusals record nothing), manifest-binding checks
+    (content_id_match + delivered_bytes <= total), fail-closed snapshot
+    round-trip. 15 adversarial legs (the 4 mid-fix WIP failures were
+    TEST expectations corrected to the house parse-first law:
+    scheme-version/identity refusals fire before the signature check;
+    the duplicate-key law fires at the canonical-CBOR layer with
+    hand-spliced bytes; the namespace-regression leg re-delivers a
+    DIFFERENT named object). Conformance: contribution_vectors.json (8
+    cases / 11 shared-ledger admit legs / 12 parse + 5 envelope rejects)
+    re-derived by Rust + TS + Python; harness 319 byte-identical lines
+    (was 283). Registry: maturity registered → implemented.
+  * R9-001 (iOS Network.framework participant): `transport/ios/`
+    Swift package (ShareNetParticipant) — Contract/ seam (pure
+    Foundation: ParticipantTransport/TransportListener/TransportEvent/
+    TransportFrame/TransportError/EndpointID, FrameCodec 4-byte
+    length-prefix, SendWindow backpressure, ConnectionTracker ladder),
+    Link/ (R3-001 adapter side: engine seams = the protocol core's
+    presence, msg1→msg2→msg3 driver with one overall deadline +
+    fresh-engine-per-attempt, LinkEnvelope, AuthenticatedLink with the
+    terminal/malformed discipline), Participant/ (the only
+    Network.framework layer: NWParticipantTransport, NWLinkTransport,
+    Bonjour browse/advertise, validated configuration). 32 XCTest
+    functions WRITTEN NOT EXECUTED (no Swift toolchain in the sandbox —
+    requires macOS 13+/Xcode 15+; the "ios" verify level is honestly
+    OPEN). The "architecture" verify level delivered:
+    `docs/architecture/ios-participant.md` (the seam map onto the frozen
+    architecture + recorded gaps: no production engine until the
+    Rust-core FFI bridge — the same deferral as Android's JNI for
+    R10-002; Packet Tunnel Provider is R9-002).
+- Both dispatches (17-a subagent, 17-b subagent) died at platform
+  context deadlines mid-work; the Tech Lead completed both directly
+  from the WIP (17-a: 4 adversarial test-expectation fixes + the full
+  vectors/conformance build-out; 17-b: Swift review + API-consistency
+  fix (non-throwing init default), README + architecture record,
+  commit).
+- Integration fix: `transfer` had one genuinely racy test
+  (`forged_complete_before_any_chunk_is_contained` — the forged
+  COMPLETE consumes the receiver's first round; the re-request races
+  the receiver's benign post-completion shutdown under the full
+  parallel suite). Fixed with the benign-shutdown tolerance after at
+  least one responded round (the receiver's outcome stays the
+  independently-asserted oracle); 5/5 full-suite runs green.
+- Fresh audit (2026-09-16): reference 243/243 (protocol+conformance
+  test binaries), propagation 73/73, recovery 90/90, admission 25/25,
+  connectivity 50/50, connectivity-client 50/50, dtn 34/34, transfer
+  72/72, linux 61/61, quic 9/9, ice 62/62, telemetry 35/35 — 804 tests
+  green. wasm32 reference clean. Conformance harness PASS (319 lines).
+  Governance PASS. 38 of 48 work items complete.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 17 (two-way parallel): R8-001 (contribution evidence — R6-003 ✓,
-  R7-004 ✓) + R9-001 (iOS Network.framework participant — R4-001 ✓,
-  R3-001 ✓; verify levels architecture/ios: sandbox delivers the
-  architecture review + scaffolding, the iOS build is honestly out of
-  reach — record gaps). Waves 18+ per the spec's wave table.
+- Wave 18 (two-way parallel): R8-002 (useful-work valuation — R8-001 ✓;
+  verify: unit, adversarial, simulation) + R9-003 (dedicated gateway
+  appliance — R4-007 ✓, R5-005 ✓, R7-004 ✓; verify: real-network,
+  endurance — needs sandbox-honest scoping like the R4-003/R4-004
+  precedents). Wave 19: R8-003 (Civic Point ledger, needs R8-002).
+  Wave 20: R9-002 + R9-004 + R8-004. Wave 21: R8-005. Waves 22–24:
+  R10-001..R10-005 (the integration gate).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

@@ -36,3 +36,9 @@ sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }
 # and the valuation engine have no unsafe and compile for wasm32).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# The R8-004 integration leg: the priority grant composes with the
+# DTN store's OWN carry order (the frozen ServicePriority vocabulary —
+# no second vocabulary, no re-implemented ordering).
+sharenet-dtn = { path = "../dtn" }

@@ -43,12 +43,15 @@ use std::sync::{Arc, Mutex};
 use sharenet_protocol::cbor::{decode, encode, Value};
 use sharenet_protocol::contribution::ContributionReceipt;
 
+use crate::consumption::{ActiveGrant, PerkKind, SpendError};
 use crate::{ValuationEngine, ValuationPolicy, ValuationVerdict, VALUATION_FORMULA_VERSION};
 
 /// The CivicPointLedgerEntry wire version (the durable-state record).
 pub const CIVIC_LEDGER_ENTRY_VERSION: i64 = 1;
-/// The one frozen v1 entry kind: an award.
+/// The frozen v1 entry kinds: awards and (R8-004) spends.
 pub const ENTRY_KIND_AWARD: i64 = 1;
+/// A consumption record (the ONLY balance-decreasing kind).
+pub const ENTRY_KIND_SPEND: i64 = 2;
 
 // ---------------------------------------------------------------------------
 // Errors (typed, fail-closed)
@@ -285,6 +288,159 @@ impl LedgerEntry {
     }
 }
 
+/// One durable spend record — the consumption side (R8-004). The
+/// ONLY path that decreases a balance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpendEntry {
+    pub contributor: [u8; 32],
+    pub perk: PerkKind,
+    pub points: u64,
+    /// The caller-supplied consumption id (exactly-once; typically the
+    /// commitment-derived id of the thing being bought).
+    pub spend_id: [u8; 32],
+    pub spent_at_unix: u64,
+    /// The grant's duration (the perk is active [spent_at, spent_at+duration)).
+    pub duration_secs: u64,
+}
+
+impl SpendEntry {
+    pub fn to_wire(&self) -> Vec<u8> {
+        encode(&Value::Map(vec![
+            (Value::Int(1), Value::Int(CIVIC_LEDGER_ENTRY_VERSION)),
+            (Value::Int(2), Value::Int(ENTRY_KIND_SPEND)),
+            (Value::Int(3), Value::Bytes(self.contributor.to_vec())),
+            (Value::Int(4), Value::Int(self.points as i64)),
+            (Value::Int(5), Value::Bytes(self.spend_id.to_vec())),
+            (Value::Int(6), Value::Int(self.spent_at_unix as i64)),
+            (Value::Int(7), Value::Int(self.duration_secs as i64)),
+            (Value::Int(8), Value::Text(self.perk.as_str().into())),
+        ]))
+        .expect("in-profile spend")
+    }
+
+    pub fn from_wire(bytes: &[u8]) -> Result<Self, LedgerError> {
+        let v = decode(bytes).map_err(|e| LedgerError::SnapshotMalformed {
+            reason: format!("spend cbor: {e}"),
+        })?;
+        let Value::Map(fields) = v else {
+            return Err(LedgerError::SnapshotMalformed {
+                reason: "spend not a map".into(),
+            });
+        };
+        let mut contributor = None;
+        let mut points = None;
+        let mut spend_id = None;
+        let mut spent_at = None;
+        let mut duration = None;
+        let mut perk = None;
+        for (k, val) in fields {
+            let Value::Int(key) = k else {
+                return Err(LedgerError::SnapshotMalformed {
+                    reason: "spend key not an integer".into(),
+                });
+            };
+            let bad = |what: &str| LedgerError::SnapshotMalformed {
+                reason: format!("{what} field malformed"),
+            };
+            match key {
+                1 => {
+                    let Value::Int(n) = val else {
+                        return Err(bad("version"));
+                    };
+                    if n != CIVIC_LEDGER_ENTRY_VERSION {
+                        return Err(LedgerError::SnapshotVersion { found: n });
+                    }
+                }
+                2 => {
+                    let Value::Int(kind) = val else {
+                        return Err(bad("kind"));
+                    };
+                    if kind != ENTRY_KIND_SPEND {
+                        return Err(LedgerError::SnapshotMalformed {
+                            reason: format!("record is not a spend (kind {kind})"),
+                        });
+                    }
+                }
+                3 => {
+                    let Value::Bytes(b) = val else {
+                        return Err(bad("contributor"));
+                    };
+                    contributor = Some(
+                        b.as_slice().try_into().map_err(|_| bad("contributor length"))?,
+                    );
+                }
+                4 => {
+                    let Value::Int(n) = val else {
+                        return Err(bad("points"));
+                    };
+                    points = Some(u64::try_from(n).map_err(|_| bad("points"))?);
+                }
+                5 => {
+                    let Value::Bytes(b) = val else {
+                        return Err(bad("spend id"));
+                    };
+                    spend_id = Some(
+                        b.as_slice().try_into().map_err(|_| bad("spend id length"))?,
+                    );
+                }
+                6 => {
+                    let Value::Int(n) = val else {
+                        return Err(bad("spent at"));
+                    };
+                    spent_at = Some(u64::try_from(n).map_err(|_| bad("spent at"))?);
+                }
+                7 => {
+                    let Value::Int(n) = val else {
+                        return Err(bad("duration"));
+                    };
+                    duration = Some(u64::try_from(n).map_err(|_| bad("duration"))?);
+                }
+                8 => {
+                    let Value::Text(t) = val else {
+                        return Err(bad("perk"));
+                    };
+                    perk = Some(PerkKind::from_name(t.as_str()).ok_or_else(|| {
+                        LedgerError::SnapshotMalformed {
+                            reason: format!("perk {t:?} not in the frozen set"),
+                        }
+                    })?);
+                }
+                other => {
+                    return Err(LedgerError::SnapshotMalformed {
+                        reason: format!("unknown spend field {other}"),
+                    });
+                }
+            }
+        }
+        let points = points.ok_or_else(|| LedgerError::SnapshotMalformed {
+            reason: "points missing".into(),
+        })?;
+        if points == 0 {
+            return Err(LedgerError::SnapshotMalformed {
+                reason: "zero-point spend".into(),
+            });
+        }
+        Ok(SpendEntry {
+            contributor: contributor.ok_or_else(|| LedgerError::SnapshotMalformed {
+                reason: "contributor missing".into(),
+            })?,
+            perk: perk.ok_or_else(|| LedgerError::SnapshotMalformed {
+                reason: "perk missing".into(),
+            })?,
+            points,
+            spend_id: spend_id.ok_or_else(|| LedgerError::SnapshotMalformed {
+                reason: "spend id missing".into(),
+            })?,
+            spent_at_unix: spent_at.ok_or_else(|| LedgerError::SnapshotMalformed {
+                reason: "spent at missing".into(),
+            })?,
+            duration_secs: duration.ok_or_else(|| LedgerError::SnapshotMalformed {
+                reason: "duration missing".into(),
+            })?,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The ledger (interior-mutable; the engine prices, the ledger records)
 // ---------------------------------------------------------------------------
@@ -296,6 +452,10 @@ struct LedgerState {
     by_receipt: HashSet<[u8; 32]>,
     balances: HashMap<[u8; 32], u64>,
     window_balances: HashMap<([u8; 32], u64), u64>,
+    /// The durable spends (R8-004) — the only balance-decreasing path.
+    spends: Vec<SpendEntry>,
+    spent_ids: HashSet<[u8; 32]>,
+    spent_totals: HashMap<[u8; 32], u64>,
 }
 
 /// The outcome of one award call (the composed verdict + what was
@@ -437,14 +597,107 @@ impl CivicPointLedger {
             .clone()
     }
 
+    /// Spend points on a perk (R8-004 — the ONLY balance-decreasing
+    /// path; typed, exactly-once per spend_id, no overdraft). A spend of
+    /// a duration-bearing perk records the grant the read views derive.
+    pub fn spend(
+        &self,
+        contributor: &[u8; 32],
+        perk: PerkKind,
+        points: u64,
+        spend_id: [u8; 32],
+        now_unix: u64,
+        duration_secs: u64,
+    ) -> Result<Option<SpendEntry>, SpendError> {
+        if points == 0 {
+            return Err(SpendError::PointsZero);
+        }
+        if duration_secs == 0 {
+            return Err(SpendError::DurationZero);
+        }
+        let mut state = self.state.lock().expect("ledger lock poisoned");
+        if state.spent_ids.contains(&spend_id) {
+            return Err(SpendError::DuplicateSpend { spend_id });
+        }
+        let awarded = state.balances.get(contributor).copied().unwrap_or(0);
+        let spent = state.spent_totals.get(contributor).copied().unwrap_or(0);
+        let available = awarded.saturating_sub(spent);
+        if available < points {
+            return Err(SpendError::InsufficientBalance {
+                balance: available,
+                requested: points,
+            });
+        }
+        let entry = SpendEntry {
+            contributor: *contributor,
+            perk,
+            points,
+            spend_id,
+            spent_at_unix: now_unix,
+            duration_secs,
+        };
+        *state.spent_totals.entry(*contributor).or_insert(0) += points;
+        state.spent_ids.insert(spend_id);
+        state.spends.push(entry.clone());
+        Ok(Some(entry))
+    }
+
+    /// The contributor's AVAILABLE balance (awards minus spends).
+    pub fn available_balance(&self, contributor: &[u8; 32]) -> u64 {
+        let state = self.state.lock().expect("ledger lock poisoned");
+        let awarded = state.balances.get(contributor).copied().unwrap_or(0);
+        let spent = state
+            .spent_totals
+            .get(contributor)
+            .copied()
+            .unwrap_or(0);
+        awarded.saturating_sub(spent)
+    }
+
+    /// The active grants for one contributor (derived by replay; the
+    /// expiry is enforced at read time against the caller's clock).
+    pub fn grants(&self, contributor: &[u8; 32], now_unix: u64) -> Vec<ActiveGrant> {
+        let state = self.state.lock().expect("ledger lock poisoned");
+        state
+            .spends
+            .iter()
+            .filter(|s| s.contributor == *contributor)
+            .filter(|s| s.perk == PerkKind::PriorityScheduling || s.perk == PerkKind::GatewayPreference)
+            .map(|s| ActiveGrant {
+                perk: s.perk,
+                spend_id: s.spend_id,
+                points_spent: s.points,
+                valid_from_unix: s.spent_at_unix,
+                valid_until_unix: s.spent_at_unix.saturating_add(s.duration_secs),
+            })
+            .filter(|g| g.covers(now_unix))
+            .collect()
+    }
+
+    /// Whether the contributor holds an ACTIVE grant of this perk at
+    /// `now` (the scheduler's one-call gate).
+    pub fn has_grant(&self, contributor: &[u8; 32], perk: PerkKind, now_unix: u64) -> bool {
+        self.grants(contributor, now_unix)
+            .iter()
+            .any(|g| g.perk == perk)
+    }
+
+    /// The spends (read view, replay order).
+    pub fn spends(&self) -> Vec<SpendEntry> {
+        self.state.lock().expect("ledger lock poisoned").spends.clone()
+    }
+
     /// Serialize the durable state: canonical CBOR
     /// `{1: version, 2: policy(window_secs, byte cap, pair cap,
-    /// contributor cap), 3: [entries]}` — deterministic for equal logical
-    /// state.
+    /// contributor cap), 3: [entries], 4: [spends]}` — deterministic
+    /// for equal logical state.
     pub fn to_snapshot_bytes(&self) -> Vec<u8> {
         let state = self.state.lock().expect("ledger lock poisoned");
         let p = state.engine.policy();
         let entries: Vec<Value> = state.entries.iter().map(|e| {
+            Value::Bytes(e.to_wire())
+        }).collect();
+        let spends: Vec<Value> = state.spends.iter().map(|e| {
             Value::Bytes(e.to_wire())
         }).collect();
         encode(&Value::Map(vec![
@@ -459,6 +712,7 @@ impl CivicPointLedger {
                 ]),
             ),
             (Value::Int(3), Value::Array(entries)),
+            (Value::Int(4), Value::Array(spends)),
         ]))
         .expect("in-profile snapshot")
     }
@@ -478,6 +732,7 @@ impl CivicPointLedger {
         let mut version = None;
         let mut policy_fields: Option<Vec<i64>> = None;
         let mut entry_bytes: Option<Vec<Vec<u8>>> = None;
+        let mut spend_bytes: Option<Vec<Vec<u8>>> = None;
         for (k, val) in fields {
             let Value::Int(key) = k else {
                 return Err(LedgerError::SnapshotMalformed {
@@ -510,6 +765,17 @@ impl CivicPointLedger {
                             }
                         }
                         entry_bytes = Some(out);
+                    }
+                }
+                4 => {
+                    if let Value::Array(items) = val {
+                        let mut out = Vec::new();
+                        for item in items {
+                            if let Value::Bytes(b) = item {
+                                out.push(b);
+                            }
+                        }
+                        spend_bytes = Some(out);
                     }
                 }
                 other => {
@@ -575,6 +841,19 @@ impl CivicPointLedger {
         }
         let engine = crate::ValuationEngine::restore(policy, valued, pair_windows, contributor_windows);
         let by_receipt = engine_valued_snapshot(&engine);
+        let mut spends = Vec::new();
+        let mut spent_ids = HashSet::new();
+        let mut spent_totals: HashMap<[u8; 32], u64> = HashMap::new();
+        for bytes in spend_bytes.unwrap_or_default() {
+            let spend = SpendEntry::from_wire(&bytes)?;
+            if !spent_ids.insert(spend.spend_id) {
+                return Err(LedgerError::SnapshotMalformed {
+                    reason: "duplicate spend_id in snapshot".into(),
+                });
+            }
+            *spent_totals.entry(spend.contributor).or_insert(0) += spend.points;
+            spends.push(spend);
+        }
         Ok(Self {
             state: Arc::new(Mutex::new(LedgerState {
                 engine,
@@ -582,6 +861,9 @@ impl CivicPointLedger {
                 by_receipt,
                 balances,
                 window_balances,
+                spends,
+                spent_ids,
+                spent_totals,
             })),
         })
     }
@@ -623,6 +905,7 @@ impl FileCivicPointLedger {
     /// snapshot header — the entry log is the record).
     pub fn open(path: &Path, policy: ValuationPolicy) -> Result<Self, LedgerError> {
         let mut entries: Vec<LedgerEntry> = Vec::new();
+        let mut spends: Vec<SpendEntry> = Vec::new();
         if path.exists() {
             let bytes = std::fs::read(path).map_err(|e| LedgerError::FileIo {
                 op: "ledger read",
@@ -643,7 +926,18 @@ impl FileCivicPointLedger {
                         reason: "truncated record body".into(),
                     });
                 }
-                entries.push(LedgerEntry::from_wire(&bytes[at + 4..at + 4 + len])?);
+                let record = &bytes[at + 4..at + 4 + len];
+                // kind-dispatch: award (1) or spend (2) — decoded, never
+                // guessed from raw bytes
+                match record_kind(record)? {
+                    ENTRY_KIND_AWARD => entries.push(LedgerEntry::from_wire(record)?),
+                    ENTRY_KIND_SPEND => spends.push(SpendEntry::from_wire(record)?),
+                    other => {
+                        return Err(LedgerError::SnapshotMalformed {
+                            reason: format!("unknown record kind {other} in the ledger file"),
+                        });
+                    }
+                }
                 at += 4 + len;
             }
         }
@@ -675,6 +969,15 @@ impl FileCivicPointLedger {
                 state.by_receipt.insert(entry.receipt_id);
                 state.entries.push(entry);
             }
+            for spend in spends {
+                if !state.spent_ids.insert(spend.spend_id) {
+                    return Err(LedgerError::SnapshotMalformed {
+                        reason: "duplicate spend_id in the ledger file".into(),
+                    });
+                }
+                *state.spent_totals.entry(spend.contributor).or_insert(0) += spend.points;
+                state.spends.push(spend);
+            }
             // restore the engine over the same lock
             let mut contributor_windows: HashMap<([u8; 32], u64), u64> = HashMap::new();
             for ((contributor, window), points) in state.window_balances.iter() {
@@ -701,11 +1004,6 @@ impl FileCivicPointLedger {
             ledger,
             lock: Mutex::new(file),
         })
-    }
-
-    /// The pure ledger (read views: balances, totals, entries).
-    pub fn ledger(&self) -> &CivicPointLedger {
-        &self.ledger
     }
 
     /// Price + durably record one receipt (append + flush + fsync under
@@ -749,10 +1047,86 @@ impl FileCivicPointLedger {
         Ok(verdict)
     }
 
+    /// Spend points on a perk DURABLY (append + flush + fsync; the
+    /// pure ledger's spend under its lock, then the durable record).
+    pub fn spend(
+        &self,
+        contributor: &[u8; 32],
+        perk: PerkKind,
+        points: u64,
+        spend_id: [u8; 32],
+        now_unix: u64,
+        duration_secs: u64,
+    ) -> Result<Option<SpendEntry>, SpendError> {
+        let verdict = self.ledger.spend(contributor, perk, points, spend_id, now_unix, duration_secs)?;
+        if let Some(entry) = &verdict {
+            let mut file = self.lock.lock().expect("file lock poisoned");
+            append_record(&mut file, &entry.to_wire())?;
+        }
+        Ok(verdict)
+    }
+
+    /// The pure ledger (read views: balances, grants, entries, spends).
+    pub fn ledger(&self) -> &CivicPointLedger {
+        &self.ledger
+    }
+
     /// The file's path (diagnostics).
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Decode a record's entry kind (field 2) — the file reload's dispatch.
+fn record_kind(bytes: &[u8]) -> Result<i64, LedgerError> {
+    let v = decode(bytes).map_err(|e| LedgerError::SnapshotMalformed {
+        reason: format!("record cbor: {e}"),
+    })?;
+    let Value::Map(fields) = v else {
+        return Err(LedgerError::SnapshotMalformed {
+            reason: "record not a map".into(),
+        });
+    };
+    for (k, val) in fields {
+        if let (Value::Int(2), Value::Int(kind)) = (k, val) {
+            return Ok(kind);
+        }
+    }
+    Err(LedgerError::SnapshotMalformed {
+        reason: "record kind missing".into(),
+    })
+}
+
+/// One length-prefixed record append with flush + fsync (the shared
+/// discipline).
+fn append_record(file: &mut std::fs::File, wire: &[u8]) -> Result<(), LedgerError> {
+    let mut framed = Vec::with_capacity(4 + wire.len());
+    framed.extend_from_slice(&(wire.len() as u32).to_be_bytes());
+    framed.extend_from_slice(wire);
+    file.write_all(&framed).map_err(|e| LedgerError::FileIo {
+        op: "ledger append",
+        source: e.to_string(),
+    })?;
+    file.flush().map_err(|e| LedgerError::FileIo {
+        op: "ledger flush",
+        source: e.to_string(),
+    })?;
+    #[cfg(unix)]
+    #[allow(unsafe_code)] // the ONE audited unsafe: fsync(2) below
+    {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: fsync(2) on our own file descriptor, opened by this
+        // struct — no aliasing, no deallocation, a plain syscall on a
+        // live fd.
+        let rc = unsafe { libc::fsync(file.as_raw_fd()) };
+        if rc != 0 {
+            return Err(LedgerError::FileIo {
+                op: "ledger fsync",
+                source: std::io::Error::last_os_error().to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

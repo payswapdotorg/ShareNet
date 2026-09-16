@@ -1538,6 +1538,23 @@ Architect decision — see Open Architect Decisions).
   its operator step.
 - Final program audit: see the fresh-audit record below.
 
+## Final program audit (fresh, at closure 2026-09-16)
+
+Rust test totals (cargo test, all targets, all green):
+sharenet-protocol 243; propagation 73; admission 25; connectivity 50;
+recovery 90; dtn 34; transfer 72; connectivity-client 50; economics
+74; transport/linux 73 (incl. the 2 loopback bridge + 1 endurance + 4
+failure-injection integration tests); transport/quic 9;
+transport/android-bridge 5; transport/ice 62; transport/telemetry 35
+— 895 tests green across 15 crates. Cross-language conformance
+harness: PASS (three languages byte-identical across 319 lines).
+wasm32: economics + protocol clean (this closure's rebuilds). Android:
+:vpn 92 + :contract + :nearby green, AARs assemble (real SDK build,
+the R10-002 record). Governance: PASS (against the NEW closure status
+string). Honest note: sharenet-conformance's bin carries pre-existing
+dead-code warnings in its vector scaffolding (present since its wave;
+untouched by the closure).
+
 ## Open Architect Decisions
 
 1. `spec/architect/current-state.yaml` still declares

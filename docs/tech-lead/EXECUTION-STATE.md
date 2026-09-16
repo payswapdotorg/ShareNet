@@ -1077,10 +1077,27 @@ Architect decision — see Open Architect Decisions).
   dtn, propagation libs), conformance harness PASS (283 lines),
   governance PASS. 34 of 48 work items complete.
 
+## Wave 15 integration record (2026-09-15)
+
+- Single-item wave. The R7-005 dispatch died at the platform context
+  deadline BEFORE writing anything (clean worktree); Tech Lead
+  implemented directly: `recovery/src/backoff.rs` (pure, validated
+  schedules: fixed/linear/exponential-capped with saturating math and
+  exact pinned bounds; typed RetryDecision/TerminalReason vocabulary;
+  the attempt log IS the history — read, never duplicated; no wall
+  clock, no timers, no jitter), the driver gate `when_may_retry`
+  (§11-ordered, single-flight, success-terminal, budget-exhausted,
+  inclusive window bound) and `attempt_next_when_permitted` (composed;
+  typed retry_not_yet carrying the daemon's timer input +
+  retry_exhausted).
+- Merge: clean. Fresh audit: recovery 83/83, reference 218/218,
+  conformance harness PASS (283 lines), governance PASS. 35 of 48 work
+  items complete.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 15 (single): R7-005 (retry/backoff — R7-002 ✓, R7-004 ✓).
-  Wave 16 follows with R7-006 (concurrent recovery — needs R7-005).
+- Wave 16 (single): R7-006 (concurrent recovery/second failure/cleanup
+  — R7-005 ✓). Waves 17+ per the spec's wave table (R8-001, R9-001).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

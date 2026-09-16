@@ -1242,17 +1242,53 @@ Architect decision — see Open Architect Decisions).
   14 adversarial), zero warnings, wasm32 clean, governance PASS.
   41 of 48 work items complete.
 
+## Wave 20 integration record (2026-09-16)
+
+- Three-way wave, direct Tech Lead work:
+  * R8-004 (priority/perk consumption): economics/src/consumption.rs +
+    the ledger's spend path — the ONLY balance-decreasing operation
+    (typed, exactly-once per spend_id, no overdraft, nothing moves on
+    refusal). Frozen v1 perks: priority_scheduling (a bounded-time
+    live-class grant in the DTN's OWN ServicePriority vocabulary) +
+    gateway_preference; fee reductions/sponsored connectivity/community
+    rewards documented as settlement-program scope. THE INTEGRATION
+    LEG: a contributor holding an active grant gets their bundle
+    carried FIRST by the DtnStoreImage's own carry order (granted
+    bundle admitted SECOND still carries first — live > dtn; without
+    the grant, insertion order holds). Adversarial: overspend,
+    double-spend, expired grants (half-open interval), spends survive
+    the durable restart, balances never negative. 48 economics tests
+    green, zero warnings, wasm32 clean.
+  * R9-002 (iOS Packet Tunnel evaluation): the platform verify level
+    honestly recorded OUT OF SCOPE (no Swift toolchain — the R9-001
+    gap; requires macOS/Xcode + the networkextension entitlement +
+    Apple's manual approval). The evaluation criteria delivered
+    (docs/architecture/wave20-platform-items.md): the entitlement
+    gate, the ready Contract/ seam, the FFI prerequisite (the R10-002
+    bridge class), and the per-deployment tunnel-vs-participant
+    decision architecture §16 itself leaves open.
+  * R9-004 (additional access adapters): the architecture analysis
+    (same doc) — additional access technologies are ADCOS
+    provider-side and NEVER enter transport/; the ShareNet-side surface
+    for every one of them is the SAME implemented, tested,
+    conformance-pinned boundary (ConnectivityPort → signed
+    observations → R5-003 store → R5-005 admission → R7-003/004
+    selection and replacement), exercised end-to-end over the real
+    developer API by connectivity-client. No new ShareNet-side code is
+    required for a new access technology — the boundary absorbing
+    provider diversity IS the design working. The specific-provider
+    live-egress leg is ADCOS-rollout-driven, outside this sandbox.
+- Fresh audit: economics 48/48, governance PASS. 44 of 48 work items
+  complete.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 20 (three-way): R9-002 (iOS Packet Tunnel evaluation — verify
-  level "platform" needs the Mac runner; the R9-001 sandbox-honest
-  record pattern applies: deliver the evaluation scaffolding +
-  architecture, record the compile/run gap) + R9-004 (additional access
-  adapters — deps R4-007 ✓; verify: architecture, integration) + R8-004
-  (priority/perk consumption — R8-003 ✓ + R5-005 ✓; verify:
-  integration, adversarial). Wave 21: R8-005 (anti-gaming/audit —
-  R8-003 + R8-004). Waves 22–24: R10-001..R10-005 (the integration
-  gate).
+- Wave 21 (single): R8-005 (anti-gaming/audit — R8-003 ✓ + R8-004 ✓;
+  verify: adversarial, simulation — the anomaly detection over the
+  ledger the caps currently only bound). Waves 22–24: R10-001..R10-005
+  (the integration gate: two-process loopback, the Android real-device
+  bridge incl. the FFI/JNI work, 24h endurance, failure injection, the
+  four-week competitor simulation).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

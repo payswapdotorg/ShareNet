@@ -1292,6 +1292,80 @@ Architect decision — see Open Architect Decisions).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 
+## Wave 21 integration record (2026-09-16)
+
+- Single-item wave; direct Tech Lead implementation (the w15/w16/w19
+  pattern). R8-005 delivered: economics/src/antigaming.rs — the
+  anomaly DETECTION + audit layer (§14's "anomaly detection" minimum;
+  Waves 17–20 delivered the BOUNDS, this wave delivers the CATCH).
+  Ten frozen v1 rules — 4 integrity (ledger invariant re-derivation
+  incl. duplicated receipt_ids inside the audited set, unknown
+  formula versions flagged not guessed at, append-clock regression,
+  spend-side exactly-once/no-overdraft re-checked from the outside) +
+  6 anomaly (pair cap-saturation streaks; contributor-across-issuers
+  saturation — the k-issuer Sybil shape where NO single pair looks
+  guilty; reciprocal award rings via deterministic Tarjan SCC over
+  the issuer→contributor graph — catches the size-3 cycle A→B→C→A no
+  pairwise check could see; repeated identical intrinsic magnitudes —
+  real traffic varies, scripts repeat; intrinsic-exceeds-awarded
+  streaks — the visible overshoot is the last partially-capped
+  receipt's intrinsic, because fully-capped receipts record nothing
+  by the ledger's own registered law, the threshold IS the
+  comparison; single-issuer concentration in MATERIAL windows —
+  material = max(floor, ratio × contributor cap), because
+  concentration at low volume is a single honest neighbor). The
+  AuditReport is the registered AntigamingAuditReport durable-state
+  record (registered ahead of implementation, commit 704ad74):
+  canonical CBOR, fail-closed strict parse, derived verdict
+  (clean/under_review/gaming_suspected), policy fingerprint — the
+  determinism law (identical inputs → byte-identical report) is the
+  audit's own integrity, proven by the restart test (audit → reload
+  from disk → audit → byte-identical). Detection is NOT adjudication:
+  the report revokes nothing (enforcement stays with the §14 caps;
+  a deployment decides what to do with a named suspect).
+- Adversarial: every gaming cohort named with its exact kind; every
+  evasion attempted (jitter farmer still caught by sum-based
+  saturation; below-threshold reciprocity NOT a ring; alternating-
+  window saturation NOT a streak — the conservative-threshold
+  honesty); 16 seeded honest cohorts → zero findings; tampered logs
+  (pair total above cap, duplicated receipt_id) → HIGH; unknown
+  formula version → HIGH; clock regression → LOW; forged spend list
+  (duplicate spend_id) → HIGH.
+- Simulation verify level: run_antigaming_simulation (seeded, the
+  economics_sim pattern) — an honest mesh + six gaming cohorts (pair
+  farmer, k-issuer Sybil family, reciprocal ring, magnitude
+  repeater, every-window blaster, concentrated feeder): every cohort
+  caught, the honest mesh NEVER flagged, the log lawful, the line
+  deterministic (antigaming_sim driver, exit 1 on any detection
+  failure).
+- Fresh audit: economics 55/55 (41 lib: 20 unit + 21
+  adversarial/sim; 14 restart/concurrency/perk/adversarial test
+  targets), zero lib warnings, wasm32 clean, clippy clean (the new
+  code), governance PASS.
+- COUNT CORRECTION (Tech Lead arithmetic audit, prompted by the
+  external review): the Wave 20 record said "44 of 48 work items
+  complete" — that count was WRONG. The honest count after Wave 20
+  was 41 of 48 (48 registry items − 7 then-open: R8-005, R9-001
+  [ios level open], R9-002 [platform level open], R10-001..R10-005).
+  With R8-005 complete the count is 42 of 48, six open: R9-001 (ios
+  level), R9-002 (platform level), R10-001..R10-005. The ready-set
+  sections (which always listed the true open set) were correct all
+  along; only the summary counters drifted. Both R9 items are
+  recorded as architecture/evaluation-complete with their platform
+  legs honestly open (Swift toolchain / macOS runner absent in this
+  sandbox) — see their completion records and the Wave 20 record.
+
+## Ready set (recomputed after Wave 21)
+
+- Wave 22 (two-way): R10-001 (two-process Linux loopback — deps
+  R4-007 ✓ + R7-004 ✓; verify: multiprocess) + R10-002 (Android
+  real-device bridge — deps R4-007 ✓ + R7-004 ✓; verify:
+  real-device, real-network — includes the JNI/FFI work deferred
+  from R4-004). Wave 23: R10-003 + R10-004 (deps R10-001, R10-002,
+  R7-006 ✓). Wave 24: R10-005 (deps R8-005 ✓, R10-004).
+- R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
+  (Tech Lead decision; not on the frozen wave path).
+
 ## Open Architect Decisions
 
 1. `spec/architect/current-state.yaml` still declares

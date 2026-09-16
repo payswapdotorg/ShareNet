@@ -46,6 +46,7 @@ fn main() -> ExitCode {
         Some("probe-uplink") => cmd_probe_uplink(&args[1..]),
         Some("gateway") => cmd_gateway(&args[1..]),
         Some("participant") => cmd_participant(&args[1..]),
+        Some("appliance") => cmd_appliance(&args[1..]),
         Some("--help") | Some("-h") | Some("help") | None => {
             print_usage();
             ExitCode::SUCCESS
@@ -618,6 +619,134 @@ fn cmd_gateway(args: &[String]) -> ExitCode {
         "GATEWAY_DONE {} {}",
         stats.forwarded_up, reason
     );
+    ExitCode::SUCCESS
+}
+
+/// `appliance --identity-dir DIR --bind ADDR --uplink ADDR --journal PATH
+/// [--pin <64hex>]... [--max-sessions N]`
+///
+/// The dedicated gateway appliance (R9-003): durable identity (created
+/// once from OS entropy in DIR/appliance.seed, 0600), one stable bound
+/// address, sequential admission-verified sessions, an append-only
+/// session journal (canonical CBOR, fsync'd per record) that survives
+/// restarts (ordinal + totals continue).
+///
+/// Output protocol:
+///   `APPLIANCE_READY <addr> <node-id-hex>`
+///   `APPLIANCE_SESSION <ordinal> <participant-hex> <forwarded> <reason>` (per session)
+///   `APPLIANCE_DONE <sessions> <total-forwarded>` (exit 0 after --max-sessions)
+fn cmd_appliance(args: &[String]) -> ExitCode {
+    let mut identity_dir: Option<std::path::PathBuf> = None;
+    let mut bind: SocketAddr = "127.0.0.1:0".parse().expect("static");
+    let mut uplink: Option<SocketAddr> = None;
+    let mut journal: Option<std::path::PathBuf> = None;
+    let mut pins: Vec<[u8; 32]> = Vec::new();
+    let mut max_sessions: Option<u64> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--identity-dir" => identity_dir = it.next().map(std::path::PathBuf::from),
+            "--bind" => match it.next().and_then(|a| a.parse().ok()) {
+                Some(a) => bind = a,
+                None => {
+                    eprintln!("error: --bind needs a socket address");
+                    return ExitCode::from(2);
+                }
+            },
+            "--uplink" => match it.next().and_then(|a| a.parse().ok()) {
+                Some(a) => uplink = Some(a),
+                None => {
+                    eprintln!("error: --uplink needs a socket address");
+                    return ExitCode::from(2);
+                }
+            },
+            "--journal" => journal = it.next().map(std::path::PathBuf::from),
+            "--pin" => match it.next().and_then(|a| parse_hex_id(a).ok()) {
+                Some(id) => pins.push(id),
+                None => {
+                    eprintln!("error: --pin needs 64 hex chars");
+                    return ExitCode::from(2);
+                }
+            },
+            "--max-sessions" => match it.next().and_then(|a| a.parse::<u64>().ok()) {
+                Some(n) => max_sessions = Some(n),
+                None => {
+                    eprintln!("error: --max-sessions needs an integer >= 1");
+                    return ExitCode::from(2);
+                }
+            },
+            other => {
+                eprintln!("error: unknown appliance argument {other:?}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(identity_dir) = identity_dir else {
+        eprintln!("error: appliance needs --identity-dir DIR (the durable identity)");
+        return ExitCode::from(2);
+    };
+    let Some(uplink) = uplink else {
+        eprintln!("error: appliance needs --uplink ADDR (the Internet-side target)");
+        return ExitCode::from(2);
+    };
+    let journal_path =
+        journal.unwrap_or_else(|| identity_dir.join("appliance-journal.cbor"));
+    use sharenet_transport_linux::appliance::{ApplianceConfig, GatewayAppliance};
+    let mut appliance = match GatewayAppliance::open(ApplianceConfig {
+        identity_dir: identity_dir.clone(),
+        bind,
+        uplink,
+        journal_path,
+        expected_clients: if pins.is_empty() { None } else { Some(pins) },
+    }) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: appliance open: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let addr = match appliance.local_addr() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: appliance addr: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let node_hex: String = appliance
+        .node_id()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    println!("APPLIANCE_READY {addr} {node_hex}");
+    // --max-sessions counts THIS RUN's served sessions (the journal's
+    // life totals may already be higher — a restarted appliance serves
+    // N MORE, which is the operator expectation for the knob).
+    let mut served_this_run: u64 = 0;
+    loop {
+        if let Some(limit) = max_sessions {
+            if served_this_run >= limit {
+                break;
+            }
+        }
+        match appliance.serve_session() {
+            Ok(outcome) => {
+                served_this_run += 1;
+                let r = &outcome.record;
+                let participant_hex: String =
+                    r.participant.iter().map(|b| format!("{b:02x}")).collect();
+                println!(
+                    "APPLIANCE_SESSION {} {} {} {}",
+                    r.ordinal, participant_hex, r.forwarded_up, r.reason
+                );
+            }
+            Err(e) => {
+                eprintln!("error: appliance session: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+    let stats = appliance.stats();
+    println!("APPLIANCE_DONE {} {}", stats.sessions, stats.total_forwarded_up);
     ExitCode::SUCCESS
 }
 

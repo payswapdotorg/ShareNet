@@ -44,6 +44,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod appliance;
 pub mod gateway;
 pub mod probe;
 pub mod telemetry_bridge;

@@ -286,7 +286,10 @@ impl GatewayServer {
         uplink_socket
             .set_read_timeout(Some(std::time::Duration::from_millis(50)))
             .map_err(|e| GatewayError::Setup(e.to_string()))?;
-        let mut stats = GatewayStats::default();
+        let mut stats = GatewayStats {
+            participant_node_id: *proposal.proposer_identity().node_id().as_bytes(),
+            ..GatewayStats::default()
+        };
         let response_state = Arc::new(Mutex::new(0u64)); // direction-2 seq
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         {
@@ -395,6 +398,9 @@ impl GatewayServer {
 /// Per-session forwarding counters.
 #[derive(Debug, Default, Clone)]
 pub struct GatewayStats {
+    /// The verified participant (the route proposal's proposer — the
+    /// authenticated peer this session served).
+    pub participant_node_id: [u8; 32],
     pub forwarded_up: u64,
     pub destroy_reason: Option<String>,
     pub bye: bool,

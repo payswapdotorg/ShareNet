@@ -1,0 +1,36 @@
+[package]
+name = "sharenet-propagation"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet receiving-side cross-node propagation rules (R6-004): the pure decision engine over the node's own durable DTN store state that decides what THIS node accepts when another node propagates content to it - dedup (content already held / already complete, slot-level against the store's present set), integrity (the R6-001 length-before-hash law through the store's own verification path, ids re-derived never claimed), TTL (acceptance vs remaining life at the caller's clock - no wall clock in this crate), priority (the frozen service classes, TTL gates before priority so no inversion is possible) and replication policy (target >= 1, local counts only, at-target held bundles still complete). Policy layer - two dependencies, no wire objects, no I/O, no clock."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_propagation"
+path = "src/lib.rs"
+
+# Two dependencies, both deliberate, both ShareNet (the task contract: the
+# R6-001/R6-002/R6-003 dependency edges, as code only where a TYPE is needed):
+# - sharenet-protocol (R6-001): the manifest IS the named object - the strict
+#   parse + commitment-derived content_id (L013) + the typed parse failures
+#   the receiving edge re-derives everything through.
+# - sharenet-dtn (R6-003): the node's own durable custody store this policy
+#   is a pure function of - DtnStoreImage (state + verify_chunk/admit_manifest/
+#   record_evidence APIs), ServicePriority (the frozen class set), the
+#   BundleSummary/BundleStatus read views, the custody evidence seam and the
+#   store's own caps (MAX_BUNDLES, MAX_REGISTRY_BYTES, REPLICATION_TARGET_MIN).
+#
+# R6-002 (sharenet-transfer) is a SEMANTIC dependency, not a code one: the
+# offer evidence here mirrors exactly what an R6-002 session delivers on the
+# wire (OFFER manifest bytes + CHUNK slot/bytes + the carrying frame's carry
+# metadata), but the rules are carriage-NEUTRAL - the same decision applies
+# whether the offer arrives over an R6-002 session, a future BPv7 adapter or
+# node-local IPC (see README.md, "Deliberately NOT done here").
+#
+# Nothing else: no async runtime, no serde, no wall clock, no I/O anywhere in
+# the lib (the pure engine compiles for wasm32-unknown-unknown).
+[dependencies]
+sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }
+sharenet-dtn = { path = "../dtn" }

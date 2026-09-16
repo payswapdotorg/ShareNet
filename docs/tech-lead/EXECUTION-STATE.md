@@ -1049,11 +1049,38 @@ Architect decision — see Open Architect Decisions).
   dtn, propagation libs), conformance harness PASS (283 byte-identical
   lines), governance PASS. 32 of 48 work items complete.
 
+## Wave 14 integration record (2026-09-15)
+
+- Two-way parallel wave, both dispatches died at platform context
+  deadlines AFTER doing most of the work (the recurring mode — check
+  the worktree, complete, never re-dispatch from scratch): Tech Lead
+  completed R6-005 (the simulation + probe existed; wrote the
+  multiprocess suite, fixed three probe bugs the dead agent never ran
+  into: receive auto-creates a fresh receiving store, consumes
+  piped-through protocol lines, parses the full OFFER line) and R7-004
+  (the replacement + zeroization stage existed with 62 green tests;
+  wrote the 6 adversarial legs + the four-role multiprocess test, and
+  fixed the probe's establish-replacement to re-derive the gateway
+  through the PURE selection layer — the attempt-bound select_gateway
+  cannot run once the attempt is terminal).
+- Merges: clean, disjoint crates. R6-005 = the contact model + the
+  forwarder (budget-bounded priority-ordered plans, typed TTL defers,
+  landed-handovers-only custody) + the seeded deterministic
+  contact-graph simulation (byte-identical traces) + the multiprocess
+  handover. R7-004 = record_zeroization (durable typed §11 fact) +
+  establish_replacement_circuit (zeroization-gated, record-bound,
+  L014-fresh, R4-002-admitted through the L015-gated registry,
+  single-flight).
+- Fresh audit on merged main: reference 218, propagation 73, recovery
+  69, admission 25, connectivity 50, dtn 34, transfer 72, linux 61 (602
+  total), wasm32 green (protocol, connectivity, connectivity-client,
+  dtn, propagation libs), conformance harness PASS (283 lines),
+  governance PASS. 34 of 48 work items complete.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 14 (both READY): R6-005 (opportunistic forwarding — R6-003 ✓,
-  R6-004 ✓), R7-004 (replacement circuit — R7-003 ✓, R4-002 ✓,
-  R4-001 ✓).
+- Wave 15 (single): R7-005 (retry/backoff — R7-002 ✓, R7-004 ✓).
+  Wave 16 follows with R7-006 (concurrent recovery — needs R7-005).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

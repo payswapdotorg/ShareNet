@@ -1,0 +1,32 @@
+[package]
+name = "sharenet-economics"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet useful-work valuation (R8-002): the versioned, explicit economic formula that turns VERIFIED ContributionReceipts (R8-001-admitted, bilateral recipient-signed acknowledgements) into valued contribution points - kind weighting (contribution quality), the per-receipt billable byte base, per-counterparty and per-time-window caps (the §14 anti-gaming minimums the valuation layer owns), and the seeded deterministic adversarial simulation (the simulation verify level). Pure policy: no I/O in the lib, no wall clock, no unsafe. Durability is R8-003 (the Civic Point ledger); anomaly detection is R8-005; perk consumption is R8-004."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_economics"
+path = "src/lib.rs"
+
+# TEST SCAFFOLDING binary:
+# - economics_sim: the R8-002 "simulation" verify level's driver
+#   (one named scenario + seed -> the deterministic report on stdout,
+#   byte-identical run to run; the propagation_sim pattern).
+[[bin]]
+name = "economics_sim"
+path = "src/bin/economics_sim.rs"
+
+# One dependency, deliberate:
+# - sharenet-protocol (R8-001): ContributionReceipt is the valued input -
+#   the issuer/contributor identities, the frozen kinds, the byte counts
+#   and the commitment-derived receipt_id are all RE-DERIVED through the
+#   receipt's own parsed fields, never caller-supplied.
+#
+# Nothing else: no async runtime, no serde, no wall clock, no I/O, no
+# unsafe (the crate is #![forbid(unsafe_code)] and compiles for
+# wasm32-unknown-unknown).
+[dependencies]
+sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }

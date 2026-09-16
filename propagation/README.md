@@ -71,6 +71,11 @@ same rules decide over the host's own `DtnStoreImage`.
 | `PropagationPolicy` / `PropagationParams` | `src/policy.rs` | The pure decisions `decide_manifest` / `decide_chunk` (over `&DtnStoreImage` + caller clock), the composed apply paths `take_custody` (admit + one `received` custody record) / `receive_chunk`, and `order_for_ingest` (the carry order for a batch of accepts). |
 | `DEFAULT_MIN_REMAINING_TTL_SECS` | `src/policy.rs` | 60 — the floor below which new custody is refused (0 disables; the hard expiry gate always remains). |
 
+| `ContactOpportunity` / `ContactBudget` | `src/contact.rs` | **R6-005's contact model.** An encounter window (the admitted gateway id, the R5-005 `Eligible` verdict's evidence snapshot + `valid_until`, the window's open/close bounds) + the bounded budget (max bytes, max bundles) a contact may carry. Typed `ContactError`s: windows already closed, admission expired, budgets exhausted. |
+| `OpportunisticForwarder` | `src/forwarder.rs` | **R6-005's forwarder.** Pure planning over the store's `forward_candidates(now)` × the contact: priority-ordered handover plans under the byte/bundle budgets, TTL-expiry gates (a bundle that expires before the window closes, or below the minimum-remaining-life floor at close, is DEFERRED with a typed reason), replication-target awareness, and the apply path (`read`-verified material + `note_forwarded` ONLY for handovers that landed — a refused handover records nothing). |
+| `sim` (the simulation verify level) | `src/sim.rs` + `propagation_sim` | A bounded, seeded, deterministic discrete-event contact-graph simulation running the REAL policy stack on both edges (sending: the forwarder over a `DtnStoreImage`; receiving: `take_custody`/`receive_chunk` through this crate's R6-004 rules) across scripted contact windows, TTLs, priorities and budgets. One SplitMix64 seed; running uses no randomness, no wall clock, no I/O; the same scenario + seed produces byte-identical traces (proven by test and by running the whole binary twice). |
+| `propagation_probe` | `src/bin/propagation_probe.rs` | TEST SCAFFOLDING for the multiprocess verify level: real separate processes seeding a store, planning a contact, applying a handover (material as machine-parsable bytes), and taking custody at a DIFFERENT node's receiving edge (with cross-process dedup). |
+
 ## Verification evidence (the work item's levels)
 
 - **unit** (in-module `#[cfg(test)]`, 26 tests): every rule family's
@@ -107,7 +112,23 @@ same rules decide over the host's own `DtnStoreImage`.
   flush → reload → fresh custody), and refusals storing nothing.
 
 ```sh
-cargo test                                     # 26 unit + 16 adversarial + 4 restart
+- **simulation (the R6-005 level)** — `src/sim.rs`'s scenarios run the
+  REAL policy stack on both edges across scripted contact windows,
+  TTLs, priorities and budgets: byte-identical traces run-to-run
+  (the determinism proof), a partitioned node replicating through an
+  intermittent gateway, expired bundles never served, priority order
+  honored under tight budgets. Runnable standalone via the
+  `propagation_sim` binary (same scenario + seed → same trace bytes).
+- **multiprocess (`tests/multiprocess.rs`, 2)** — through the REAL
+  `propagation_probe` binary: the full handover across process
+  boundaries (seed → plan → handover-as-bytes → a DIFFERENT node's
+  receiving edge taking custody → cross-process dedup → both stores'
+  evidence + live status), and the TTL gate across processes (a
+  `live`-class bundle plannable before expiry, `nothing_to_forward`
+  after it — TTL gates before priority, in a real process).
+
+```sh
+cargo test                                     # 51 unit + 16 adversarial + 4 restart + 2 multiprocess
 cargo check --target wasm32-unknown-unknown --lib   # the L007 discipline
 ```
 
@@ -145,10 +166,11 @@ cargo check --target wasm32-unknown-unknown --lib   # the L007 discipline
 
 ## Deliberately NOT done here (honest scope)
 
-- **No forwarding policy.** WHERE accepted content goes next (and
-  whether now is a good moment) is R6-005's opportunistic forwarder,
-  composed with the R5-005 gateway admission policy — this crate is the
-  RECEIVING edge of that composition.
+- **The forwarding POLICY is here (R6-005), the carriage is not.** The
+  forwarder plans and applies handovers through the store + this
+  crate's receiving rules; WHERE the bytes physically travel is the
+  daemon's wiring (an R6-002 session, a future BPv7 adapter, or
+  node-local IPC — the plan's material is carriage-neutral).
 - **No carriage — and no `sharenet-transfer` dependency.** R6-002 is a
   work-item dependency (the offer evidence mirrors exactly what an
   R6-002 session delivers on the wire: `OFFER` manifest bytes, `CHUNK`

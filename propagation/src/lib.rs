@@ -119,13 +119,26 @@
 
 #![forbid(unsafe_code)]
 
+pub mod contact;
 pub mod evidence;
+pub mod forwarder;
 pub mod policy;
+pub mod sim;
 pub mod verdict;
 
+pub use contact::{ContactBudget, ContactError, ContactOpportunity, GATEWAY_ID_LEN};
 pub use evidence::{ChunkOffer, ManifestOffer};
+pub use forwarder::{
+    DeferredBundle, DeferralReason, ForwardError, ForwardRefusal, ForwardVerdict, ForwarderParams,
+    HandoverMaterial, HandoverPlan, HandoverStep, OpportunisticForwarder, PlanApplication,
+    DEFAULT_MIN_REMAINING_TTL_AT_CLOSE_SECS,
+};
 pub use policy::{
     PropagationParams, PropagationPolicy, DEFAULT_MIN_REMAINING_TTL_SECS,
+};
+pub use sim::{
+    run_scenario, scenario_by_name, SimContact, SimEvent, SimNode, SimOutcome, SimScenario,
+    SimStats, SimTrace, SimRng, SCENARIO_NAMES,
 };
 pub use verdict::{
     AcceptAnchor, ChunkAnchor, ChunkRefusal, ChunkVerdict, HeldAnchor, ManifestRefusal,

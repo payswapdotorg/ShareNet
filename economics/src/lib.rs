@@ -75,6 +75,7 @@
 // remain unsafe-free and wasm32-clean.
 #![deny(unsafe_code)]
 
+pub mod antigaming;
 pub mod consumption;
 pub mod ledger;
 pub mod sim;

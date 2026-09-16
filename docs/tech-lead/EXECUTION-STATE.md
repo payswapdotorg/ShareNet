@@ -166,6 +166,56 @@ Architect decision — see Open Architect Decisions).
 - Persistence: none (measurement layer; durable evidence capture is
   R8-001 scope) — documented in the crate.
 
+### R2-002 — Android Wi-Fi Aware adapter — COMPLETE (2026-09-16, post-closure insert)
+
+- The ONE never-executed roadmap item (roadmap gate R2 note: optional
+  insert, runnable once the Android transport seam stabilized). Run as a
+  single-worker continuation after program closure; executed by worker
+  `sharenet-w2-r202` (instance 3 — two prior instances lost to platform
+  session kills; the surviving sandbox was recovered by instance 3).
+- Delivery note (new pattern): worker sandboxes carry no GitHub
+  credentials by design, so the worker's commits stayed local — the
+  work was delivered as a git diff through the sandbox workspace file
+  API (`download/r2-002/`), applied by the Tech Lead to
+  `work/r2-002-wifi-aware` at df11bd7 (clean apply, tree identical to
+  the worker's verify commit 6760700 on WIP 47599cb).
+- `transport/android/aware/` Gradle module (16 files, 4209 insertions;
+  only non-aware change: the one-line settings.gradle.kts include):
+  `AwareApi` facade (pure Kotlin seam), `AndroidAwareApi` platform
+  facade (ALL 12 `android.net.wifi.aware` imports confined to this one
+  file — L009), `AwareFrameCodec` (4-byte-BE length prefix + u64
+  channel envelope, frozen 2 MiB frame law, bounded buffering),
+  `AwareLinksAdapter` (contract-typed adapter, ConnectionTracker
+  insertion-order determinism), `AwareServiceController`,
+  `ShareNetAwareService` (production caller — the Android Service
+  lifecycle R2-001 proved for nearby), `FakeAwareApi` + 5 host-JVM
+  test suites.
+- Adversarial coverage (all 8 contract minimums, host-tested through
+  the fake): permission denial typed + retry-after-grant; NAN
+  unsupported typed + clean degradation + retryable; session loss
+  mid-discovery (insertion-order loss events, idle, re-attach works);
+  publish update races last-write-wins, no dupe/miss; datapath refusal
+  typed + resource release; stream corruption (short prefix /
+  oversized 3 MiB claim vs the 2 MiB law / garbage envelope) typed
+  errors, zero buffered frames; double-stop / stop-without-start
+  no-throw; quality samples flow to QualityReporter.
+- Verification achieved (Tech Lead independent, fresh stack:
+  Temurin JDK 21.0.12, platforms;android-35, build-tools;35.0.0,
+  Gradle 8.14, --no-daemon): `:aware:testDebugUnitTest` 89/89 green
+  (AwareApiFacadeTest 19, AwareFrameCodecTest 19, AwareLinksAdapterTest
+  34, AwareQualityTest 9, AwareServiceControllerTest 8); L009 greps
+  re-run: 0 aware imports outside AndroidAwareApi.kt, contract module
+  pollution-free, adapter/service imports clean;
+  `:aware:assembleDebug` BUILD SUCCESSFUL — aware-debug.aar 64,095
+  bytes; sibling regression `:nearby:testDebugUnitTest` 39/39,
+  `:vpn:testDebugUnitTest` 79/79, `:contract:test` 36/36 — zero
+  regression.
+- Known gaps (worker-reported, accepted): on-device NAN radio leg
+  operator-gated (no Wi-Fi Aware hardware in any sandbox — honest-gap
+  pattern mirrors R10-002); no RTT quality samples (frozen
+  QualitySampleKind seam carries no RTT kind — recorded as an open
+  seam, not fabricated).
+
 ## Wave 2 integration record (2026-09-15)
 
 - Worker 2 branch `work/wave2-w2-telemetry` (tip 1cf5a98, pushed by the

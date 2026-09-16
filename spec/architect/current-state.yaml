@@ -54,6 +54,17 @@ honest_gaps:
       the literal 24-hour wall-clock profile is the operator command
     operator_step: sharenet_endurance run --sessions 1440
       --spacing-ms 60000 --uplink <real-upstream>
+  - id: R2-002-device
+    what: the Wi-Fi Aware adapter (R2-002, post-closure insert
+      2026-09-16) is implemented and host-verified end-to-end through
+      FakeAwareApi (89/89 tests, L009 seams clean, real-SDK AAR
+      builds); the physical NAN radio leg needs aware-capable
+      hardware
+    operator_step: on an Android device with Wi-Fi Aware support,
+      build the app embedding ShareNetAwareService and exercise
+      discovery -> datapath -> frame exchange against a peer device
+      (the facade seam is AndroidAwareApi.kt; runbook pattern mirrors
+      transport/android/vpn/README.md §The JNI bridge)
 verification_rule: no completion claim without production caller + required verification level + fresh pushed-head audit
 worker_limit: 3
 forbidden_scope_expansion:

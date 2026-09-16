@@ -35,6 +35,16 @@ For every committed vector in
   discipline agrees on every outcome (valid, swap, corrupt, drop,
   extra, short, duplicate — each slot-indexed) in all three legs,
   checked against the vector's pinned `expect`.
+- **ContributionReceipt** (R8-001): receipts rebuild to the exact wire
+  bytes (both frozen kinds — carried/delivered — cross-contributor and
+  cross-issuer sequence namespaces, future-dating); the issuer's Ed25519
+  signature, the canonical carrying envelope and the commitment-derived
+  receipt_id = SHA-256(receipt bytes) reproduce byte-exactly; the ledger
+  admission outcomes (signature, future clock, receipt_id idempotency,
+  the per-(issuer, contributor) monotonic sequence law; tampered and
+  foreign signatures) agree on every admit case through ONE shared
+  ledger replayed in vector order, checked against the pinned `expect`
+  in all three legs.
 
 The strict statement/envelope PARSE rejections are enforced by the Rust
 leg (the protocol core — the authority); the TypeScript and Python legs
@@ -66,12 +76,16 @@ CONN_OBS_ENV_REJ <idx> <ConnectivityEvidenceError name>
 CONTENT        <idx> wire=<hex> id=<hex> chunks=<csv of chunk hash hex>
 CONTENT_REASM  <idx> <"ok" | "<error name> slot=<n>">
 CONTENT_REJ    <idx> <ContentError name>
+CONTRIB         <idx> wire=<hex> sig=<hex> env=<hex> id=<hex>
+CONTRIB_ADMIT   <idx> now=<unix> <"admitted" | "duplicate" | error name>
+CONTRIB_REJ     <idx> <ReceiptError name>
+CONTRIB_ENV_REJ <idx> <ReceiptError name>
 ```
 
 (The full line vocabulary spans every registered wire-object family with
 committed vectors — CBOR, identity, capability, link, advertisement,
-topology, route, circuit, connectivity evidence, content — see the runner
-sources for the exact formats.)
+topology, route, circuit, connectivity evidence, content, contribution —
+see the runner sources for the exact formats.)
 
 ## Running
 

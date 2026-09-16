@@ -21,6 +21,11 @@ import {
 } from "./capability.ts";
 import { deriveNodeId, Ed25519Key, nodeIdentityWire } from "./identity.ts";
 import { advertisementId, buildAdvertisement, buildEnvelope } from "./advertisement.ts";
+import {
+  buildReceipt as contributionBuildReceipt,
+  buildEnvelope as contributionBuildEnvelope,
+  receiptId as contributionReceiptId,
+} from "./contribution.ts";
 import { buildEnvelope as buildTopoEnvelope, buildEvidence, evidenceId } from "./topology.ts";
 import {
   buildAcceptance,
@@ -891,6 +896,104 @@ function loadJson(name: string): any {
   }
   for (let i = 0; i < file.envelope_reject.length; i++) {
     console.log(`CONN_OBS_ENV_REJ ${i} ${file.envelope_reject[i].error}`);
+  }
+}
+
+// ---------------- contribution receipt vectors (R8-001) ----------------
+{
+  const file = loadJson("contribution_vectors.json");
+  const foreignSeed = new Uint8Array(32).fill(0xee);
+  const rebuilt: {
+    wire: Uint8Array;
+    sig: Uint8Array;
+    issuerNodeId: string;
+    contributorHex: string;
+    seq: bigint;
+    issuedAt: bigint;
+    id: string;
+  }[] = [];
+  for (const c of file.cases) {
+    const key = new Ed25519Key(fromHex(c.issuer_seed_hex));
+    const wire = contributionBuildReceipt({
+      publicKey: key.publicKey,
+      createdAtUnix: BigInt(c.issuer_created_at_unix),
+      contributorNodeId: fromHex(c.contributor_node_id_hex),
+      contentId: fromHex(c.content_id_hex),
+      kind: c.kind,
+      deliveredBytes: BigInt(c.delivered_bytes),
+      receiptSeq: BigInt(c.receipt_seq),
+      issuedAtUnix: BigInt(c.issued_at_unix),
+    });
+    const sig = key.signDetached(wire);
+    const env = contributionBuildEnvelope(wire, sig);
+    const id = toHex(contributionReceiptId(wire));
+    if (
+      toHex(wire) !== c.wire_hex ||
+      toHex(sig) !== c.sig_hex ||
+      toHex(env) !== c.env_hex ||
+      id !== c.receipt_id_hex
+    ) {
+      fail(`contribution ${file.cases.indexOf(c)}: re-derived image differs`);
+    }
+    console.log(
+      `CONTRIB ${file.cases.indexOf(c)} wire=${toHex(wire)} sig=${toHex(sig)} env=${toHex(env)} id=${id}`,
+    );
+    rebuilt.push({
+      wire,
+      sig,
+      issuerNodeId: toHex(deriveNodeId(key.publicKey)),
+      contributorHex: c.contributor_node_id_hex,
+      seq: BigInt(c.receipt_seq),
+      issuedAt: BigInt(c.issued_at_unix),
+      id,
+    });
+  }
+  // ONE shared ledger mirror (the accepting node): the registry admission
+  // rule in the Rust core's evaluation order — signature, future clock,
+  // receipt_id idempotency, the per-(issuer, contributor) sequence law.
+  // The pair namespaces are global across entries, so the vector order is
+  // itself the test.
+  const seen = new Set<string>();
+  const highest = new Map<string, bigint>();
+  for (const r of file.admit) {
+    const b = rebuilt[r.case];
+    const issuerKey = new Ed25519Key(fromHex(file.cases[r.case].issuer_seed_hex));
+    let sig = b.sig;
+    if (r.mutation === "tamper_signature") {
+      sig = Uint8Array.from(sig);
+      sig[0]! ^= 0x01;
+    } else if (r.mutation === "foreign_signer") {
+      sig = new Ed25519Key(foreignSeed).signDetached(b.wire);
+    }
+    let outcome: string;
+    if (!Ed25519Key.verifyDetached(issuerKey.publicKey, b.wire, sig)) {
+      outcome = "signature_invalid";
+    } else if (b.issuedAt > BigInt(r.now_unix)) {
+      outcome = "issued_at_in_future";
+    } else if (seen.has(b.id)) {
+      outcome = "duplicate";
+    } else {
+      const pair = `${b.issuerNodeId}:${b.contributorHex}`;
+      if (highest.has(pair) && b.seq <= highest.get(pair)!) {
+        outcome = "sequence_regressed";
+      } else {
+        highest.set(pair, b.seq);
+        seen.add(b.id);
+        outcome = "admitted";
+      }
+    }
+    if (outcome !== r.expect) {
+      fail(`contribution admit ${file.admit.indexOf(r)}: ${outcome} != expected ${r.expect}`);
+    }
+    console.log(`CONTRIB_ADMIT ${file.admit.indexOf(r)} now=${r.now_unix} ${outcome}`);
+  }
+  // strict parse is Rust-core scope (documented in the conformance
+  // README); the wire lines above pin the encoder, these pin the taxonomy
+  for (let i = 0; i < file.parse_reject.length; i++) {
+    console.log(`CONTRIB_REJ ${i} ${file.parse_reject[i].error}`);
+  }
+  for (let i = 0; i < file.envelope_reject.length; i++) {
+    console.log(`CONTRIB_ENV_REJ ${i} ${file.envelope_reject[i].error}`);
   }
 }
 

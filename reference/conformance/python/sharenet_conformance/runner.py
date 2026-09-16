@@ -20,6 +20,7 @@ from . import advertisement as admod
 from . import circuit as circuitmod
 from . import connectivity_evidence as ce_mod
 from . import content as contentmod
+from . import contribution as contrib_mod
 from . import revocation as revmod
 from . import route as routemod
 from . import topology as topomod
@@ -780,6 +781,94 @@ def run(vectors_dir: str) -> int:
         print(f"CONN_OBS_REJ {i} {r['error']}")
     for i, r in enumerate(obs_file["envelope_reject"]):
         print(f"CONN_OBS_ENV_REJ {i} {r['error']}")
+
+    # ---------------- contribution receipt vectors (R8-001) ----------------
+    contrib_file = load_json(vectors_dir, "contribution_vectors.json")
+    foreign_seed = bytes([0xEE] * 32)
+    rebuilt: list[dict] = []
+    for i, c in enumerate(contrib_file["cases"]):
+        try:
+            seed = bytes.fromhex(c["issuer_seed_hex"])
+            pk = public_key(seed)
+            wire = contrib_mod.build_receipt(
+                pk,
+                c["issuer_created_at_unix"],
+                bytes.fromhex(c["contributor_node_id_hex"]),
+                bytes.fromhex(c["content_id_hex"]),
+                c["kind"],
+                c["delivered_bytes"],
+                c["receipt_seq"],
+                c["issued_at_unix"],
+            )
+            sig = ed25519.sign(seed, wire)
+            env = contrib_mod.build_envelope(wire, sig)
+            rid = contrib_mod.receipt_id(wire)
+            if (
+                wire.hex() != c["wire_hex"]
+                or sig.hex() != c["sig_hex"]
+                or env.hex() != c["env_hex"]
+                or rid.hex() != c["receipt_id_hex"]
+            ):
+                fail(f"contribution {i}: re-derived image differs from the committed vector")
+            print(f"CONTRIB {i} wire={wire.hex()} sig={sig.hex()} env={env.hex()} id={rid.hex()}")
+            rebuilt.append(
+                {
+                    "seed": seed,
+                    "pk": pk,
+                    "wire": wire,
+                    "sig": sig,
+                    "issuer_node_id": derive_node_id(pk),
+                    "contributor": bytes.fromhex(c["contributor_node_id_hex"]),
+                    "seq": c["receipt_seq"],
+                    "issued_at": c["issued_at_unix"],
+                    "id": rid,
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            fail(f"contribution {i}: {e}")
+    # ONE shared ledger mirror (the accepting node): the registry admission
+    # rule in the Rust core's evaluation order — signature, future clock,
+    # receipt_id idempotency, the per-(issuer, contributor) sequence law.
+    # The pair namespaces are global across entries, so the vector order is
+    # itself the test.
+    seen: set[bytes] = set()
+    highest: dict[tuple[bytes, bytes], int] = {}
+    for i, r in enumerate(contrib_file["admit"]):
+        try:
+            b = rebuilt[r["case"]]
+            sig = b["sig"]
+            if r.get("mutation") == "tamper_signature":
+                sig = bytearray(sig)
+                sig[0] ^= 0x01
+                sig = bytes(sig)
+            elif r.get("mutation") == "foreign_signer":
+                sig = ed25519.sign(foreign_seed, b["wire"])
+            if not verify_detached(b["pk"], b["wire"], sig):
+                outcome = "signature_invalid"
+            elif b["issued_at"] > r["now_unix"]:
+                outcome = "issued_at_in_future"
+            elif b["id"] in seen:
+                outcome = "duplicate"
+            else:
+                pair = (b["issuer_node_id"], b["contributor"])
+                if pair in highest and b["seq"] <= highest[pair]:
+                    outcome = "sequence_regressed"
+                else:
+                    highest[pair] = b["seq"]
+                    seen.add(b["id"])
+                    outcome = "admitted"
+            if outcome != r["expect"]:
+                fail(f"contribution admit {i}: {outcome} != expected {r['expect']}")
+            print(f"CONTRIB_ADMIT {i} now={r['now_unix']} {outcome}")
+        except Exception as e:  # noqa: BLE001
+            fail(f"contribution admit {i}: {e}")
+    # strict receipt/envelope parse is Rust-core scope (documented in the
+    # conformance README); the wire lines above pin the encoder, these pin
+    # the taxonomy
+    for i, r in enumerate(contrib_file["parse_reject"]):
+        print(f"CONTRIB_REJ {i} {r['error']}")
+    for i, r in enumerate(contrib_file["envelope_reject"]):
+        print(f"CONTRIB_ENV_REJ {i} {r['error']}")
 
     # ---------------- content manifest vectors (R6-001) ----------------
     content_file = load_json(vectors_dir, "content_vectors.json")

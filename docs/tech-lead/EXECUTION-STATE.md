@@ -1431,6 +1431,55 @@ Architect decision — see Open Architect Decisions).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 
+## Wave 23 integration record (2026-09-16)
+
+- Two-way wave, direct Tech Lead work:
+  * R10-003 (endurance/restart): NEW binary `sharenet_endurance` —
+    the sustained two-appliance bridge: two R9-003 appliances (durable
+    identity + append-only journal) + the R10-001 participant, cycled
+    with one induced SIGKILL and one restart per cycle, alternating
+    roles so both appliances accumulate journaled replacement
+    sessions. The LAWS: sustained operation (data before AND after
+    each failure), durable identity (same node id across every
+    restart), journal continuity (ordinals strictly increasing across
+    the whole life — the harness waits for the fsync'd session line,
+    the journal is the truth the process is not), state accumulation
+    (the revocation ledger grows monotonically), memory stability
+    (per-cycle RSS sampling, 64 MB growth bound). The 24-HOUR operator
+    profile is the same harness (`--sessions 1440 --spacing-ms 60000`
+    = one bridge round per minute for a day, --uplink a real
+    upstream); the sandbox verification is the accelerated profile
+    (8 cycles / 8 kills / 8 restarts) — the laws are identical. Two
+    real participant bugs the endurance run exposed and fixed: the
+    per-run projection store (create refuses an existing dir) and the
+    fresh decision clock at the wire-evidence phase (a pre-connect
+    clock lags the envelopes' timestamps across a second boundary —
+    R3-004's proposal_not_yet_valid).
+  * R10-004 (failure injection/recovery): four injected-failure
+    scenarios against real processes: the LINK-failure shape (gateway
+    alive, its INTERNET dies — the most realistic bridge failure; the
+    idle timeout + revocation + replacement carry the traffic through
+    the other gateway's live uplink), the TOTAL-OUTAGE shape (both
+    gateways die mid-session — the participant fails CLOSED, BOUNDED,
+    then the system recovers with fresh gateways), DEAD-ON-ARRIVAL
+    (fast typed connect failure), and the HOSTILE uplink (garbage
+    answers carried verbatim, nothing crashes — the bridge is a data
+    plane, not a parser). The real-device leg is the R10-002 operator
+    runbook; the JVM fail-closed behavior is JniTunnelBackhaulTest's
+    dead-bridge loop test.
+- Fresh audit: transport/linux 80 green (41 lib + 39 integration:
+  2 loopback + 1 endurance + 4 failure-injection + 32 prior), zero
+  warnings on the new code, governance PASS. 46 of 48 work items
+  complete (open: R9-001 ios level, R9-002 platform level — the
+  honest-gap records — and R10-005).
+
+## Ready set (recomputed after Wave 23)
+
+- Wave 24 (single): R10-005 (four-week competitor simulation — deps
+  R8-005 ✓ + R10-004 ✓; verify: simulation, reproducibility).
+- R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
+  (Tech Lead decision; not on the frozen wave path).
+
 ## Open Architect Decisions
 
 1. `spec/architect/current-state.yaml` still declares

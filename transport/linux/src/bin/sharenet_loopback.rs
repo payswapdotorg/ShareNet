@@ -222,10 +222,15 @@ fn candidate_material(
     ];
 
     // Feed a real R5-003 durable store through the verified path (the
-    // recovery_probe convention) and read the health view back.
+    // recovery_probe convention) and read the health view back. The
+    // store is per-RUN: create refuses an existing dir, and the
+    // endurance harness reuses the recovery dir across participant
+    // runs — each participant process builds its own evidence view.
+    let store_path = store_dir.join(format!("b-{}.store", std::process::id()));
+    let _ = std::fs::remove_dir_all(&store_path);
     let mut admission = ObservationAdmission::new(STORE_WINDOW_SECS);
     admission.register_contract(*contract.id());
-    let mut store = DurableProjectionStore::create(&store_dir.join("b.store"), STORE_WINDOW_SECS)
+    let mut store = DurableProjectionStore::create(&store_path, STORE_WINDOW_SECS)
         .expect("projection store");
     for observation in &signed {
         admission.receive(observation, now).expect("registry admission");
@@ -582,7 +587,11 @@ fn cmd_participant(rest: &[String]) -> ExitCode {
     // The driver's fresh route, zeroization and replacement circuit are
     // established from the envelopes ACTUALLY exchanged with gateway B
     // (not re-derived stand-ins) — the composition this work item exists
-    // to prove.
+    // to prove. The decision clock is taken FRESH here: the wire
+    // envelopes carry their own connect-time timestamps, and a clock
+    // captured before the connect can lag them across a second
+    // boundary (R3-004's proposal_not_yet_valid).
+    let now = now_unix();
     let route: FreshRoute = match driver.establish_fresh_route(
         &selected,
         &evidence_b.proposal_env,

@@ -24,6 +24,15 @@ path = "src/bin/sharenet_transport_linux.rs"
 name = "sharenet_loopback"
 path = "src/bin/sharenet_loopback.rs"
 
+# R10-003: the endurance/restart harness — the R10-001 bridge cycled
+# over the R9-003 appliances with induced deaths, restarts (durable
+# identity + journal continuity), accumulating recovery state and
+# RSS envelope laws. The 24h operator profile is --sessions 1440
+# --spacing-ms 60000; the sandbox runs the accelerated profile.
+[[bin]]
+name = "sharenet_endurance"
+path = "src/bin/sharenet_endurance.rs"
+
 [dependencies]
 libc = "0.2"
 sharenet-protocol = { path = "../../reference/crates/sharenet-protocol" }

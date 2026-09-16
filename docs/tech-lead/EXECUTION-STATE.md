@@ -1028,11 +1028,32 @@ Architect decision — see Open Architect Decisions).
   harness PASS (283 byte-identical lines), governance PASS. 30 of 48
   work items complete.
 
+## Wave 13 integration record (2026-09-15)
+
+- Two-way parallel wave. R6-004 (13-a) completed CLEAN in one bounded
+  dispatch: sharenet-propagation, the pure R5-005-style decision engine
+  for receiving-side cross-node rules (dedup/integrity/TTL floor/
+  priority), composing the R6-003 store, 46 tests (26 unit + 16
+  adversarial + 4 restart), wasm32 lib clean. R7-003 (13-b) subagent
+  died at its platform deadline with complete-but-uncommitted work (the
+  recurring mode): gateway selection composing the REAL R5-005 policy
+  (only Eligible selects, signature verification at selection time,
+  deterministic ascending-id tie-break, typed no_eligible_gateway /
+  duplicate_gateway_candidate) + establish_fresh_route (R3-004 chain,
+  admission-freshness at construction) + recovery_probe + 56 green
+  tests — Tech Lead verified, completed the README, committed.
+- Merges: 7e6ae9d (R6-004) → 673dbc7 (R7-003) — clean, disjoint crates.
+- Fresh audit on merged main: reference 218, propagation 46, recovery
+  56, admission 25, connectivity 50, dtn 34, linux 61, transfer 72 (562
+  total), wasm32 green (protocol, connectivity, connectivity-client,
+  dtn, propagation libs), conformance harness PASS (283 byte-identical
+  lines), governance PASS. 32 of 48 work items complete.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 13 (both READY): R6-004 (dedup/integrity/TTL — R6-001 ✓,
-  R6-002 ✓, R6-003 ✓), R7-003 (alternate route/gateway recovery —
-  R7-002 ✓, R3-004 ✓, R5-005 ✓).
+- Wave 14 (both READY): R6-005 (opportunistic forwarding — R6-003 ✓,
+  R6-004 ✓), R7-004 (replacement circuit — R7-003 ✓, R4-002 ✓,
+  R4-001 ✓).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

@@ -1219,16 +1219,40 @@ Architect decision — see Open Architect Decisions).
 - Fresh audit (2026-09-16): economics 28/28, linux 66/66, governance
   PASS. 40 of 48 work items complete.
 
+## Wave 19 integration record (2026-09-16)
+
+- Single-item wave; direct Tech Lead implementation (the w15/w16
+  pattern). R8-003 delivered: economics/src/ledger.rs — the Civic Point
+  ledger as the DURABLE form of the R8-002 valuation. CivicPointLedger
+  composes the engine (award() re-derives all pricing — never
+  caller-supplied points) and appends a LedgerEntry per non-zero award
+  (the registered CivicPointLedgerEntry durable-state record). The
+  RESTART LAW — the design's sharpest edge, found by the restart suite:
+  the reload must restore the ENGINE state (valued ids + per-pair +
+  per-contributor window totals), else a restart resets the window caps
+  (a farming-by-restart vector); ValuationEngine::restore() is the seam,
+  the entry carries the issuer node_id (field 10) for the pair-totals
+  reconstruction, and the adversarial leg proves the cap binds across
+  the restart while a NEW window still pays. FileCivicPointLedger
+  (fsync-per-entry appends, fail-closed reload) + the snapshot
+  round-trip cover both durability forms. Balances only ever increase
+  (no spend path exists — R8-004 owns consumption). One audited unsafe
+  (fsync(2)) under crate-level deny(unsafe_code) + local allow.
+- Fresh audit: economics 41/41 (18 unit + 6 restart + 3 concurrency +
+  14 adversarial), zero warnings, wasm32 clean, governance PASS.
+  41 of 48 work items complete.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 19 (single): R8-003 (Civic Point ledger — R8-002 ✓; verify:
-  unit, restart, concurrency, adversarial — the durable ledger over the
-  valuation engine's awards).
-  Wave 20: R9-002 (iOS Packet Tunnel evaluation — needs the Mac
-  runner; sandbox-honest record like R9-001's) + R9-004 (additional
-  access adapters) + R8-004 (priority/perk consumption — needs
-  R8-003). Wave 21: R8-005 (anti-gaming/audit). Waves 22–24:
-  R10-001..R10-005 (the integration gate).
+- Wave 20 (three-way): R9-002 (iOS Packet Tunnel evaluation — verify
+  level "platform" needs the Mac runner; the R9-001 sandbox-honest
+  record pattern applies: deliver the evaluation scaffolding +
+  architecture, record the compile/run gap) + R9-004 (additional access
+  adapters — deps R4-007 ✓; verify: architecture, integration) + R8-004
+  (priority/perk consumption — R8-003 ✓ + R5-005 ✓; verify:
+  integration, adversarial). Wave 21: R8-005 (anti-gaming/audit —
+  R8-003 + R8-004). Waves 22–24: R10-001..R10-005 (the integration
+  gate).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

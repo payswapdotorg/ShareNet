@@ -1,0 +1,27 @@
+[package]
+name = "sharenet-dtn"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet DTN store-carry-forward (R6-003): the local custody store over R6-001 content manifests - bundle admission (dedup by content_id+slot, manifest-hash integrity, caller-clock TTL, frozen service-class priority), durable persistence (atomic flush, fail-closed load, re-hash-everything restart re-validation), typed custody/delivery evidence (the R8 seam), and the expiry-aware priority-ordered carry-forward API. Storage layer - one dependency (sharenet-protocol), no wire objects, no wall clock."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_dtn"
+path = "src/lib.rs"
+
+# TEST SCAFFOLDING binary for the multiprocess verify level (the same pattern
+# as connectivity-client's projection_store_probe): a REAL second process that
+# loads the store image from disk and continues custody.
+[[bin]]
+name = "dtn_probe"
+path = "src/bin/dtn_probe.rs"
+
+# Exactly one dependency, deliberate (the task contract): sharenet-protocol
+# (R6-001) supplies the storage unit - ContentManifest, its commitment-derived
+# content_id, its per-slot chunk hashes and its expected-slot-length law.
+# Nothing else: no async runtime, no serde, no wall clock, no I/O beyond the
+# store's own directory. std only on top of this one ShareNet dep.
+[dependencies]
+sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }

@@ -5,8 +5,9 @@ traffic into the tunnel. **Platform adapter, not protocol semantics**
 (`spec/architecture-lock.md` L009, `spec/adrs/002`): no identity, routing,
 circuit, content, or cryptographic logic lives here (protocol core = Worker 1,
 `reference/`). This module speaks raw IP packets and hands them to a
-`TunnelBackhaul` seam; the JNI bridge to the Rust QUIC tunnel arrives with
-R10-002 (no NDK in this wave, deliberately).
+`TunnelBackhaul` seam — whose production implementation arrived with R10-002:
+[`JniTunnelBackhaul`](#the-jni-bridge-r10-002) over the Rust
+`sharenet-android-bridge` cdylib.
 
 ## Module layout
 
@@ -23,7 +24,11 @@ transport/android/vpn/
     IpPacketFilter.kt    — pure-Kotlin IP sanity filter (the TUN→tunnel gate)
     PacketIo.kt          — THE fd I/O SEAM (packet-atomic blocking reads)
     PacketLoop.kt        — the production loop shape (JVM-testable)
-    TunnelBackhaul.kt    — THE TUNNEL SEAM (JNI bridge lands in R10-002)
+    TunnelBackhaul.kt    — THE TUNNEL SEAM (the contract)
+    BridgeNative.kt      — THE JNI SURFACE (R10-002): external funs +
+                           injectable BridgeNativeLibrary
+    JniTunnelBackhaul.kt — THE PRODUCTION BACKHAUL (R10-002): the seam
+                           over libsharenet_bridge.so
     VpnError.kt          — typed errors (InvalidConfig(field,reason) /
                            PacketTooLarge / BackhaulFailure / IoFailure /
                            VpnNotPrepared)
@@ -52,14 +57,18 @@ On-device verification is R10-002 scope.
    sources); production uses `FdPacketIo`. One `readPacket` = one COMPLETE
    packet; reads block; EOF (null) = device side closed.
 2. **`TunnelBackhaul`** — where an outbound packet crosses from Kotlin/JVM
-   into the ShareNet tunnel. Production implementation is R10-002: a JNI
-   bridge to the Rust `sharenet-transport-quic` `TunnelStream` plus the
-   protocol-core circuit registry. Until then tests use
-   `FakeTunnelBackhaul` (echo) and the on-device service accepts any
-   implementation injected by the embedding app via
-   `ShareNetVpnService.configureBackhaul` — with NO factory installed the
-   service refuses to start a loop (typed log, no crash).
-3. **`configureBackhaul`** — skeleton wiring point for the embedding app.
+   into the ShareNet tunnel. The production implementation IS R10-002's
+   `JniTunnelBackhaul`: the Rust `sharenet-android-bridge` session (pinned
+   QUIC tunnel + R4-002 circuit admission + the R4-003 data plane — the
+   exact session the R10-001 two-process loopback proved). JVM tests use
+   `FakeTunnelBackhaul` and the fake `BridgeNativeLibrary` (the external
+   functions need the NDK-built .so); the android-bridge crate's host tests
+   drive the REAL stack (gateway, tunnel, circuit — see its
+   tests/bridge_session.rs).
+3. **`configureBackhaul`** — the wiring point: the embedding app installs
+   `JniTunnelBackhaul(LoadedBridgeNative, seed, gatewayAddr,
+   gatewayNodeHex)` (or any other `TunnelBackhaul`) — with NO factory
+   installed the service refuses to start a loop (typed log, no crash).
 
 ## Config validation (strict, total, typed)
 
@@ -165,15 +174,52 @@ export ANDROID_HOME=/path/to/sdk          # platforms;android-35, build-tools;35
   read drops the packet; re-entrant stop from inside the backhaul
   completes the current packet first), EOF clean stop.
 
+## The JNI bridge (R10-002)
+
+The seam's production implementation: **`transport/android-bridge`** (Rust,
+`sharenet-android-bridge`) + **`JniTunnelBackhaul`** (this module).
+
+- **Rust side**: a `GatewayClient` participant session — pinned QUIC
+  tunnel (R4-001) + R4-002 circuit admission + the R4-003 data plane,
+  exactly the session the R10-001 two-process loopback proved — behind
+  a frozen JNI surface (`BridgeNative.nativeVersion/nativeOpen/
+  nativeForward/nativeDestroy`; `BRIDGE_API_VERSION = 1`). Errors map
+  to a typed `IllegalStateException`; the session fails CLOSED.
+- **Kotlin side**: `JniTunnelBackhaul` implements `TunnelBackhaul` over
+  the injectable `BridgeNativeLibrary` (production: `LoadedBridgeNative`
+  — `System.loadLibrary("sharenet_bridge")`).
+- **Verified here**: the Rust core against a REAL in-process
+  `GatewayServer` with a loopback uplink echo (the crate's host tests,
+  incl. wrong-pin fail-closed and destroy-then-forward fail-closed);
+  the host cdylib builds with all four symbols exported (nm-verified);
+  the JVM side: `JniTunnelBackhaul` construction/argument laws, forward/
+  close semantics, the FULL `PacketLoop` over the bridge seam, and the
+  dead-bridge fail-closed path (the fake library stands in for the .so
+  only — the seam discipline).
+- **The on-device runbook** (the `real-device` verify leg — no NDK or
+  physical device exists in the build sandbox, honestly):
+  1. Install the NDK + `cargo install cargo-ndk`.
+  2. `cd transport/android-bridge && cargo ndk -t arm64-v8a -t armeabi-v7a \
+     -t x86_64 -o ../android/vpn/src/main/jniLibs build --release`
+  3. Build + install the embedding app
+     (`./gradlew :vpn:assembleDebug` verified here; the app wires
+     `ShareNetVpnService.configureBackhaul {
+         JniTunnelBackhaul(LoadedBridgeNative, seed, gatewayAddr, gatewayNodeHex)
+     }` with the gateway address + node id its discovery produced).
+  4. Start the service (ACTION_START with the session extras); grant
+     the system VPN consent; verify real traffic crossing the TUN
+     through the ShareNet circuit (the R4-007 mission-gate shape now
+     on a phone).
+
 ## Known limits (honest)
 
-- **No JNI/NDK backhaul**: `TunnelBackhaul`'s production implementation
-  (Rust QUIC tunnel bridge) is R10-002. Until then the service runs with an
-  injected fake or not at all.
-- **No on-device verification in this wave**: real TUN behavior (fd reads,
-  establish(), the system VPN consent dialog, the platform Builder) needs a
-  physical device — that is R10-002 (`real-device` verify). This wave
-  verifies: unit + android build.
+- **No on-device run in this sandbox**: the JNI bridge is implemented
+  and host-verified (real gateway stack + symbol surface), the JVM
+  side is unit-verified, but the physical-device leg (NDK cross-build,
+  install, VPN consent, real radio traffic) is the operator runbook
+  above — no NDK/device exists in this build sandbox. This wave
+  verifies: unit + android build + host bridge tests.
+- **IPv6 is pass-through-only** in the filter (see policy above).
 - **IPv6 is pass-through-only** in the filter (see policy above).
 - On a real fd, a packet larger than the MTU buffer is truncated by the
   kernel read; the tail is lost and the short remainder fails the filter's

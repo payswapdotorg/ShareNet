@@ -4,14 +4,16 @@ package org.sharenet.transport.vpn
  * THE SEAM of the Android VPN data plane (R4-004): where an outbound IP
  * packet crosses from the Kotlin/JVM world into the ShareNet tunnel.
  *
- * The production implementation is FUTURE SCOPE (R10-002, "Android
- * real-device bridge"): a JNI bridge to the Rust `sharenet-transport-quic`
- * `TunnelStream` (frame-oriented `send_frame`/`recv_frame`) plus the
- * protocol-core circuit registry, which requires the NDK — deliberately
- * absent from this wave's build. Until then:
- *  * tests use `FakeTunnelBackhaul` (echo) in src/test;
- *  * the on-device service accepts any implementation injected by the
- *    embedding app.
+ * The production implementation is [JniTunnelBackhaul] (R10-002, the
+ * Android bridge): the Rust `sharenet-android-bridge` cdylib
+ * (`libsharenet_bridge.so`, built with cargo-ndk) — a GatewayClient
+ * participant session (pinned QUIC tunnel + R4-002 circuit admission
+ * + the R4-003 data plane, the exact session the R10-001 two-process
+ * loopback proved) behind the `BridgeNative` JNI surface. The JVM
+ * tests still use `FakeTunnelBackhaul` (the external functions need
+ * the NDK-built library, absent from the JVM sandbox); the
+ * android-bridge crate's own host tests drive the REAL stack, and the
+ * on-device leg is the operator runbook in README.md §The JNI bridge.
  *
  * Contract:
  *  * [forward] is called by the packet loop on the loop thread, once per

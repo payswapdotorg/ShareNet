@@ -1,0 +1,30 @@
+[package]
+name = "sharenet-android-bridge"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet Android bridge (R10-002): the Rust side of the VpnService's TunnelBackhaul seam - a GatewayClient session (pinned QUIC tunnel + R4-002 circuit + R4-003 data plane) behind a JNI surface the Kotlin JniTunnelBackhaul binds to. Core bridge logic is host-testable (rlib); the cdylib is the NDK artifact (cargo-ndk). The on-device leg is the operator runbook (vpn/README.md) - no NDK/device in the build sandbox."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_android_bridge"
+path = "src/lib.rs"
+# rlib: host tests + the JNI unit surface; cdylib: the .so the
+# VpnService's System.loadLibrary("sharenet_bridge") loads on device
+# (built with cargo-ndk for the target ABIs - see transport/android/
+# vpn/README.md for the operator runbook).
+crate-type = ["rlib", "cdylib"]
+
+# Deliberate dependencies:
+# - sharenet-transport-linux (R4-003): GatewayClient / ParticipantSession
+#   - the exact data plane the R10-001 two-process loopback proved, now
+#   driven from the Android packet loop instead of a CLI process.
+# - sharenet-protocol: the identity/circuit types of the session it
+#   carries.
+# - jni 0.21: the JNI surface (JNIEnv object access, exception mapping)
+#   - the production caller is Kotlin (JniTunnelBackhaul.kt).
+[dependencies]
+sharenet-transport-linux = { path = "../linux" }
+sharenet-protocol = { path = "../../reference/crates/sharenet-protocol" }
+jni = "0.21"

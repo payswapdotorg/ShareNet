@@ -25,7 +25,7 @@ import android.util.Log
  * // 1. consent (app side, on the main thread)
  * val consent = VpnService.prepare(context)
  * if (consent != null) startActivityForResult(consent, REQUEST)
- * // 2. skeleton wiring: the JNI backhaul arrives in R10-002
+ * // 2. skeleton wiring: the JNI backhaul IS R10-002 (JniTunnelBackhaul)
  * ShareNetVpnService.configureBackhaul { jniBackhaul() }
  * // 3. start
  * context.startService(Intent(context, ShareNetVpnService::class.java).apply {
@@ -76,11 +76,13 @@ class ShareNetVpnService : VpnService() {
         private const val MODE_BLOCKLIST = "BLOCKLIST"
 
         /**
-         * Skeleton wiring point for the tunnel seam: the embedding app
-         * installs the backhaul factory at startup (the JNI bridge to
-         * transport/quic `TunnelStream` arrives with R10-002). Until a
-         * factory is installed, [ACTION_START] logs a typed error and
-         * stays down — the service never starts a loop with no backhaul.
+         * Wiring point for the tunnel seam: the embedding app installs
+         * the backhaul factory at startup — R10-002's production wiring
+         * is `JniTunnelBackhaul(LoadedBridgeNative, seed, gatewayAddr,
+         * gatewayNodeHex)` (see README.md §The JNI bridge for the NDK
+         * build runbook). Until a factory is installed, [ACTION_START]
+         * logs a typed error and stays down — the service never starts
+         * a loop with no backhaul.
          */
         @Volatile
         private var backhaulFactory: (() -> TunnelBackhaul)? = null

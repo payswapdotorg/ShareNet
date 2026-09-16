@@ -13,6 +13,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use sharenet_admission::{
+    AdcosBackhaulEvidence, AdmissionParams, GatewayAdmissionPolicy,
+};
+use sharenet_connectivity::{
+    AcceptOutcome, ConnectivityContractRef, ConnectivityObservation, DurableProjectionStore,
+    ObservationKind, RefKind,
+};
 use sharenet_protocol::circuit::{derive_circuit_id, CircuitRegistry, CircuitSetup, CircuitSetupAck};
 use sharenet_protocol::identity::Identity;
 use sharenet_protocol::revocation::{
@@ -22,7 +29,14 @@ use sharenet_protocol::revocation::{
 use sharenet_protocol::route::{
     derive_proposal_id, RouteAcceptance, RouteCommitment, RouteProposal, SignedEnvelope,
 };
+use sharenet_protocol::topology::SignedTopologyEvidence;
+use sharenet_protocol::{
+    ConnectivityObservationStatement, EvidenceKind, LinkQualitySnapshot, Observation,
+    ObservationAdmission, SignedConnectivityObservation, TopologyEvidence,
+};
 
+use crate::driver::SelectedGateway;
+use crate::gateway::GatewayCandidate;
 use crate::ledger::DurableRevocationLedger;
 
 /// A deterministic base time for all test timestamps.
@@ -366,4 +380,430 @@ pub fn pending_record(attempt_seq: u64, at: u64) -> [u8; ATTEMPT_RECORD_LEN] {
 /// A well-formed succeeded record (state 1, route ref).
 pub fn succeeded_record(attempt_seq: u64, at: u64, route_id: [u8; 32]) -> [u8; ATTEMPT_RECORD_LEN] {
     attempt_record_bytes(attempt_seq, at, at + 1, 1, 1, route_id)
+}
+
+// ---------------------------------------------------------------------------
+// The R7-003 gateway-candidate world (the same shape as the admission
+// crate's integration scaffolding: REAL identities, REAL signed link
+// evidence, REAL provider observations admitted through the protocol
+// core's registry and projected through a REAL R5-003 durable store).
+// ---------------------------------------------------------------------------
+
+/// The link id every testkit link evidence carries (a fixed test value).
+pub const LINK_ID: [u8; 32] = [0x51; 32];
+/// The R5-003 store's provider freshness window (the testkit timeline:
+/// links observed at NOW-8 valid 600 s; streams activated NOW-10 and
+/// assured NOW-5 → every candidate is fresh around NOW, and the
+/// eligible decision's `valid_until` is the link bound NOW+592).
+pub const STORE_WINDOW_SECS: u64 = 600;
+
+/// A node's derived id bytes.
+pub fn node_id(identity: &Identity) -> [u8; 32] {
+    *identity.node_id().as_bytes()
+}
+
+/// The testkit admission policy: a 600 s evidence-freshness window, a
+/// 50_000 ppm loss floor and a 200 ms latency bound — generous enough for
+/// the good-quality links, tight enough for the lying ones to fail.
+pub fn admission_policy() -> GatewayAdmissionPolicy {
+    GatewayAdmissionPolicy::new(
+        AdmissionParams::new(600, 50_000, 200).expect("valid admission params"),
+    )
+}
+
+/// A link quality snapshot (p50 always half of p95 — the protocol's
+/// `p95 >= p50` invariant).
+pub fn link_quality(delivered: u64, lost: u64, stated_ppm: u64, p95_micros: u64) -> LinkQualitySnapshot {
+    LinkQualitySnapshot {
+        delivered,
+        lost,
+        ewma_rtt_micros: p95_micros / 2 + 1_000,
+        p50_rtt_micros: p95_micros / 2,
+        p95_rtt_micros: p95_micros,
+        jitter_mad_micros: 500,
+        loss_ratio_ppm: stated_ppm,
+    }
+}
+
+/// Build + sign real R3-003 link evidence: `observer` attests a link to
+/// `subject_node_id` (established 100 s before the observation).
+pub fn link_evidence(
+    observer: &Identity,
+    subject_node_id: [u8; 32],
+    observed_at: u64,
+    quality: LinkQualitySnapshot,
+) -> SignedTopologyEvidence {
+    TopologyEvidence::new(
+        observer,
+        subject_node_id,
+        Observation::Link {
+            link_id: LINK_ID,
+            established_at_unix: observed_at.saturating_sub(100),
+            quality,
+        },
+        observed_at,
+        600,
+    )
+    .expect("evidence")
+    .sign(observer)
+    .expect("signed by the observer")
+}
+
+/// Build + sign a real R5-004 provider observation.
+pub fn signed_observation(
+    provider: &Identity,
+    contract: &ConnectivityContractRef,
+    kind: EvidenceKind,
+    observed_at: u64,
+    sequence: u64,
+    execution: Option<BTreeMap<String, i64>>,
+) -> SignedConnectivityObservation {
+    ConnectivityObservationStatement::new(
+        provider,
+        *contract.id(),
+        kind,
+        observed_at,
+        sequence,
+        execution,
+    )
+    .expect("statement")
+    .sign(provider)
+    .expect("signed by the provider")
+}
+
+/// The canonical two-observation ADCOS stream for a contract
+/// (`contract_activated` then `assurance_available` with counters) — the
+/// same stream shape the admission crate's own tests use.
+pub fn canonical_stream(
+    provider: &Identity,
+    contract: &ConnectivityContractRef,
+    now: u64,
+) -> Vec<SignedConnectivityObservation> {
+    vec![
+        signed_observation(provider, contract, EvidenceKind::ContractActivated, now - 10, 1, None),
+        signed_observation(
+            provider,
+            contract,
+            EvidenceKind::AssuranceAvailable,
+            now - 5,
+            2,
+            Some(BTreeMap::from([
+                ("throughput_bps".to_string(), 10_000_000),
+                ("latency_ms".to_string(), 40),
+            ])),
+        ),
+    ]
+}
+
+/// Feed a REAL R5-003 durable store through the verified path (the
+/// protocol core's `ObservationAdmission` first, then the domain
+/// mapping, then `accept` + `flush`) and return the contract's health
+/// view — the exact evidence object a daemon's selection caller holds.
+pub fn verified_health(
+    signed: &[SignedConnectivityObservation],
+    contract: &ConnectivityContractRef,
+    now: u64,
+    path: &Path,
+) -> sharenet_connectivity::ContractHealth {
+    let mut admission = ObservationAdmission::new(STORE_WINDOW_SECS);
+    admission.register_contract(*contract.id());
+    let mut store = DurableProjectionStore::create(path, STORE_WINDOW_SECS).expect("store");
+    for observation in signed {
+        admission.receive(observation, now).expect("registry admission");
+        let statement = observation.observation().expect("statement");
+        let kind =
+            ObservationKind::from_name(statement.kind().as_str()).expect("the frozen six");
+        let domain = ConnectivityObservation::new(
+            kind,
+            statement.observed_at_unix(),
+            ConnectivityContractRef::from_parts(RefKind::Contract, *statement.contract_ref())
+                .expect("kind-validated seam"),
+            statement.sequence(),
+        );
+        assert_eq!(store.accept(&domain), AcceptOutcome::Accepted);
+    }
+    store.flush().expect("flush");
+    store.health(contract).expect("the contract is tracked")
+}
+
+/// The deterministic R7-003 world: a recovering node, a witness (a path
+/// member that is not a gateway), four candidate gateways, two observers
+/// and two backhaul providers — with every candidate's evidence built
+/// through the REAL production paths (R3-003 signing, R5-004 registry
+/// admission, R5-003 durable projection).
+///
+/// The timeline (relative to `now`): links observed at `now-8` (valid
+/// 600 s → `now+592`), streams activated `now-10` / assured `now-5`
+/// (window 600 s → `now+595`) — so an eligible decision at `now+3`
+/// carries `valid_until_unix = now+592` (the earlier bound).
+pub struct GatewayWorld {
+    /// The node performing the recovery (proposes the fresh route).
+    pub recovering: Identity,
+    /// A non-gateway path member (for routes that must NOT carry the
+    /// selected gateway — the path-membership refusal leg).
+    pub witness: Identity,
+    /// The observer attesting the G1/G2 links (factor 1).
+    pub observer: Identity,
+    /// G1: the fully eligible gateway.
+    pub g1: Identity,
+    /// G1's backhaul provider (factor 2).
+    pub provider1: Identity,
+    /// G2: a gateway with no ADCOS backhaul evidence.
+    pub g2: Identity,
+    /// G3: a gateway presenting link evidence about a DIFFERENT node.
+    pub g3: Identity,
+    /// The observer attesting the G3/G4 links.
+    pub observer2: Identity,
+    /// G4: a second fully eligible gateway (the tie-break tests).
+    pub g4: Identity,
+    /// G4's backhaul provider.
+    pub provider2: Identity,
+    // -- owned evidence (the candidate builders borrow it) -----------------
+    link_g1: SignedTopologyEvidence,
+    link_g1_tampered: SignedTopologyEvidence,
+    link_g2: SignedTopologyEvidence,
+    link_g3_wrong_subject: SignedTopologyEvidence,
+    link_g4: SignedTopologyEvidence,
+    link_g4_lying: SignedTopologyEvidence,
+    signed_g1: Vec<SignedConnectivityObservation>,
+    signed_g3: Vec<SignedConnectivityObservation>,
+    signed_g4: Vec<SignedConnectivityObservation>,
+    health_g1: sharenet_connectivity::ContractHealth,
+    health_g3: sharenet_connectivity::ContractHealth,
+    health_g4: sharenet_connectivity::ContractHealth,
+}
+
+/// G1's backhaul contract (opaque provider-assigned id).
+pub fn contract_g1() -> ConnectivityContractRef {
+    ConnectivityContractRef::from_id([0xD1; 32])
+}
+/// G3's backhaul contract.
+pub fn contract_g3() -> ConnectivityContractRef {
+    ConnectivityContractRef::from_id([0xD3; 32])
+}
+/// G4's backhaul contract.
+pub fn contract_g4() -> ConnectivityContractRef {
+    ConnectivityContractRef::from_id([0xD4; 32])
+}
+
+pub fn gateway_world(now: u64) -> GatewayWorld {
+    let dir = TempDir::new("gateway-world");
+    let recovering = ident(0xA1, now);
+    let witness = ident(0xA2, now);
+    let observer = ident(0xC0, now);
+    let g1 = ident(0xC1, now);
+    let provider1 = ident(0xC2, now);
+    let g2 = ident(0xC3, now);
+    let g3 = ident(0xC4, now);
+    let observer2 = ident(0xC5, now);
+    let g4 = ident(0xC6, now);
+    let provider2 = ident(0xC7, now);
+
+    // The good quality: 5,000 ppm effective loss (counters agree with
+    // the stated ratio), 45 ms p95 — inside the testkit policy's floor.
+    let good = link_quality(995_000, 5_000, 5_000, 45_000);
+    // The lying quality: the STATED ratio is 1 ppm, the signed counters
+    // say 200,000 ppm — the policy evaluates on the counters (R5-005).
+    let lying = link_quality(800_000, 200_000, 1, 45_000);
+
+    let link_g1 = link_evidence(&observer, node_id(&g1), now - 8, good.clone());
+    // G1's evidence with one flipped SIGNATURE byte — the Ed25519
+    // verification must fail (a candidate presenting forged evidence).
+    let mut tampered_sig = *link_g1.signature();
+    tampered_sig[0] ^= 0x01;
+    let link_g1_tampered =
+        SignedTopologyEvidence::from_parts(link_g1.evidence_bytes().to_vec(), tampered_sig);
+    let link_g2 = link_evidence(&observer, node_id(&g2), now - 8, good.clone());
+    // G3 presents evidence ABOUT G2's node (wrong subject — evidence
+    // never transfers between gateways).
+    let link_g3_wrong_subject = link_evidence(&observer2, node_id(&g2), now - 8, good.clone());
+    let link_g4 = link_evidence(&observer2, node_id(&g4), now - 8, good.clone());
+    let link_g4_lying = link_evidence(&observer2, node_id(&g4), now - 8, lying);
+
+    let signed_g1 = canonical_stream(&provider1, &contract_g1(), now);
+    let signed_g3 = canonical_stream(&provider1, &contract_g3(), now);
+    let signed_g4 = canonical_stream(&provider2, &contract_g4(), now);
+    let health_g1 = verified_health(&signed_g1, &contract_g1(), now, &dir.path.join("g1.store"));
+    let health_g3 = verified_health(&signed_g3, &contract_g3(), now, &dir.path.join("g3.store"));
+    let health_g4 = verified_health(&signed_g4, &contract_g4(), now, &dir.path.join("g4.store"));
+
+    GatewayWorld {
+        recovering,
+        witness,
+        observer,
+        g1,
+        provider1,
+        g2,
+        g3,
+        observer2,
+        g4,
+        provider2,
+        link_g1,
+        link_g1_tampered,
+        link_g2,
+        link_g3_wrong_subject,
+        link_g4,
+        link_g4_lying,
+        signed_g1,
+        signed_g3,
+        signed_g4,
+        health_g1,
+        health_g3,
+        health_g4,
+    }
+}
+
+impl GatewayWorld {
+    /// The gateway identity for a selected node id (the testkit's own
+    /// gateways; panics on anything else — a test bug, not a case).
+    pub fn gateway_identity(&self, gateway_node_id: &[u8; 32]) -> &Identity {
+        [&self.g1, &self.g2, &self.g3, &self.g4]
+            .into_iter()
+            .find(|g| g.node_id().as_bytes() == gateway_node_id)
+            .expect("a testkit gateway")
+    }
+
+    /// G1's candidate: the fully eligible gateway (both factors verified,
+    /// in floor).
+    pub fn candidate_eligible(&self) -> GatewayCandidate<'_> {
+        GatewayCandidate {
+            gateway_node_id: node_id(&self.g1),
+            sharenet_link: Some(&self.link_g1),
+            adcos_backhaul: Some(AdcosBackhaulEvidence {
+                health: Some(&self.health_g1),
+                signed_observations: &self.signed_g1,
+            }),
+        }
+    }
+
+    /// G1's candidate presenting FORGED link evidence (one signature byte
+    /// flipped): never selectable.
+    pub fn candidate_tampered_signature(&self) -> GatewayCandidate<'_> {
+        GatewayCandidate {
+            gateway_node_id: node_id(&self.g1),
+            sharenet_link: Some(&self.link_g1_tampered),
+            adcos_backhaul: Some(AdcosBackhaulEvidence {
+                health: Some(&self.health_g1),
+                signed_observations: &self.signed_g1,
+            }),
+        }
+    }
+
+    /// G2's candidate: a good link but NO ADCOS backhaul evidence —
+    /// ineligible (`adcos_evidence_missing`).
+    pub fn candidate_no_backhaul(&self) -> GatewayCandidate<'_> {
+        GatewayCandidate {
+            gateway_node_id: node_id(&self.g2),
+            sharenet_link: Some(&self.link_g2),
+            adcos_backhaul: None,
+        }
+    }
+
+    /// G3's candidate: link evidence about a DIFFERENT node (G2's) plus a
+    /// healthy backhaul — ineligible (`sharenet_evidence_wrong_subject`).
+    pub fn candidate_wrong_subject(&self) -> GatewayCandidate<'_> {
+        GatewayCandidate {
+            gateway_node_id: node_id(&self.g3),
+            sharenet_link: Some(&self.link_g3_wrong_subject),
+            adcos_backhaul: Some(AdcosBackhaulEvidence {
+                health: Some(&self.health_g3),
+                signed_observations: &self.signed_g3,
+            }),
+        }
+    }
+
+    /// G4's candidate: a second fully eligible gateway (independent
+    /// observer, provider and contract — for the tie-break tests).
+    pub fn candidate_eligible_alt(&self) -> GatewayCandidate<'_> {
+        GatewayCandidate {
+            gateway_node_id: node_id(&self.g4),
+            sharenet_link: Some(&self.link_g4),
+            adcos_backhaul: Some(AdcosBackhaulEvidence {
+                health: Some(&self.health_g4),
+                signed_observations: &self.signed_g4,
+            }),
+        }
+    }
+
+    /// G4's candidate presenting COUNTER-DISAGREEING quality evidence
+    /// (the stated ratio lies low; the signed counters say 20% loss) —
+    /// ineligible (`quality_below_floor`), the R5-005 law.
+    pub fn candidate_lying_counters(&self) -> GatewayCandidate<'_> {
+        GatewayCandidate {
+            gateway_node_id: node_id(&self.g4),
+            sharenet_link: Some(&self.link_g4_lying),
+            adcos_backhaul: Some(AdcosBackhaulEvidence {
+                health: Some(&self.health_g4),
+                signed_observations: &self.signed_g4,
+            }),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The R7-003 fresh-route material (the R3-004 seams: proposal →
+// acceptances → commitment; every signature real)
+// ---------------------------------------------------------------------------
+
+/// The signed R3-004 material for a fresh route: the recovering node's
+/// signed proposal, every path member's signed acceptance, and the
+/// commitment-derived route id an INDEPENDENT build yields (the tests'
+/// expected value).
+pub struct FreshRouteMaterial {
+    pub proposal_env: SignedEnvelope,
+    pub acceptance_envs: Vec<SignedEnvelope>,
+    pub route_id: [u8; 32],
+}
+
+fn build_route_material(
+    proposer: &Identity,
+    members: &[&Identity],
+    at: u64,
+    nonce: [u8; 32],
+) -> FreshRouteMaterial {
+    let mut path: Vec<[u8; 32]> = members.iter().map(|m| node_id(m)).collect();
+    path.sort();
+    path.dedup();
+    let proposal =
+        RouteProposal::new(proposer, path, "live", at, 3600, nonce).expect("proposal");
+    let proposal_env = proposal.sign(proposer).expect("sign");
+    let proposal_id = derive_proposal_id(proposal_env.bytes());
+    let mut sorted: Vec<&Identity> = members.to_vec();
+    sorted.sort_by_key(|m| node_id(m));
+    let acceptance_envs: Vec<_> = sorted
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let acceptance =
+                RouteAcceptance::new(m, proposal_id, i as u64, at, 3600).expect("acceptance");
+            acceptance.sign(m).expect("sign")
+        })
+        .collect();
+    let commitment =
+        RouteCommitment::build(at, proposal_env.clone(), acceptance_envs.clone()).expect("com");
+    FreshRouteMaterial { proposal_env, acceptance_envs, route_id: *commitment.route_id() }
+}
+
+/// The fresh-route material through the selected gateway: the recovering
+/// node proposes a two-member route (itself + the gateway), both members
+/// sign acceptances. `at` is the proposal time — the §11 freshness
+/// (`proposed_at` vs. the revocation anchor) is exactly what varies with
+/// it.
+pub fn fresh_route_material(
+    w: &GatewayWorld,
+    selected: &SelectedGateway,
+    at: u64,
+) -> FreshRouteMaterial {
+    let gateway = w.gateway_identity(&selected.gateway_node_id);
+    build_route_material(&w.recovering, &[&w.recovering, gateway], at, [0x43; 32])
+}
+
+/// Fresh-route material for a route that does NOT carry the selected
+/// gateway (the recovering node + the witness): a well-formed, fully
+/// signed commitment the path-membership cross-check must refuse.
+pub fn fresh_route_material_skipping_gateway(
+    w: &GatewayWorld,
+    at: u64,
+) -> FreshRouteMaterial {
+    build_route_material(&w.recovering, &[&w.recovering, &w.witness], at, [0x44; 32])
 }

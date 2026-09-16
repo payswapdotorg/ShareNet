@@ -419,6 +419,39 @@ impl TunnelClient {
         addr: SocketAddr,
         expected_server_node_id: [u8; 32],
     ) -> Result<TunnelStream, TunnelError> {
+        self.connect_inner(addr, expected_server_node_id, None)
+    }
+
+    /// Connect with a bounded QUIC idle timeout (milliseconds).
+    ///
+    /// The default `connect` keeps quinn's transport defaults; this
+    /// additive knob exists for the R10 verification legs (and any
+    /// production caller that wants fast failure detection): when the
+    /// server dies silently — SIGKILL leaves no RST in UDP — the
+    /// blocked stream reads error after `idle_timeout_ms` of no
+    /// activity instead of the default idle window. Fail-closed: the
+    /// value must be at least 100 ms (a shorter timeout would flap on
+    /// slow links).
+    pub fn connect_with_idle_timeout(
+        &self,
+        addr: SocketAddr,
+        expected_server_node_id: [u8; 32],
+        idle_timeout_ms: u64,
+    ) -> Result<TunnelStream, TunnelError> {
+        if idle_timeout_ms < 100 {
+            return Err(TunnelError::Connect(format!(
+                "idle timeout must be >= 100 ms, got {idle_timeout_ms}"
+            )));
+        }
+        self.connect_inner(addr, expected_server_node_id, Some(idle_timeout_ms))
+    }
+
+    fn connect_inner(
+        &self,
+        addr: SocketAddr,
+        expected_server_node_id: [u8; 32],
+        idle_timeout_ms: Option<u64>,
+    ) -> Result<TunnelStream, TunnelError> {
         // The client presents its OWN node identity certificate (server
         // pinning is against this derived node id).
         let (cert, key) = identity_certificate(&self.identity_seed, "sharenet-tunnel-client")?;
@@ -431,9 +464,16 @@ impl TunnelClient {
             .with_client_auth_cert(vec![cert], key)
             .map_err(|e| TunnelError::Connect(format!("client TLS: {e}")))?;
         crypto.alpn_protocols = vec![b"sharenet-tunnel-v1".to_vec()];
-        let quic_config = quinn::ClientConfig::new(Arc::new(
+        let mut quic_config = quinn::ClientConfig::new(Arc::new(
             QuicClientConfig::try_from(crypto).map_err(|e| TunnelError::Connect(e.to_string()))?,
         ));
+        if let Some(ms) = idle_timeout_ms {
+            let mut transport = quinn::TransportConfig::default();
+            let idle = quinn::IdleTimeout::try_from(std::time::Duration::from_millis(ms))
+                .map_err(|e| TunnelError::Connect(format!("idle timeout: {e}")))?;
+            transport.max_idle_timeout(Some(idle));
+            quic_config.transport_config(Arc::new(transport));
+        }
         let conn = self.runtime.block_on(async {
             self.endpoint
                 .connect_with(quic_config, addr, "sharenet-tunnel-server")

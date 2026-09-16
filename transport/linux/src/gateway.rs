@@ -468,11 +468,35 @@ impl GatewayClient {
     /// Connect and run the full establishment handshake. Returns the
     /// established session.
     pub fn connect(&self) -> Result<ParticipantSession, GatewayError> {
+        self.connect_inner(None)
+    }
+
+    /// Connect with a bounded QUIC idle timeout (milliseconds) — the
+    /// R10 failure-detection knob (see
+    /// [`TunnelClient::connect_with_idle_timeout`]): a gateway that
+    /// dies silently (SIGKILL, no UDP RST) errors the blocked reads
+    /// after `idle_timeout_ms` instead of the default idle window.
+    pub fn connect_with_idle_timeout(
+        &self,
+        idle_timeout_ms: u64,
+    ) -> Result<ParticipantSession, GatewayError> {
+        self.connect_inner(Some(idle_timeout_ms))
+    }
+
+    fn connect_inner(
+        &self,
+        idle_timeout_ms: Option<u64>,
+    ) -> Result<ParticipantSession, GatewayError> {
         let client = TunnelClient::new(self.seed)
             .map_err(|e| GatewayError::Setup(e.to_string()))?;
-        let mut stream = client
-            .connect(self.gateway_addr, self.gateway_node_id)
-            .map_err(|e| GatewayError::Setup(e.to_string()))?;
+        let mut stream = match idle_timeout_ms {
+            Some(ms) => client
+                .connect_with_idle_timeout(self.gateway_addr, self.gateway_node_id, ms)
+                .map_err(|e| GatewayError::Setup(e.to_string()))?,
+            None => client
+                .connect(self.gateway_addr, self.gateway_node_id)
+                .map_err(|e| GatewayError::Setup(e.to_string()))?,
+        };
         let participant = Identity::from_seed(self.seed, 0, None)
             .map_err(|e| GatewayError::Setup(e.to_string()))?;
         let now = now_unix();
@@ -575,8 +599,46 @@ impl GatewayClient {
             stream,
             registry,
             circuit_id,
+            evidence: WireEvidence {
+                proposal_env: proposal_env.clone(),
+                participant_acceptance_env: participant_acceptance_env.clone(),
+                gateway_acceptance_env: gateway_acceptance_env.clone(),
+                setup_env: setup_env.clone(),
+                own_ack_env: own_ack_env.clone(),
+                gateway_ack_env: gateway_ack_env.clone(),
+                circuit_id,
+                route_id: *commitment.route_id(),
+            },
         })
     }
+}
+
+/// The REAL wire evidence of one established session — the exact
+/// signed envelopes exchanged on the tunnel's control stream (the
+/// R3-004 proposal/acceptances, the R4-002 setup/acks) plus the
+/// derived ids. R10's integration legs feed THESE — not re-derived
+/// stand-ins — into the recovery driver, so the durable recovery
+/// record describes the circuit that actually carries the bytes.
+#[derive(Debug, Clone)]
+pub struct WireEvidence {
+    /// The participant's signed route proposal (the canonical sorted
+    /// [participant, gateway] path).
+    pub proposal_env: SignedEnvelope,
+    /// The participant's own signed acceptance.
+    pub participant_acceptance_env: SignedEnvelope,
+    /// The gateway's signed acceptance.
+    pub gateway_acceptance_env: SignedEnvelope,
+    /// The participant's signed circuit setup (fresh nonce → fresh
+    /// circuit id, L014).
+    pub setup_env: SignedEnvelope,
+    /// The participant's signed circuit ack.
+    pub own_ack_env: SignedEnvelope,
+    /// The gateway's signed circuit ack.
+    pub gateway_ack_env: SignedEnvelope,
+    /// The derived circuit id (commitment route + setup nonce).
+    pub circuit_id: [u8; 32],
+    /// The commitment-derived route id (L013).
+    pub route_id: [u8; 32],
 }
 
 /// An established participant session: send packets (direction 1),
@@ -585,9 +647,22 @@ pub struct ParticipantSession {
     stream: TunnelStream,
     registry: CircuitRegistry,
     circuit_id: [u8; 32],
+    evidence: WireEvidence,
 }
 
 impl ParticipantSession {
+    /// The REAL wire evidence of this session's establishment (the
+    /// signed envelopes for the recovery driver's durable record).
+    pub fn wire_evidence(&self) -> &WireEvidence {
+        &self.evidence
+    }
+
+    /// The session's circuit registry (the R4-002 admission state —
+    /// revocation admission verifies path membership against it).
+    pub fn registry(&self) -> &CircuitRegistry {
+        &self.registry
+    }
+
     /// Forward one packet to the gateway (and through it, the uplink).
     pub fn send_packet(&mut self, packet: &[u8]) -> Result<(), GatewayError> {
         if packet.is_empty() {

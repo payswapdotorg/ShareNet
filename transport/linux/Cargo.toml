@@ -15,11 +15,23 @@ path = "src/lib.rs"
 name = "sharenet_transport_linux"
 path = "src/bin/sharenet_transport_linux.rs"
 
+# R10-001: the two-process Linux loopback bridge — the participant role
+# composes the LIVE gateway session (R4-003 data plane) with the
+# durable recovery pipeline (R7-003 selection + R7-004 replacement
+# circuit) over the REAL wire evidence, so the recovery record
+# describes the circuit that actually carries the bytes.
+[[bin]]
+name = "sharenet_loopback"
+path = "src/bin/sharenet_loopback.rs"
+
 [dependencies]
 libc = "0.2"
 sharenet-protocol = { path = "../../reference/crates/sharenet-protocol" }
 sharenet-transport-quic = { path = "../quic" }
 sharenet-transport-telemetry = { path = "../telemetry" }
+sharenet-recovery = { path = "../../recovery" }
+sharenet-admission = { path = "../../admission" }
+sharenet-connectivity = { path = "../../connectivity" }
 
 [dev-dependencies]
 # None needed: adversarial and multiprocess tests use std only.

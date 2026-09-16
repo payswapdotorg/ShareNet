@@ -1082,6 +1082,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharenet-admission"
+version = "0.1.0"
+dependencies = [
+ "sharenet-connectivity",
+ "sharenet-protocol",
+]
+
+[[package]]
+name = "sharenet-connectivity"
+version = "0.1.0"
+
+[[package]]
 name = "sharenet-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1094,11 +1106,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharenet-recovery"
+version = "0.1.0"
+dependencies = [
+ "sharenet-admission",
+ "sharenet-connectivity",
+ "sharenet-protocol",
+]
+
+[[package]]
 name = "sharenet-transport-linux"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "sharenet-admission",
+ "sharenet-connectivity",
  "sharenet-protocol",
+ "sharenet-recovery",
  "sharenet-transport-quic",
  "sharenet-transport-telemetry",
 ]

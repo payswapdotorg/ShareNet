@@ -97,6 +97,7 @@ use sharenet_protocol::route::{RouteCommitment, SignedEnvelope};
 use crate::attempt::{
     AttemptFailure, AttemptState, FreshRouteEvidence, RecoveryAttemptLog, ZeroizationRecord,
 };
+use crate::backoff::{BackoffPolicy, RetryDecision, TerminalReason};
 use crate::error::RecoveryError;
 use crate::gateway::{select_eligible_gateway, GatewayCandidate, GatewaySelection};
 use crate::ledger::{DurableRevocationLedger, LedgerLoadReport};
@@ -577,6 +578,130 @@ impl RecoveryDriver {
             fresh_route_id: recorded_route,
             attempt_seq,
         })
+    }
+
+    /// The R7-005 gate: may the next recovery attempt for this circuit
+    /// open NOW, under `policy` and the caller's clock?
+    ///
+    /// A PURE query — it reads the durable §11 state (the ledger + the
+    /// attempt log) and decides:
+    ///
+    /// - not durably revoked (unknown included) → `Terminal { NotRevoked }`
+    ///   (the §11 ordering — recovery follows durable invalidation);
+    /// - an attempt is pending → `Terminal { AttemptPending }` (single
+    ///   flight: finish or fail it first);
+    /// - the latest attempt succeeded → `Terminal { AlreadySucceeded }`
+    ///   (success is terminal);
+    /// - the circuit's abandoned history reached `policy`'s attempt
+    ///   budget → `Terminal { Exhausted }`;
+    /// - the last abandoned attempt's backoff window has elapsed at
+    ///   `now` (inclusive bound) → `RetryNow`;
+    /// - otherwise → `NotYet { retry_at_unix }` (the earliest permitted
+    ///   time — the daemon's timer input).
+    ///
+    /// The same (durable state, policy, now) always yields the same
+    /// verdict — the daemon composes this gate with `attempt_next`
+    /// (or [`Self::attempt_next_when_permitted`]) and its own timers;
+    /// this crate never sleeps.
+    pub fn when_may_retry(
+        &self,
+        revoked_circuit_id: &[u8; 32],
+        now_unix: u64,
+        policy: &BackoffPolicy,
+    ) -> RetryDecision {
+        if !self.ledger.is_revoked(revoked_circuit_id) {
+            return RetryDecision::Terminal {
+                reason: TerminalReason::NotRevoked,
+            };
+        }
+        if self.attempts.pending_attempt(revoked_circuit_id).is_some() {
+            return RetryDecision::Terminal {
+                reason: TerminalReason::AttemptPending,
+            };
+        }
+        let history = self.attempts.attempts_for(revoked_circuit_id);
+        if let Some(latest) = history.last() {
+            if latest.state() == crate::attempt::AttemptState::Succeeded {
+                return RetryDecision::Terminal {
+                    reason: TerminalReason::AlreadySucceeded,
+                };
+            }
+        }
+        let abandoned_count = history
+            .iter()
+            .filter(|r| r.state() == crate::attempt::AttemptState::Abandoned)
+            .count() as u64;
+        if let Some(max) = policy.max_attempts() {
+            if abandoned_count >= max {
+                return RetryDecision::Terminal {
+                    reason: TerminalReason::Exhausted,
+                };
+            }
+        }
+        match policy.next_retry_at(&history) {
+            Some(retry_at) if now_unix >= retry_at => RetryDecision::RetryNow,
+            Some(retry_at) => RetryDecision::NotYet { retry_at_unix: retry_at },
+            // No abandoned tail: a revoked circuit with no attempt yet
+            // (or a fully-compacted one) may open one immediately.
+            None => RetryDecision::RetryNow,
+        }
+    }
+
+    /// The R7-005 composition: the gate + `attempt_next` in one call —
+    /// the next attempt opens ONLY when the policy permits it NOW.
+    ///
+    /// Typed refusals (all the existing `attempt_next` ones, plus the
+    /// gate's): `retry_not_yet` carries the earliest permitted time (the
+    /// daemon's timer input) and `retry_exhausted` the budget's verdict.
+    pub fn attempt_next_when_permitted(
+        &self,
+        revoked_circuit_id: &[u8; 32],
+        now_unix: u64,
+        policy: &BackoffPolicy,
+    ) -> Result<RecoveryStep, RecoveryError> {
+        match self.when_may_retry(revoked_circuit_id, now_unix, policy) {
+            RetryDecision::RetryNow => self.attempt_next(revoked_circuit_id, now_unix),
+            RetryDecision::NotYet { retry_at_unix } => Err(RecoveryError::RetryNotPermitted {
+                retry_at_unix,
+                now_unix,
+            }),
+            RetryDecision::Terminal { reason } => Err(match reason {
+                TerminalReason::NotRevoked => RecoveryError::CircuitNotRevoked {
+                    circuit_id: *revoked_circuit_id,
+                },
+                TerminalReason::AttemptPending => {
+                    let attempt_seq = self
+                        .attempts
+                        .pending_attempt(revoked_circuit_id)
+                        .map(|p| p.attempt_seq())
+                        .unwrap_or(0);
+                    RecoveryError::AttemptAlreadyPending {
+                        circuit_id: *revoked_circuit_id,
+                        attempt_seq,
+                    }
+                }
+                TerminalReason::AlreadySucceeded => {
+                    let succeeded = self
+                        .attempts
+                        .latest_attempt(revoked_circuit_id)
+                        .expect("terminal AlreadySucceeded implies a latest record");
+                    RecoveryError::RecoveryAlreadyComplete {
+                        circuit_id: *revoked_circuit_id,
+                        attempt_seq: succeeded.attempt_seq(),
+                        fresh_route_id: succeeded
+                            .fresh_route_id()
+                            .copied()
+                            .unwrap_or([0u8; 32]),
+                    }
+                }
+                TerminalReason::Exhausted => RecoveryError::RetryExhausted {
+                    circuit_id: *revoked_circuit_id,
+                    abandoned: policy
+                        .max_attempts()
+                        .expect("exhausted implies a budget"),
+                },
+            }),
+        }
     }
 
     /// The durable revocation ledger (the R7-002 durable layer).

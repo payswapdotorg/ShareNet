@@ -1,4 +1,4 @@
-# sharenet-recovery — R7-002 (durable recovery attempts) + R7-003 (alternate route/gateway recovery) + R7-004 (replacement circuit)
+# sharenet-recovery — R7-002 (durable recovery attempts) + R7-003 (alternate route/gateway recovery) + R7-004 (replacement circuit) + R7-005 (retry/backoff)
 
 The durable-file layer of ShareNet's failure handling
 (`spec/architecture.md` §11), completing what R7-001's snapshot seam
@@ -47,6 +47,7 @@ Native by design (durable files); there is no wasm story to claim here
 | `RecoveryDriver` | `src/driver.rs` | The composition: owns both stores, exposes the §11 lifecycle — `attempt_next → SelectFreshGateway` → `select_gateway` (R7-003: the R5-005 policy composed in, deterministic tie-break) → `establish_fresh_route` (R7-003: R3-004 proposal → acceptance → commitment, admission-freshness-checked at construction time) → `attempt_succeeded` / `attempt_failed`; hands the R7-001 ledger view out for the `CircuitRegistry` L015 gate. |
 | `GatewayCandidate` / `GatewaySelection` / `select_eligible_gateway` | `src/gateway.rs` | **R7-003's selection stage.** A candidate is exactly the R5-005 evidence shape (borrowed, the admission crate's own types — the stages cannot drift); the REAL policy runs per candidate (every signature verified at selection time — no caller-supplied "eligible" booleans, ever); only `Eligible` selects; ties break deterministically by ascending gateway node-id bytes (input order never matters); ambiguous sets (duplicate ids) and no-eligible-candidate sets (empty included) are typed refusals (`duplicate_gateway_candidate`, `no_eligible_gateway` — the machine name R7-005's retry policy will consume). Pure: the same `(policy, candidates, now)` always yields the same selection. |
 | `RecoveryDriver` (R7-004 stage) | `src/driver.rs` | `record_zeroization` (the §11 step between durable invalidation and the new session — a typed, durable, single-shot FACT; in-process key destruction belongs to the runtime layers, this records and orders the fact) and `establish_replacement_circuit`: the signed R4-002 material (setup envelope + per-position acks) over the recorded fresh route, admitted through a registry gated by the driver's own L015 ledger view — zeroization-gated, record-bound (`replacement_route_mismatch`), L014-fresh (`replacement_circuit_id_not_fresh`), single-flight (`replacement_already_established`). |
+| `BackoffPolicy` / `BackoffSchedule` / `RetryDecision` | `src/backoff.rs` + `src/driver.rs` | **R7-005's retry/backoff policy.** Pure, validated-at-construction schedules (fixed / linear / exponential-capped; saturating math, exact bounds pinned by test) + an optional attempt budget; the gate `when_may_retry(circuit, now, policy)` reads the durable §11 state and returns the typed verdict (`RetryNow` / `NotYet { retry_at_unix }` — the daemon's timer input / `Terminal { NotRevoked | AttemptPending | AlreadySucceeded | Exhausted }`); `attempt_next_when_permitted` composes the gate with `attempt_next` (typed `retry_not_yet` / `retry_exhausted`). No wall clock, no timers, no jitter (a daemon wanting jitter adds it outside the frozen, reproducible decision). |
 | `recovery_probe` | `src/bin/recovery_probe.rs` | TEST SCAFFOLDING for the multiprocess verify level: a real separate process driving setup → zeroize → attempt → select → establish → establish-replacement → state across process boundaries, with machine-parsable output lines and typed exit codes. |
 | `RecoveryError` | `src/error.rs` | Typed errors with stable machine names (`circuit_not_revoked`, `recovery_already_complete`, `attempt_already_pending`, `no_pending_attempt`, `route_not_fresh`, corruption families…). |
 
@@ -125,6 +126,14 @@ Native by design (durable files); there is no wasm story to claim here
   single flight (registry-level idempotence AND the durable
   `replacement_already_established` through a fresh registry), and the
   zeroization + replacement facts surviving a full crash → reload.
+- **restart + concurrency, R7-005** — the backoff decision is a pure
+  function of the durable history: the same (state, policy, clock)
+  decides the same across a full teardown; a circuit whose window
+  elapsed while the node was OFFLINE is immediately retryable on
+  reload (offline time counts — no catch-up sleeps); under concurrency
+  the gate is consistent across racing threads and the composed open
+  is single-flight (exactly one racer opens; the rest typed
+  `attempt_already_pending`; one pending record on disk).
 - **multiprocess (`tests/multiprocess.rs`, 3)** — through the REAL
   `recovery_probe` binary: a gateway recovery flowing across three
   process roles (revocation+attempt → selection+establishment →
@@ -135,14 +144,15 @@ Native by design (durable files); there is no wasm story to claim here
   single-flight refusal).
 
 ```sh
-cargo test          # 44 unit + 5 concurrency + 4 restart + 13 adversarial + 3 multiprocess — all green
+cargo test          # 56 unit + 6 concurrency + 5 restart + 13 adversarial + 3 multiprocess — all green
 ```
 
 ## Deliberately NOT done here (honest scope)
 
-Retry/backoff policy is R7-005 (it consumes `no_eligible_gateway` and
-the typed failure reasons); concurrent-recovery COORDINATION across
-processes is R7-006 (in-process single flight is enforced here). The
+Concurrent-recovery COORDINATION across processes is R7-006
+(in-process single flight is enforced here; the R7-005 gate itself is a
+pure query — the daemon's timers and wakeups are its own wiring, and
+the policy never sleeps). The
 zeroization FACT is durable and ordered; destroying live session key
 material in the runtime layers (tunnels, session state) is not this
 crate's to claim — the record is the §11 ordering evidence, honestly

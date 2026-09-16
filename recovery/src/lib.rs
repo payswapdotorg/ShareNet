@@ -116,6 +116,7 @@
 //!   replacement circuit fact.
 
 pub mod attempt;
+pub mod backoff;
 pub mod driver;
 pub mod error;
 pub mod gateway;
@@ -131,6 +132,9 @@ pub use attempt::{
     AttemptFailure, AttemptState, FreshRouteEvidence, RecoveryAttempt, RecoveryAttemptLog,
     ZeroizationRecord, ATTEMPT_FORMAT_VERSION, ATTEMPT_MAGIC, MAX_ATTEMPT_LOG_FILE_BYTES,
     MAX_ATTEMPT_RECORDS_PER_CIRCUIT,
+};
+pub use backoff::{
+    BackoffError, BackoffPolicy, BackoffSchedule, RetryDecision, TerminalReason,
 };
 pub use driver::{
     FreshRoute, RecoveryDriver, RecoveryStep, ReplacementCircuit, SelectedGateway,

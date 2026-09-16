@@ -386,3 +386,70 @@ fn shared_driver_interleaved_lifecycles() {
         );
     }
 }
+
+/// R7-005 under concurrency: the gate is a pure query (racing threads
+/// see a consistent verdict) and the composed open is single-flight
+/// safe — exactly one racing `attempt_next_when_permitted` opens the
+/// attempt; every other racer gets the typed `attempt_already_pending`
+/// (never a second record, never a torn gate).
+#[test]
+fn backoff_gate_is_pure_and_composed_open_is_single_flight() {
+    use sharenet_recovery::{BackoffPolicy, BackoffSchedule, RetryDecision};
+
+    let dir = TempDir::new("conc-backoff");
+    let (w, registry, revoked) = established(NOW, [0x77; 32]);
+    let (driver, _) = RecoveryDriver::open(&dir.path).expect("open");
+    driver
+        .admit_revocation_envelope(
+            NOW,
+            &link_failure_revocation(&w, revoked, NOW).to_envelope_bytes(),
+            &registry,
+        )
+        .expect("admit");
+    driver.attempt_next(&revoked, NOW + 1).expect("attempt");
+    driver
+        .attempt_failed(&revoked, AttemptFailure::NoGatewayAvailable, NOW + 2)
+        .expect("abandon");
+    // The window: fixed 30s delay → retry at NOW+32.
+    let policy = BackoffPolicy::new(BackoffSchedule::Fixed { delay_s: 30 }, None).expect("policy");
+
+    // Racers INSIDE the window: every one sees the same pure verdict.
+    let driver = &driver;
+    let verdicts = scope(|s| {
+        let handles: Vec<_> = (0..8)
+            .map(|_| s.spawn(move || driver.when_may_retry(&revoked, NOW + 10, &policy)))
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("thread")).collect::<Vec<_>>()
+    });
+    for verdict in &verdicts {
+        assert_eq!(*verdict, RetryDecision::NotYet { retry_at_unix: NOW + 32 });
+    }
+
+    // Racers AT the open moment: exactly one opens; the rest are the
+    // typed single-flight refusal.
+    let results = scope(|s| {
+        let handles: Vec<_> = (0..8)
+            .map(|i| s.spawn(move || driver.attempt_next_when_permitted(&revoked, NOW + 32 + i, &policy)))
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("thread")).collect::<Vec<_>>()
+    });
+    let opened = results.iter().filter(|r| r.is_ok()).count();
+    assert_eq!(opened, 1, "exactly one racer may open: {results:?}");
+    for result in &results {
+        match result {
+            Ok(step) => assert_eq!(
+                *step,
+                sharenet_recovery::RecoveryStep::SelectFreshGateway {
+                    revoked_circuit_id: revoked,
+                    attempt_seq: 2,
+                }
+            ),
+            Err(err) => assert_eq!(err.name(), "attempt_already_pending", "{err}"),
+        }
+    }
+    // The durable log holds exactly one pending record for seq 2.
+    let attempts = driver.attempt_log().attempts_for(&revoked);
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[1].attempt_seq(), 2);
+    assert_eq!(attempts[1].state(), sharenet_recovery::AttemptState::Pending);
+}

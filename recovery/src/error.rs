@@ -213,6 +213,21 @@ pub enum RecoveryError {
     /// R7-004: the circuit's recovery already has its replacement circuit
     /// — single replacement per succeeded attempt (a further failure of
     /// the replacement is a NEW revocation + NEW recovery, L014).
+    /// The R7-005 gate refused: the backoff window has not elapsed
+    /// (the earliest permitted time is the daemon's timer input).
+    RetryNotPermitted {
+        /// The earliest permitted next-attempt time (inclusive bound).
+        retry_at_unix: u64,
+        /// The caller's clock at the refused query.
+        now_unix: u64,
+    },
+    /// The R7-005 policy's attempt budget is exhausted (terminal).
+    RetryExhausted {
+        /// The circuit whose recovery budget is spent.
+        circuit_id: [u8; 32],
+        /// The budget that was reached.
+        abandoned: u64,
+    },
     ReplacementAlreadyEstablished {
         circuit_id: [u8; 32],
         attempt_seq: u64,
@@ -296,6 +311,8 @@ impl RecoveryError {
                 "replacement_circuit_not_established"
             }
             RecoveryError::ReplacementAlreadyEstablished { .. } => "replacement_already_established",
+            RecoveryError::RetryNotPermitted { .. } => "retry_not_yet",
+            RecoveryError::RetryExhausted { .. } => "retry_exhausted",
         }
     }
 
@@ -474,6 +491,15 @@ impl fmt::Display for RecoveryError {
                 "replacement circuit {} was not established (unacked positions: {:?})",
                 hex(circuit_id),
                 unacked_positions
+            ),
+            RecoveryError::RetryNotPermitted { retry_at_unix, now_unix } => write!(
+                f,
+                "the backoff window has not elapsed (retry at >= {retry_at_unix}, now {now_unix})"
+            ),
+            RecoveryError::RetryExhausted { circuit_id, abandoned } => write!(
+                f,
+                "circuit {} exhausted its {abandoned}-attempt recovery budget",
+                hex(circuit_id)
             ),
             RecoveryError::ReplacementAlreadyEstablished { circuit_id, attempt_seq, replacement_circuit_id } => write!(
                 f,

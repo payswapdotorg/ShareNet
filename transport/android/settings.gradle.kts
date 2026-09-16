@@ -25,3 +25,4 @@ rootProject.name = "sharenet-transport-android"
 include(":contract")
 include(":nearby")
 include(":vpn")
+include(":aware")

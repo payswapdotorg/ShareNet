@@ -68,8 +68,14 @@
 //!    nowhere (bounds are validated so products cannot overflow),
 //!    identical inputs → identical verdicts.
 
-#![forbid(unsafe_code)]
+// `deny` (not `forbid`): the file-backed ledger contains exactly ONE
+// unsafe block — an audited libc::fsync(2) on our own descriptor (the
+// appliance-journal durability discipline), locally allowed with its
+// SAFETY note. The valuation engine, the pure ledger and the simulation
+// remain unsafe-free and wasm32-clean.
+#![deny(unsafe_code)]
 
+pub mod ledger;
 pub mod sim;
 
 use std::collections::HashMap;
@@ -463,6 +469,39 @@ impl ValuationEngine {
     /// The total points awarded across all windows.
     pub fn total_points(&self) -> u64 {
         self.total_points
+    }
+
+    /// Reconstruct the engine's durable-relevant state from a log
+    /// replay (R8-003's restart law: a restart must NOT reset the
+    /// window caps or the receipt idempotency). `valued` are the
+    /// receipt_ids already valued (the award log's ids); the window
+    /// maps are the per-pair / per-contributor awarded totals per
+    /// window. Zero-award receipts are absent from award logs by
+    /// design — they only exist when caps were exhausted, so their
+    /// absence cannot change the reconstructed totals (a re-valuation
+    /// after reload awards 0 again).
+    pub fn restore(
+        policy: ValuationPolicy,
+        valued: std::collections::HashSet<[u8; 32]>,
+        pair_windows: HashMap<([u8; 32], [u8; 32], u64), u64>,
+        contributor_windows: HashMap<([u8; 32], u64), u64>,
+    ) -> Self {
+        let receipts_valued = valued.len() as u64;
+        let total_points: u64 = contributor_windows.values().sum();
+        Self {
+            policy,
+            valued,
+            pair_windows,
+            contributor_windows,
+            receipts_valued,
+            receipts_capped: 0,
+            total_points,
+        }
+    }
+
+    /// The valued receipt_ids (a read view for durable-layer restores).
+    pub fn valued_ids(&self) -> std::collections::HashSet<[u8; 32]> {
+        self.valued.clone()
     }
 }
 

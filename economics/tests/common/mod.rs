@@ -29,3 +29,9 @@ pub fn receipt(
     ContributionReceipt::new(issuer, *contributor, [0x5C; 32], kind, bytes, seq, issued_at)
         .expect("receipt builds")
 }
+
+/// The shared issuer-seed identity constructor (for threads that must
+/// build their OWN handle).
+pub fn issuer_seed() -> Identity {
+    Identity::from_seed([0x11; 32], NOW, None).expect("identity")
+}

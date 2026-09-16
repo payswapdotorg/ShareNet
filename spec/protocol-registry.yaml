@@ -116,12 +116,15 @@ objects:
     signature_rule: detached Ed25519 signature by the sender's key over the canonical destroy bytes; carrying envelope {1: destroy (bstr), 2: signature (64-byte bstr)}
     terminality_rule: a destroyed circuit is terminal forever (§11: a failed circuit is never resurrected) — frames and acks on it are rejected, the (route_id, setup_nonce) stays consumed, and a replacement circuit MUST carry a fresh nonce producing a fresh circuit_id and fresh replay namespaces (L014); duplicate destroys of the same circuit are idempotent
     status_note: implemented in Wave 7 (R4-002); the four circuit wire objects verified unit + adversarial (12 tests) + conformance (circuit_vectors.json: 3 full flows incl. fresh-nonce replacement distinctness + 7 typed rejects — all three language legs byte-identical, harness now 177 lines); the runtime CircuitRegistry is the admission pipeline (fail-closed, no caller-controlled trust booleans); durable circuit state and the live data plane (R4-003 Linux forwarding, R4-004 Android VpnService) consume these objects next
-  - name: ContributionReceipt
-    class: wire
-    maturity: planned
   - name: CivicPointLedgerEntry
     class: durable-state
-    maturity: planned
+    maturity: implemented
+    implementation: economics (ledger.rs; R8-003 — the Civic Point ledger over the R8-002 valuation engine)
+    wire_schema: canonical CBOR map {1: scheme_version (=1, uint), 2: entry_kind (uint; frozen v1 set: 1 = award), 3: contributor_node_id (32-byte bstr — the node the points accrued to), 4: awarded_points (uint, >= 1 — the post-cap award; zero-point capped receipts record nothing), 5: intrinsic_points (uint — the pre-cap formula value, the honest record of what the formula priced before the §14 caps bound it), 6: formula_version (uint — the VALUATION_FORMULA_VERSION that priced this entry; a version bump is a new pricing law and old entries never re-price), 7: receipt_id (32-byte bstr — the R8-001 commitment-derived id of the verified receipt this award priced; the evidence link), 8: window (uint — the valuation window the award landed in), 9: recorded_at_unix (uint — the ledger's append clock), 10: issuer_node_id (32-byte bstr — the pair's other half; the durable reload reconstructs the per-(issuer, contributor) window cap state from this — a restart must NOT reset the caps, the farming-by-restart vector is closed by construction)}
+    admission_rule: one entry per receipt_id, exactly-once (the ledger re-derives the pricing through the R8-002 engine — never takes caller-supplied points; duplicates are idempotent no-ops, refusals record nothing); balances only ever increase in v1 (spending/perk consumption is R8-004's and is deliberately absent); the entries are APPEND-ONLY and the replay of the log derives the same balances deterministically
+    trust_boundary_note: the ledger prices VERIFIED receipts (R8-001 ledger-admitted) — the entry is this node's own durable accounting, not a cross-node claim (no signature: it is durable-state, not a wire object; a Civic Point balance is node-local until a future cross-node form exists, if ever — architecture §13 keeps monetary settlement a separate program entirely)
+    conformance_vectors: economics (the crate's own snapshot round-trip + fail-closed reload tests; no cross-language vectors — durable-state, not wire)
+    status_note: registered ahead of implementation per the registry-before-implementation rule (Wave 19, R8-003); deps R8-002 (the valuation engine the ledger composes — the ledger is the durable form, the engine the pricing law); snapshot = canonical CBOR {1: version, 2: policy, 3: [entries]} with fail-closed reload; the file-backed form appends length-prefixed canonical records with fsync (the appliance-journal convention)
   - name: SignedConnectivityObservation
     class: wire
     maturity: implemented

@@ -30,3 +30,9 @@ path = "src/bin/economics_sim.rs"
 # wasm32-unknown-unknown).
 [dependencies]
 sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }
+
+# libc: fsync(2) for the file-backed ledger's durable appends (the
+# appliance-journal discipline — unix-only, cfg-gated; the pure ledger
+# and the valuation engine have no unsafe and compile for wasm32).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

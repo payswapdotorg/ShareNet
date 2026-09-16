@@ -57,12 +57,37 @@ window(receipt)    = receipt.issued_at_unix / window_secs
   caller's clock refuses typed (the ledger already refuses those at
   admit time).
 
+## The Civic Point ledger (R8-003)
+
+`src/ledger.rs` is the DURABLE form: `CivicPointLedger` composes the
+engine — `award(receipt, now)` prices through the SAME law and appends a
+`LedgerEntry` (the registered CivicPointLedgerEntry durable-state
+record: contributor + issuer, awarded + intrinsic points, the formula
+version, the receipt_id evidence link, the window, the append clock)
+when the award is non-zero. Exactly-once per receipt_id; duplicates and
+refusals record nothing; zero-point capped receipts record nothing
+(they remain valid evidence, un-priced again). Balances only ever
+increase in v1 — spending/perk consumption is R8-004's and no code path
+here decrements.
+
+Durability: the snapshot round-trips
+(`{1: version, 2: policy, 3: [entries]}`, fail-closed reload) AND the
+`FileCivicPointLedger` appends length-prefixed canonical records with
+flush + fsync per entry (the appliance-journal convention). The RESTART
+LAW: the reload restores the ENGINE state too (valued ids, per-pair and
+per-contributor window totals) — a restart must NOT reset the window
+caps (the farming-by-restart vector is closed by construction; found by
+the restart suite, fixed by design).
+
 ## Layout
 
 ```
 economics/
   src/lib.rs        the formula, the policy (validated bounds), the
                     engine (window/pair/contributor accounting) + unit tests
+  src/ledger.rs    the Civic Point ledger (R8-003): entries, the pure
+                    ledger, the file-backed durable form, the engine
+                    restore (the restart law)
   src/sim.rs        the simulation verify level: seeded deterministic
                     adversarial simulation (honest baseline, an 8-issuer
                     sybil ring, a circular pair, a window straddler)
@@ -71,6 +96,10 @@ economics/
                     byte-identical run to run, exits 1 on any cap violation
   tests/adversarial.rs      cap evasion, window games, byte inflation,
                             replay revaluation, clock games, exact bounds
+  tests/ledger_restart.rs    snapshot + file-backed reload exactness,
+                            fail-closed tamper, caps-survive-restart
+  tests/ledger_concurrency.rs racing threads: exactly-once per receipt,
+                            exact totals, durable file racing
 ```
 
 ## Verification

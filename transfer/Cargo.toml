@@ -1,0 +1,23 @@
+[package]
+name = "sharenet-transfer"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet resumable content transfer (R6-002): the receiver-driven chunk-transfer session protocol riding INSIDE any established byte-stream/tunnel (transport-agnostic via the TransferStream trait), on top of the R6-001 ContentManifest chunk discipline. Documented runtime control protocol (gateway.rs class) - no registry wire objects of its own."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_transfer"
+path = "src/lib.rs"
+
+# Exactly one dependency, deliberate, ShareNet:
+# - sharenet-protocol (the reference core): the R6-001 ContentManifest is
+#   the ONLY trust authority of this protocol (manifest-only trust: every
+#   arriving chunk is verified with chunk_hash()/expected_chunk_len()
+#   against its manifest slot; the manifest itself is the registered,
+#   content_id-committed wire object). Nothing else: no async runtime, no
+#   serde, no wall clock. I/O is std-only and the file-backed receiver
+#   store is cfg'd out on wasm (same host seam as connectivity's store).
+[dependencies]
+sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }

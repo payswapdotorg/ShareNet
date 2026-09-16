@@ -336,6 +336,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharenet-admission"
+version = "0.1.0"
+dependencies = [
+ "sharenet-connectivity",
+ "sharenet-protocol",
+]
+
+[[package]]
+name = "sharenet-connectivity"
+version = "0.1.0"
+
+[[package]]
 name = "sharenet-dtn"
 version = "0.1.0"
 dependencies = [
@@ -346,6 +358,8 @@ dependencies = [
 name = "sharenet-propagation"
 version = "0.1.0"
 dependencies = [
+ "sharenet-admission",
+ "sharenet-connectivity",
  "sharenet-dtn",
  "sharenet-protocol",
 ]

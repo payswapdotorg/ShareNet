@@ -3,7 +3,7 @@ name = "sharenet-propagation"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
-description = "ShareNet receiving-side cross-node propagation rules (R6-004): the pure decision engine over the node's own durable DTN store state that decides what THIS node accepts when another node propagates content to it - dedup (content already held / already complete, slot-level against the store's present set), integrity (the R6-001 length-before-hash law through the store's own verification path, ids re-derived never claimed), TTL (acceptance vs remaining life at the caller's clock - no wall clock in this crate), priority (the frozen service classes, TTL gates before priority so no inversion is possible) and replication policy (target >= 1, local counts only, at-target held bundles still complete). Policy layer - two dependencies, no wire objects, no I/O, no clock."
+description = "ShareNet propagation rules (R6-004 + R6-005): the receiving-side cross-node rules (dedup/integrity/TTL/priority/replication over the DTN store, pure decisions) PLUS the opportunistic forwarder - the sending-edge policy that decides, at a contact opportunity with an R5-005-admitted gateway (typed encounter window, caller-clocked bounds, bounded byte/count budget), which held bundles move: the store's own carry order composed under the budget, TTL gates at the window close, one handover per (bundle, gateway), apply = read_chunk/manifest bytes + note_forwarded custody records through the dtn store's APIs. Includes the seeded deterministic discrete-event contact-graph simulation (the simulation verify level) and two probe binaries (simulation driver + multiprocess contact/forward across real process boundaries). Policy layer - no wire objects, no I/O in the lib proper, no clock."
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -11,26 +11,59 @@ publish = false
 name = "sharenet_propagation"
 path = "src/lib.rs"
 
-# Two dependencies, both deliberate, both ShareNet (the task contract: the
-# R6-001/R6-002/R6-003 dependency edges, as code only where a TYPE is needed):
-# - sharenet-protocol (R6-001): the manifest IS the named object - the strict
-#   parse + commitment-derived content_id (L013) + the typed parse failures
-#   the receiving edge re-derives everything through.
-# - sharenet-dtn (R6-003): the node's own durable custody store this policy
-#   is a pure function of - DtnStoreImage (state + verify_chunk/admit_manifest/
-#   record_evidence APIs), ServicePriority (the frozen class set), the
-#   BundleSummary/BundleStatus read views, the custody evidence seam and the
-#   store's own caps (MAX_BUNDLES, MAX_REGISTRY_BYTES, REPLICATION_TARGET_MIN).
+# TEST SCAFFOLDING binaries:
+# - propagation_sim: the R6-005 "simulation" verify level's driver
+#   (one named scenario + seed -> the deterministic trace on stdout,
+#   byte-identical run to run).
+# - propagation_probe: the R6-005 "multiprocess" verify level (the
+#   dtn_probe pattern): real processes that seed a store, plan a
+#   contact, apply a handover (re-verified reads + one custody
+#   record + flush), carry the material across the process boundary
+#   as machine-parsable bytes, and take custody at the receiving
+#   edge through the R6-004 rules into a different node's store.
+[[bin]]
+name = "propagation_sim"
+path = "src/bin/propagation_sim.rs"
+
+[[bin]]
+name = "propagation_probe"
+path = "src/bin/propagation_probe.rs"
+
+# Four dependencies, all ShareNet, all deliberate:
+# - sharenet-protocol (R6-001): the manifest IS the named object - the
+#   strict parse + commitment-derived content_id (L013) + the typed parse
+#   failures the receiving edge re-derives everything through.
+# - sharenet-dtn (R6-003): the node's own durable custody store both
+#   policy edges are a pure function of - DtnStoreImage (state +
+#   verify_chunk/admit_manifest/record_evidence APIs + forward_candidates'
+#   carry order), ServicePriority (the frozen class set), the
+#   BundleSummary/BundleStatus read views, the custody evidence seam
+#   (evidence_for drives the one-handover-per-gateway law), and the
+#   file-backed DtnStore the apply path composes (read_chunk/manifest
+#   bytes/note_forwarded; native-only, cfg-gated exactly like dtn).
+# - sharenet-admission (R5-005): the GatewayAdmission verdict IS the
+#   contact model's typed evidence snapshot - only an Eligible verdict
+#   bound to the contact's gateway, fresh for the whole window, can
+#   construct a ContactOpportunity (R6-005 composes the verdict as
+#   input, the same position R7-003's selection stage holds).
+# - sharenet-connectivity: required ONLY because the admission evidence
+#   anchors name its types (ConnectivityContractRef, ContractState in
+#   the AdcosEvidenceAnchor the contact checks and the sim/probe
+#   synthesize) - never used for its stores or I/O here.
 #
 # R6-002 (sharenet-transfer) is a SEMANTIC dependency, not a code one: the
-# offer evidence here mirrors exactly what an R6-002 session delivers on the
-# wire (OFFER manifest bytes + CHUNK slot/bytes + the carrying frame's carry
-# metadata), but the rules are carriage-NEUTRAL - the same decision applies
-# whether the offer arrives over an R6-002 session, a future BPv7 adapter or
-# node-local IPC (see README.md, "Deliberately NOT done here").
+# offer evidence and the handover material mirror exactly what an
+# R6-002 session delivers on the wire (OFFER manifest bytes + CHUNK
+# slot/bytes + the carrying frame's carry metadata), but the rules are
+# carriage-NEUTRAL - the same decisions apply whether the material
+# moves over an R6-002 session, a future BPv7 adapter or node-local
+# IPC (see README.md, "Deliberately NOT done here").
 #
-# Nothing else: no async runtime, no serde, no wall clock, no I/O anywhere in
-# the lib (the pure engine compiles for wasm32-unknown-unknown).
+# Nothing else: no async runtime, no serde, no wall clock, no I/O in
+# the lib proper (the pure engine compiles for wasm32-unknown-unknown;
+# the apply path over the file-backed store is cfg-gated like dtn's).
 [dependencies]
 sharenet-protocol = { path = "../reference/crates/sharenet-protocol" }
 sharenet-dtn = { path = "../dtn" }
+sharenet-admission = { path = "../admission" }
+sharenet-connectivity = { path = "../connectivity" }

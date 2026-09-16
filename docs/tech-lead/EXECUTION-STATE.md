@@ -1366,6 +1366,71 @@ Architect decision — see Open Architect Decisions).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 
+## Wave 22 integration record (2026-09-16)
+
+- Two-way wave, direct Tech Lead work:
+  * R10-001 (two-process Linux loopback): NEW binary
+    `sharenet_loopback` (transport/linux) — the participant role that
+    composes the LIVE gateway session with the durable recovery
+    pipeline over the REAL wire evidence. Additive seams:
+    `ParticipantSession::wire_evidence()` (the exact signed
+    route/circuit envelopes exchanged on the tunnel's control
+    stream), `ParticipantSession::registry()`,
+    `GatewayClient::connect_with_idle_timeout` +
+    `TunnelClient::connect_with_idle_timeout` (>= 100 ms, fail-closed
+    — the silent-death failure-detection idiom; defaults unchanged).
+    The multiprocess test: gateway A + gateway B + participant, real
+    processes, loopback UDP "Internet"; the test SIGKILLs gateway A
+    after observing the working exchange; the participant detects
+    (typed), revokes (R7-001), attempts + selects (R7-003, from
+    verified candidate evidence), establishes the live replacement on
+    B, records the fresh route + zeroization + replacement circuit
+    (R7-004) FROM THE REAL WIRE ENVELOPES — the durable replacement
+    circuit id IS the live session's circuit id (asserted in the
+    binary and again in the test). Plus the real-Internet variant
+    (the R4-007 honest-skip discipline): a REAL DNS response from a
+    public resolver rides the REPLACEMENT session — gateway A died
+    between the two queries; the second answer crossed the real
+    Internet through the replacement circuit. transport/linux 73
+    green (41 lib + 32 integration), quic 9 green, zero warnings.
+  * R10-002 (Android real-device bridge): NEW crate
+    transport/android-bridge (rlib + cdylib) — the TunnelBackhaul
+    seam's production implementation: a GatewayClient participant
+    session behind the frozen BridgeNative JNI surface (v1). Host
+    tests drive the REAL stack (in-process GatewayServer + loopback
+    uplink echo: forward, wrong-pin fail-closed,
+    destroy-then-forward fail-closed, export surface); the cdylib
+    builds with all four symbols (nm-verified). Kotlin side:
+    BridgeNative.kt (external funs + the injectable
+    BridgeNativeLibrary seam) + JniTunnelBackhaul.kt (the production
+    backhaul: strict laws, ABI check, typed BackhaulFailure on every
+    failure path, exactly-once close); JVM tests incl. the FULL
+    PacketLoop over the bridge seam and the dead-bridge fail-closed
+    path. Android: 92 tests green, AARs assemble. HONEST GAP: no NDK
+    or physical device in this sandbox — the on-device leg
+    (cargo-ndk build, install, ACTION_START + consent, real radio
+    traffic) is the operator runbook in vpn/README.md §The JNI
+    bridge. The real-network leg the work item asks for is carried
+    by R10-001's real-Internet test (the same GatewayClient session
+    over a real resolver) and the R4-007/R9-003 real-network
+    records; the device-specific radio/TUN behavior is the only
+    unexercised remainder.
+- Fresh audit: android-bridge 5/5 host, transport/linux 73, quic 9,
+  vpn 92 (contract+vpn+nearby, real SDK build), governance PASS.
+  44 of 48 work items complete (open: R9-001 ios level, R9-002
+  platform level, R10-003, R10-004, R10-005 — see the honest-gap
+  records).
+
+## Ready set (recomputed after Wave 22)
+
+- Wave 23 (two-way): R10-003 (24h endurance/restart — deps R10-001 ✓
+  + R10-002 ✓ + R7-006 ✓; verify: endurance, restart) + R10-004
+  (failure injection/recovery validation — deps R10-001 ✓ + R10-002 ✓
+  + R7-006 ✓; verify: adversarial, multiprocess, real-device). Wave
+  24: R10-005 (deps R8-005 ✓, R10-004).
+- R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
+  (Tech Lead decision; not on the frozen wave path).
+
 ## Open Architect Decisions
 
 1. `spec/architect/current-state.yaml` still declares

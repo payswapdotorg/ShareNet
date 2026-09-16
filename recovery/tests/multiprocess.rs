@@ -175,3 +175,105 @@ fn no_eligible_gateway_across_processes() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The R7-004 replacement-circuit flow across REAL process boundaries:
+/// the durable revocation + §11 zeroization + attempt in process roles
+/// 1-2 (as in the gateway test), then the replacement established by a
+/// LATER process, its facts surviving into a final reload — and the
+/// cross-boundary single-flight refusal.
+#[test]
+fn replacement_circuit_across_process_boundaries() {
+    let dir = temp_dir("replacement");
+    let d = dir.to_str().unwrap().to_string();
+
+    // -- Process role 1: revocation + the §11 zeroization fact ----------
+    let (code, out) = probe(&["setup", &d, &(BASE + 10).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+    let circuit = out
+        .iter()
+        .find_map(|l| l.strip_prefix("CIRCUIT "))
+        .expect("CIRCUIT line")
+        .split(' ')
+        .next()
+        .expect("circuit hex")
+        .to_string();
+
+    let (code, out) = probe(&["zeroize", &d, &(BASE + 11).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+    assert_eq!(out[0], format!("ZEROIZED {circuit} {}", BASE + 11), "{out:?}");
+
+    // The attempt opens only AFTER the durable invalidation (§11 order).
+    let (code, out) = probe(&["open-attempt", &d, &(BASE + 12).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+    assert_eq!(out[0], format!("STEP select_fresh_gateway {circuit} 1"), "{out:?}");
+
+    // -- Process role 2: selection + the fresh route (as in the gateway
+    // test — the establish subcommand re-derives everything
+    // deterministically). ------------------------------------------------
+    let (code, out) = probe(&["select", &d, &(BASE + 13).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+    let selected = out
+        .iter()
+        .find_map(|l| l.strip_prefix("SELECTED "))
+        .expect("SELECTED line")
+        .split(' ')
+        .next()
+        .expect("gateway hex")
+        .to_string();
+
+    let (code, out) = probe(&["establish", &d, &(BASE + 14).to_string(), &selected]);
+    assert_eq!(code, 0, "{out:?}");
+    let route = out
+        .iter()
+        .find_map(|l| l.strip_prefix("ROUTE "))
+        .expect("ROUTE line")
+        .to_string();
+    assert!(out.iter().any(|l| l == "ATTEMPT succeeded 1"), "{out:?}");
+
+    // -- Process role 3: the replacement circuit over the recorded fresh
+    // route (rebuilt deterministically from the durable record; a wrong
+    // route_at is the probe's own typed failure). --------------------------
+    let (code, out) =
+        probe(&["establish-replacement", &d, &(BASE + 15).to_string(), &(BASE + 14).to_string()]);
+    assert_eq!(code, 0, "{out:?}");
+    let replacement = out
+        .iter()
+        .find_map(|l| l.strip_prefix("REPLACEMENT "))
+        .expect("REPLACEMENT line")
+        .to_string();
+    assert_ne!(replacement, circuit, "L014: a fresh circuit id, never the revoked one");
+    assert_eq!(out.iter().find_map(|l| l.strip_prefix("ROUTE ")), Some(route.as_str()), "{out:?}");
+    assert!(out.iter().any(|l| l == "REPLACEMENT-ATTEMPT 1"), "{out:?}");
+    assert!(out.iter().any(|l| l == "ESTABLISHED yes"), "{out:?}");
+
+    // -- Process role 4: the reload sees every durable fact ----------------
+    let (code, out) = probe(&["state", &d]);
+    assert_eq!(code, 0, "{out:?}");
+    assert_eq!(out[0], format!("LATEST succeeded 1 {route}"), "{out:?}");
+    assert!(out.iter().any(|l| l == "REVOKED yes"), "L015 across every boundary: {out:?}");
+    assert!(
+        out.iter().any(|l| l.as_str() == format!("ZEROIZED {}", BASE + 11)),
+        "the §11 zeroization fact survived: {out:?}"
+    );
+    assert!(
+        out.iter().any(|l| l.as_str() == format!("REPLACEMENT {replacement}")),
+        "the replacement fact survived: {out:?}"
+    );
+    assert!(out.iter().any(|l| l == "ATTEMPTS 1"), "{out:?}");
+
+    // The cross-boundary single flight: a LATER process cannot replace
+    // again (typed, exit 3) — the durable record keeps the first.
+    let (code, out) = probe(&[
+        "establish-replacement",
+        &d,
+        &(BASE + 20).to_string(),
+        &(BASE + 14).to_string(),
+    ]);
+    assert_eq!(code, 3, "{out:?}");
+    assert!(
+        out.iter().any(|l| l == "ERROR replacement_already_established"),
+        "{out:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

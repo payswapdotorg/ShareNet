@@ -526,11 +526,14 @@ impl GatewayWorld {
 // ---------------------------------------------------------------------------
 
 /// The signed R3-004 material for a fresh route, plus the route id an
-/// independent build derives (the tests' expected value).
+/// independent build derives (the tests' expected value) and the clock
+/// the material was built at (rebuilding the identical commitment needs
+/// exactly it).
 pub struct FreshRouteMaterial {
     pub proposal_env: SignedEnvelope,
     pub acceptance_envs: Vec<SignedEnvelope>,
     pub route_id: [u8; 32],
+    pub at: u64,
 }
 
 fn build_route_material(
@@ -558,7 +561,7 @@ fn build_route_material(
         .collect();
     let commitment =
         RouteCommitment::build(at, proposal_env.clone(), acceptance_envs.clone()).expect("com");
-    FreshRouteMaterial { proposal_env, acceptance_envs, route_id: *commitment.route_id() }
+    FreshRouteMaterial { proposal_env, acceptance_envs, route_id: *commitment.route_id(), at }
 }
 
 /// The fresh-route material through the selected gateway (the recovering
@@ -577,4 +580,78 @@ pub fn fresh_route_material(
 /// gateway (the recovering node + the witness).
 pub fn fresh_route_material_skipping_gateway(w: &GatewayWorld, at: u64) -> FreshRouteMaterial {
     build_route_material(&w.recovering, &[&w.recovering, &w.witness], at, [0x44; 32])
+}
+
+// ---------------------------------------------------------------------------
+// The R7-004 replacement-circuit material (the R4-002 seams: a signed
+// CircuitSetup over the fresh commitment + one signed ack per path
+// position — every signature real)
+// ---------------------------------------------------------------------------
+
+/// The signed R4-002 material for a replacement circuit: the setup
+/// envelope over `commitment` (signed by its proposer), one ack envelope
+/// per path position (each member signing its own position), and the
+/// R4-002 derived circuit id an INDEPENDENT derivation yields.
+pub struct ReplacementMaterial {
+    pub setup_env: SignedEnvelope,
+    pub ack_envs: Vec<SignedEnvelope>,
+    pub circuit_id: [u8; 32],
+}
+
+/// Build the replacement-circuit material over `commitment` with
+/// `setup_nonce` at `at` (the R4-002 seams: `CircuitSetup::new` enforces
+/// the initiator-is-proposer binding, `sign` produces the envelope, and
+/// each path member signs its `CircuitSetupAck`).
+pub fn replacement_material(
+    commitment: &RouteCommitment,
+    initiator: &Identity,
+    members: &[&Identity],
+    setup_nonce: [u8; 32],
+    at: u64,
+) -> ReplacementMaterial {
+    let setup = CircuitSetup::new(commitment, initiator, setup_nonce, at, 600).expect("setup");
+    let setup_env = setup.sign(initiator).expect("sign setup");
+    let circuit_id = derive_circuit_id(commitment.route_id(), &setup_nonce);
+    let path = commitment.verify(at).expect("verify").proposal.path().to_vec();
+    assert_eq!(path.len(), members.len(), "one member per path position");
+    let mut sorted: Vec<&Identity> = members.to_vec();
+    sorted.sort_by_key(|m| node_id(m));
+    let ack_envs: Vec<SignedEnvelope> = sorted
+        .iter()
+        .enumerate()
+        .map(|(pos, member)| {
+            let ack =
+                CircuitSetupAck::new(circuit_id, &setup_env, member, pos as u64, at, 500)
+                    .expect("ack");
+            ack.sign(member).expect("sign ack")
+        })
+        .collect();
+    ReplacementMaterial { setup_env, ack_envs, circuit_id }
+}
+
+/// Rebuild the route commitment of fresh-route material (the same
+/// envelopes → the same commitment — the tests' way to hold the actual
+/// commitment a recorded route id names).
+pub fn rebuilt_commitment(material: &FreshRouteMaterial) -> RouteCommitment {
+    RouteCommitment::build(
+        material.at,
+        material.proposal_env.clone(),
+        material.acceptance_envs.clone(),
+    )
+    .expect("rebuild")
+}
+
+/// The replacement material over a FRESH route of the gateway world
+/// (the recovering node + the selected gateway as path members). `at`
+/// must be the clock the fresh route's material was built at.
+pub fn replacement_material_over(
+    material: &FreshRouteMaterial,
+    w: &GatewayWorld,
+    gateway_node_id: &[u8; 32],
+    setup_nonce: [u8; 32],
+    at: u64,
+) -> ReplacementMaterial {
+    let commitment = rebuilt_commitment(material);
+    let gateway = w.gateway_identity(gateway_node_id);
+    replacement_material(&commitment, &w.recovering, &[&w.recovering, gateway], setup_nonce, at)
 }

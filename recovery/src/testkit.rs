@@ -307,18 +307,29 @@ pub fn ledger_frame_offsets(bytes: &[u8]) -> Vec<usize> {
     out
 }
 
-/// The attempt-log layout, pinned independently of `attempt.rs`'s private
-/// constants (the crafting helpers below build every region of it).
+/// The attempt-log layout (format v2), pinned independently of
+/// `attempt.rs`'s private constants (the crafting helpers below build
+/// every region of it).
 pub const ATTEMPT_HEADER_LEN: usize = 16;
 pub const ATTEMPT_CRC_LEN: usize = 4;
-pub const ATTEMPT_SECTION_FIXED_LEN: usize = 52;
-pub const ATTEMPT_RECORD_LEN: usize = 58;
+pub const ATTEMPT_SECTION_FIXED_LEN: usize = 60;
+pub const ATTEMPT_RECORD_LEN: usize = 90;
+/// The format version the crafting helpers write (the v2 layout — the
+/// one the library itself writes and accepts).
+pub const ATTEMPT_FORMAT: u16 = 2;
 
 /// Wrap an attempt-log body into a full image (header + body + CRC-32).
 pub fn attempt_image(circuit_count: u32, body: &[u8]) -> Vec<u8> {
+    attempt_image_with_version(circuit_count, body, ATTEMPT_FORMAT)
+}
+
+/// Wrap an attempt-log body into a full image carrying an arbitrary
+/// format `version` (the v1-mixup leg: an old-layout image must be
+/// refused typed, never silently reinterpreted).
+pub fn attempt_image_with_version(circuit_count: u32, body: &[u8], version: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(ATTEMPT_HEADER_LEN + body.len() + ATTEMPT_CRC_LEN);
     out.extend_from_slice(b"SNRA");
-    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&circuit_count.to_le_bytes());
     out.extend_from_slice(&(body.len() as u32).to_le_bytes());
@@ -329,17 +340,31 @@ pub fn attempt_image(circuit_count: u32, body: &[u8]) -> Vec<u8> {
 }
 
 /// One circuit section: id(32) + next_seq(8) + revoked_at(8) +
-/// attempt_count(4) + records.
+/// zeroized_at(8) + attempt_count(4) + records (the NOT-zeroized shape
+/// — the `…_with_zeroization` builder below covers the zeroized one).
 pub fn attempt_section_bytes(
     circuit: &[u8; 32],
     next_seq: u64,
     revoked_at: u64,
     records: &[[u8; ATTEMPT_RECORD_LEN]],
 ) -> Vec<u8> {
+    attempt_section_bytes_with_zeroization(circuit, next_seq, revoked_at, 0, records)
+}
+
+/// One circuit section carrying a recorded zeroization (the §11 fact —
+/// `zeroized_at` = 0 encodes "not zeroized").
+pub fn attempt_section_bytes_with_zeroization(
+    circuit: &[u8; 32],
+    next_seq: u64,
+    revoked_at: u64,
+    zeroized_at: u64,
+    records: &[[u8; ATTEMPT_RECORD_LEN]],
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(ATTEMPT_SECTION_FIXED_LEN + records.len() * ATTEMPT_RECORD_LEN);
     out.extend_from_slice(circuit);
     out.extend_from_slice(&next_seq.to_le_bytes());
     out.extend_from_slice(&revoked_at.to_le_bytes());
+    out.extend_from_slice(&zeroized_at.to_le_bytes());
     out.extend_from_slice(&(records.len() as u32).to_le_bytes());
     for record in records {
         out.extend_from_slice(record);
@@ -348,7 +373,8 @@ pub fn attempt_section_bytes(
 }
 
 /// One attempt record: seq(8) + started(8) + finished(8) + state(1) +
-/// outcome(1) + route_id(32).
+/// outcome(1) + route_id(32) + replacement_circuit_id(32) — the
+/// no-replacement shape (`…_with_replacement` below covers the other).
 pub fn attempt_record_bytes(
     attempt_seq: u64,
     started_at: u64,
@@ -357,6 +383,28 @@ pub fn attempt_record_bytes(
     outcome_tag: u8,
     route_id: [u8; 32],
 ) -> [u8; ATTEMPT_RECORD_LEN] {
+    attempt_record_bytes_with_replacement(
+        attempt_seq,
+        started_at,
+        finished_at,
+        state_tag,
+        outcome_tag,
+        route_id,
+        [0u8; 32],
+    )
+}
+
+/// One attempt record carrying an explicit replacement circuit id (the
+/// R7-004 field — legal only on a succeeded record).
+pub fn attempt_record_bytes_with_replacement(
+    attempt_seq: u64,
+    started_at: u64,
+    finished_at: u64,
+    state_tag: u8,
+    outcome_tag: u8,
+    route_id: [u8; 32],
+    replacement_circuit_id: [u8; 32],
+) -> [u8; ATTEMPT_RECORD_LEN] {
     let mut out = [0u8; ATTEMPT_RECORD_LEN];
     out[0..8].copy_from_slice(&attempt_seq.to_le_bytes());
     out[8..16].copy_from_slice(&started_at.to_le_bytes());
@@ -364,6 +412,7 @@ pub fn attempt_record_bytes(
     out[24] = state_tag;
     out[25] = outcome_tag;
     out[26..58].copy_from_slice(&route_id);
+    out[58..90].copy_from_slice(&replacement_circuit_id);
     out
 }
 
@@ -380,6 +429,17 @@ pub fn pending_record(attempt_seq: u64, at: u64) -> [u8; ATTEMPT_RECORD_LEN] {
 /// A well-formed succeeded record (state 1, route ref).
 pub fn succeeded_record(attempt_seq: u64, at: u64, route_id: [u8; 32]) -> [u8; ATTEMPT_RECORD_LEN] {
     attempt_record_bytes(attempt_seq, at, at + 1, 1, 1, route_id)
+}
+
+/// A well-formed succeeded record carrying a replacement circuit (the
+/// R7-004 outcome).
+pub fn succeeded_record_replaced(
+    attempt_seq: u64,
+    at: u64,
+    route_id: [u8; 32],
+    replacement_circuit_id: [u8; 32],
+) -> [u8; ATTEMPT_RECORD_LEN] {
+    attempt_record_bytes_with_replacement(attempt_seq, at, at + 1, 1, 1, route_id, replacement_circuit_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -753,6 +813,9 @@ pub struct FreshRouteMaterial {
     pub proposal_env: SignedEnvelope,
     pub acceptance_envs: Vec<SignedEnvelope>,
     pub route_id: [u8; 32],
+    /// The clock the material was built at (the proposal's `proposed_at` —
+    /// rebuilding the identical commitment needs exactly it).
+    pub at: u64,
 }
 
 fn build_route_material(
@@ -781,7 +844,7 @@ fn build_route_material(
         .collect();
     let commitment =
         RouteCommitment::build(at, proposal_env.clone(), acceptance_envs.clone()).expect("com");
-    FreshRouteMaterial { proposal_env, acceptance_envs, route_id: *commitment.route_id() }
+    FreshRouteMaterial { proposal_env, acceptance_envs, route_id: *commitment.route_id(), at }
 }
 
 /// The fresh-route material through the selected gateway: the recovering
@@ -806,4 +869,87 @@ pub fn fresh_route_material_skipping_gateway(
     at: u64,
 ) -> FreshRouteMaterial {
     build_route_material(&w.recovering, &[&w.recovering, &w.witness], at, [0x44; 32])
+}
+
+// ---------------------------------------------------------------------------
+// The R7-004 replacement-circuit material (the R4-002 seams: a signed
+// CircuitSetup over the fresh commitment + one signed ack per path
+// position — every signature real)
+// ---------------------------------------------------------------------------
+
+/// The signed R4-002 material for a replacement circuit: the setup
+/// envelope over `commitment` (signed by its proposer, the recovering
+/// node), one ack envelope per path position (each member signing its
+/// own position), and the R4-002 derived circuit id an INDEPENDENT
+/// derivation yields (the tests' expected value).
+pub struct ReplacementMaterial {
+    pub setup_env: SignedEnvelope,
+    pub ack_envs: Vec<SignedEnvelope>,
+    pub circuit_id: [u8; 32],
+}
+
+/// Build the replacement-circuit material over `commitment` with
+/// `setup_nonce` at `at` (the R4-002 seams: `CircuitSetup::new` enforces
+/// the initiator-is-proposer binding, `sign` produces the envelope, and
+/// each path member signs its `CircuitSetupAck`).
+pub fn replacement_material(
+    commitment: &RouteCommitment,
+    initiator: &Identity,
+    members: &[&Identity],
+    setup_nonce: [u8; 32],
+    at: u64,
+) -> ReplacementMaterial {
+    let setup = CircuitSetup::new(commitment, initiator, setup_nonce, at, 600).expect("setup");
+    let setup_env = setup.sign(initiator).expect("sign setup");
+    let circuit_id = derive_circuit_id(commitment.route_id(), &setup_nonce);
+    let path = commitment.verify(at).expect("verify").proposal.path().to_vec();
+    assert_eq!(path.len(), members.len(), "one member per path position");
+    let mut sorted: Vec<&Identity> = members.to_vec();
+    sorted.sort_by_key(|m| node_id(m));
+    let ack_envs: Vec<SignedEnvelope> = sorted
+        .iter()
+        .enumerate()
+        .map(|(pos, member)| {
+            let ack =
+                CircuitSetupAck::new(circuit_id, &setup_env, member, pos as u64, at, 500)
+                    .expect("ack");
+            ack.sign(member).expect("sign ack")
+        })
+        .collect();
+    ReplacementMaterial { setup_env, ack_envs, circuit_id }
+}
+
+/// Rebuild the route commitment of fresh-route material (the same
+/// envelopes → the same commitment; the tests' way to hold the actual
+/// commitment a recorded route id names).
+pub fn rebuilt_commitment(material: &FreshRouteMaterial) -> RouteCommitment {
+    RouteCommitment::build(
+        material.at,
+        material.proposal_env.clone(),
+        material.acceptance_envs.clone(),
+    )
+    .expect("rebuild")
+}
+
+/// The replacement material over a FRESH route of the gateway world
+/// (the recovering node + the selected gateway as path members). `at`
+/// must be the clock the fresh route's material was built at (the
+/// commitment is rebuilt from the same envelopes — a mismatched clock
+/// derives a different route id, which the driver's binding check then
+/// refuses).
+pub fn replacement_material_over(
+    material: &FreshRouteMaterial,
+    w: &GatewayWorld,
+    gateway_node_id: &[u8; 32],
+    setup_nonce: [u8; 32],
+    at: u64,
+) -> ReplacementMaterial {
+    let commitment = RouteCommitment::build(
+        at,
+        material.proposal_env.clone(),
+        material.acceptance_envs.clone(),
+    )
+    .expect("rebuild the fresh commitment");
+    let gateway = w.gateway_identity(gateway_node_id);
+    replacement_material(&commitment, &w.recovering, &[&w.recovering, gateway], setup_nonce, at)
 }

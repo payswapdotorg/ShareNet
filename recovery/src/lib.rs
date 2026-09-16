@@ -1,19 +1,28 @@
 //! # sharenet-recovery — durable recovery attempts (R7-002) + fresh
-//! gateway/route recovery (R7-003)
+//! gateway/route recovery (R7-003) + the replacement circuit (R7-004)
 //!
 //! The recovery layer of ShareNet's failure handling (architecture §11):
-//! R7-002 built the durable-file foundation, and R7-003 fills the
-//! `SelectFreshGateway` seam R7-002 deliberately deferred — the §11
-//! pipeline this crate now carries end to end is
+//! R7-002 built the durable-file foundation, R7-003 filled the
+//! `SelectFreshGateway` seam, and R7-004 completes the pipeline's tail
+//! — the §11 stages this crate now carries end to end are
 //!
 //! ```text
+//! zeroization                       (R7-004 — the durable, typed fact
+//!                                     that the revoked circuit's key
+//!                                     material was dropped)
+//!     ↓ record_zeroization
 //! recovery attempt                   (R7-002 — durable, bounded)
 //!     ↓ attempt_next → RecoveryStep::SelectFreshGateway
 //! fresh gateway selection            (R7-003 — gateway.rs, R5-005 composed in)
 //!     ↓ select_gateway → SelectedGateway
 //! fresh route commitment             (R7-003 — establish_fresh_route, R3-004 chain)
 //!     ↓ attempt_succeeded (the §11 freshness law, durable terminal record)
-//! fresh circuit session              (R7-004 — the typed hand-off)
+//! fresh circuit session              (R7-004 — establish_replacement_circuit:
+//!                                     the R4-002 binding over the fresh
+//!                                     commitment, gated registry admission,
+//!                                     the durable replacement fact)
+//!     ↓ verification (the R4-002 admission chain is the control-plane
+//!       verification; data-plane liveness is the runtime layers')
 //! ```
 //!
 //! Three laws anchor the crate:
@@ -50,14 +59,14 @@
 //! `route_not_fresh`, enforced against the ledger-sourced anchor at
 //! `attempt_succeeded`).
 //!
-//! The [`driver::RecoveryDriver`] composes the two stores and the two
-//! R7-003 stages and exposes the §11 lifecycle:
+//! The [`driver::RecoveryDriver`] composes the two stores and the §11
+//! stages and exposes the recovery lifecycle:
 //! `attempt_next → SelectFreshGateway → select_gateway →
-//! establish_fresh_route → (R7-004)`, with `attempt_failed` recording
+//! establish_fresh_route → record_zeroization →
+//! establish_replacement_circuit`, with `attempt_failed` recording
 //! the typed reasons (including `no_gateway_available`, the consumption
-//! of the `no_eligible_gateway` refusal). Circuit setup is R7-004
-//! scope; retry/backoff policy is R7-005; concurrent-recovery
-//! coordination is R7-006.
+//! of the `no_eligible_gateway` refusal). Retry/backoff policy is
+//! R7-005; concurrent-recovery coordination is R7-006.
 //!
 //! # Dependency law (the R7-003 composition)
 //!
@@ -93,6 +102,18 @@
 //!   process 1 admits a revocation + opens an attempt, process 2
 //!   selects a gateway from candidates + succeeds the attempt, process
 //!   3 reloads and sees the terminal state.
+//! - **R7-004 (adversarial, multiprocess, restart)**: the replacement
+//!   rides ONLY the recorded fresh route (the revoked circuit's own
+//!   route, a stale route and any foreign route are refused typed); the
+//!   derived replacement id is a FRESH session identity (L014 — and a
+//!   setup deriving the revoked id itself is refused); the gated
+//!   registry refuses forged/expired setup envelopes; double
+//!   replacement is a typed single-flight refusal; the zeroization
+//!   ordering fact survives crash+reload and gates the replacement —
+//!   and the replacement is established across REAL process boundaries
+//!   through `recovery_probe` (`zeroize` + `establish-replacement`),
+//!   with the reload process seeing the terminal attempt + the
+//!   replacement circuit fact.
 
 pub mod attempt;
 pub mod driver;
@@ -108,12 +129,12 @@ mod testkit;
 
 pub use attempt::{
     AttemptFailure, AttemptState, FreshRouteEvidence, RecoveryAttempt, RecoveryAttemptLog,
-    ATTEMPT_FORMAT_VERSION, ATTEMPT_MAGIC, MAX_ATTEMPT_LOG_FILE_BYTES,
+    ZeroizationRecord, ATTEMPT_FORMAT_VERSION, ATTEMPT_MAGIC, MAX_ATTEMPT_LOG_FILE_BYTES,
     MAX_ATTEMPT_RECORDS_PER_CIRCUIT,
 };
 pub use driver::{
-    FreshRoute, RecoveryDriver, RecoveryStep, SelectedGateway, ATTEMPT_LOG_FILE_NAME,
-    LEDGER_FILE_NAME,
+    FreshRoute, RecoveryDriver, RecoveryStep, ReplacementCircuit, SelectedGateway,
+    ATTEMPT_LOG_FILE_NAME, LEDGER_FILE_NAME,
 };
 pub use error::{AttemptStateTag, RecoveryError, RecoveryIoOp};
 pub use gateway::{select_eligible_gateway, GatewayCandidate, GatewaySelection};

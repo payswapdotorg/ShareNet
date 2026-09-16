@@ -168,6 +168,56 @@ pub enum RecoveryError {
         step_attempt_seq: u64,
         open_attempt_seq: u64,
     },
+    /// R7-004: the §11 zeroization step has not been recorded for the
+    /// revoked circuit — the replacement circuit session may only
+    /// follow the durable fact that the revoked circuit's key material
+    /// was dropped.
+    ZeroizationMissing { circuit_id: [u8; 32] },
+    /// R7-004: the circuit is already zeroized — the durable fact stands
+    /// once recorded; a second record never rewrites it.
+    CircuitAlreadyZeroized { circuit_id: [u8; 32], zeroized_at_unix: u64 },
+    /// R7-004: the zeroization timestamp predates the revocation anchor —
+    /// §11 orders `zeroization` AFTER `durable circuit invalidation`.
+    ZeroizationBeforeRevocation { zeroized_at: u64, revoked_at: u64 },
+    /// R7-004: the circuit's recovery has no succeeded attempt — the
+    /// replacement circuit may only ride a durably recorded fresh route.
+    NoSucceededAttempt { circuit_id: [u8; 32] },
+    /// R7-004: the offered fresh-route hand-off, or the setup envelope's
+    /// embedded commitment, is not the circuit's durably recorded fresh
+    /// route (a stale or foreign route — the revoked circuit's own
+    /// route included).
+    ReplacementRouteMismatch {
+        circuit_id: [u8; 32],
+        expected_route_id: [u8; 32],
+        offered_route_id: [u8; 32],
+    },
+    /// R7-004 (L014): the replacement setup derives the REVOKED circuit's
+    /// own id — a replacement circuit must carry fresh session identity,
+    /// never the failed circuit's.
+    ReplacementCircuitNotFresh {
+        revoked_circuit_id: [u8; 32],
+        replacement_circuit_id: [u8; 32],
+    },
+    /// R7-004: the offered replacement setup envelope failed strict
+    /// parse or its embedded commitment failed R3-004 verification —
+    /// nothing was admitted, nothing was written.
+    ReplacementSetupInvalid { source: sharenet_protocol::circuit::CircuitError },
+    /// R7-004: the gated registry's R4-002 admission chain refused the
+    /// replacement's setup or ack envelope (forged signature, expired
+    /// setup, initiator not the proposer, nonce reuse, L015 revocation…).
+    CircuitAdmissionRefused { source: sharenet_protocol::circuit::CircuitError },
+    /// R7-004: the ack set did not establish the replacement circuit
+    /// (unacked positions remain — an incomplete session is never
+    /// recorded as the replacement).
+    ReplacementCircuitNotEstablished { circuit_id: [u8; 32], unacked_positions: Vec<u64> },
+    /// R7-004: the circuit's recovery already has its replacement circuit
+    /// — single replacement per succeeded attempt (a further failure of
+    /// the replacement is a NEW revocation + NEW recovery, L014).
+    ReplacementAlreadyEstablished {
+        circuit_id: [u8; 32],
+        attempt_seq: u64,
+        replacement_circuit_id: [u8; 32],
+    },
 }
 
 /// The persisted attempt-state tags (shared by the error surface for
@@ -234,6 +284,18 @@ impl RecoveryError {
             RecoveryError::GatewayNotOnRoute { .. } => "gateway_not_on_route",
             RecoveryError::GatewayAdmissionExpired { .. } => "gateway_admission_expired",
             RecoveryError::StaleRecoveryStep { .. } => "stale_recovery_step",
+            RecoveryError::ZeroizationMissing { .. } => "zeroization_missing",
+            RecoveryError::CircuitAlreadyZeroized { .. } => "circuit_already_zeroized",
+            RecoveryError::ZeroizationBeforeRevocation { .. } => "zeroization_before_revocation",
+            RecoveryError::NoSucceededAttempt { .. } => "no_succeeded_attempt",
+            RecoveryError::ReplacementRouteMismatch { .. } => "replacement_route_mismatch",
+            RecoveryError::ReplacementCircuitNotFresh { .. } => "replacement_circuit_id_not_fresh",
+            RecoveryError::ReplacementSetupInvalid { .. } => "replacement_setup_invalid",
+            RecoveryError::CircuitAdmissionRefused { .. } => "circuit_admission_refused",
+            RecoveryError::ReplacementCircuitNotEstablished { .. } => {
+                "replacement_circuit_not_established"
+            }
+            RecoveryError::ReplacementAlreadyEstablished { .. } => "replacement_already_established",
         }
     }
 
@@ -369,6 +431,55 @@ impl fmt::Display for RecoveryError {
                 f,
                 "stale recovery step: attempt {step_attempt_seq} for circuit {} is not the open attempt {open_attempt_seq}",
                 hex(circuit_id)
+            ),
+            RecoveryError::ZeroizationMissing { circuit_id } => write!(
+                f,
+                "circuit {} has no recorded zeroization; the replacement session may only follow the §11 zeroization step",
+                hex(circuit_id)
+            ),
+            RecoveryError::CircuitAlreadyZeroized { circuit_id, zeroized_at_unix } => write!(
+                f,
+                "circuit {} was already zeroized at {zeroized_at_unix}; the durable fact stands",
+                hex(circuit_id)
+            ),
+            RecoveryError::ZeroizationBeforeRevocation { zeroized_at, revoked_at } => write!(
+                f,
+                "zeroization at {zeroized_at} predates the revocation at {revoked_at} (§11: zeroization follows durable invalidation)"
+            ),
+            RecoveryError::NoSucceededAttempt { circuit_id } => write!(
+                f,
+                "circuit {} has no succeeded attempt; the replacement circuit rides a recorded fresh route",
+                hex(circuit_id)
+            ),
+            RecoveryError::ReplacementRouteMismatch { circuit_id, expected_route_id, offered_route_id } => write!(
+                f,
+                "the offered route {} is not the recorded fresh route {} of circuit {}",
+                hex(offered_route_id),
+                hex(expected_route_id),
+                hex(circuit_id)
+            ),
+            RecoveryError::ReplacementCircuitNotFresh { revoked_circuit_id, .. } => write!(
+                f,
+                "the replacement setup derives the revoked circuit's own id {} (L014: fresh session identity required)",
+                hex(revoked_circuit_id)
+            ),
+            RecoveryError::ReplacementSetupInvalid { source } => {
+                write!(f, "replacement setup envelope invalid: {source}")
+            }
+            RecoveryError::CircuitAdmissionRefused { source } => {
+                write!(f, "the gated registry refused the replacement's circuit admission: {source}")
+            }
+            RecoveryError::ReplacementCircuitNotEstablished { circuit_id, unacked_positions } => write!(
+                f,
+                "replacement circuit {} was not established (unacked positions: {:?})",
+                hex(circuit_id),
+                unacked_positions
+            ),
+            RecoveryError::ReplacementAlreadyEstablished { circuit_id, attempt_seq, replacement_circuit_id } => write!(
+                f,
+                "circuit {} already has its replacement circuit {} (attempt {attempt_seq})",
+                hex(circuit_id),
+                hex(replacement_circuit_id)
             ),
         }
     }

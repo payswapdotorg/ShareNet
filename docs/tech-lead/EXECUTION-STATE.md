@@ -995,11 +995,44 @@ Architect decision — see Open Architect Decisions).
   green, conformance harness PASS (283 byte-identical lines — up from
   218 at wave 10 start), governance PASS. 27 of 48 work items complete.
 
+## Wave 12 integration record (2026-09-15)
+
+- Continued from the w12-inflight handoff: all three crates existed as
+  complete-but-uncommitted WIP in three worktrees (the recurring
+  failure mode — check the worktree before re-dispatching). Tech Lead
+  completion, not re-dispatch: w12a needed compile fixes (2 errors) +
+  test-suite repair (4 test bugs: struct destructuring as tuple, tuple
+  arity, borrow overlap, wrong pinned constants) + the multiprocess
+  resume evidence test + README; w12b needed the file-backed restart
+  tests + the adversarial dominant-priority-expired TTL test + the
+  multiprocess carry suite + README; w12c's completion dispatch died at
+  the platform context deadline AFTER writing its suites — Tech Lead
+  fixed its two broken tests (a hang-by-spin converted to a bounded
+  failure; a mis-clocked §11 freshness scenario whose commitment did
+  not actually predate the revocation) + README.
+- Merges: be71ff0 (R6-002) → 4e2c2f6 (R6-003) → fb7536a (R7-002) —
+  clean; each branch adds only its own crate at the repo root. No
+  registry changes: all three layers are documented runtime-control /
+  node-local state, NOT wire objects (the same class as R4-003's
+  tunnel control protocol and R5-003's store).
+- Honest scope carried into the ready set: R6-002 defers signed
+  delivery receipts to R8-001 and windowing to R6-005; R6-003 defers
+  forwarding policy (R6-005 + R5-005 admission composition) and
+  receiving-side cross-node rules (R6-004); R7-002 defers gateway
+  selection/route construction (R7-003), replacement circuits (R7-004),
+  retry/backoff (R7-005) and cross-recovery coordination (R7-006).
+- Fresh audit on merged main: reference 218/218, admission 25/25,
+  connectivity 50/50, connectivity-client 50/50, linux 61/61, transfer
+  72/72, dtn 34/34, recovery 41/41 (551 total), wasm32 green
+  (protocol, connectivity, connectivity-client, dtn libs), conformance
+  harness PASS (283 byte-identical lines), governance PASS. 30 of 48
+  work items complete.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 12 (all three READY): R6-002 (resumable transfer — R6-001 ✓,
-  R4-001 ✓), R6-003 (DTN store-carry-forward — R6-001 ✓, R5-005 ✓),
-  R7-002 (durable recovery attempts — R7-001 ✓).
+- Wave 13 (both READY): R6-004 (dedup/integrity/TTL — R6-001 ✓,
+  R6-002 ✓, R6-003 ✓), R7-003 (alternate route/gateway recovery —
+  R7-002 ✓, R3-004 ✓, R5-005 ✓).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

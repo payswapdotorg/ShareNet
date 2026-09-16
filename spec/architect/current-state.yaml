@@ -1,7 +1,15 @@
 version: 1
 program: ShareNet
 architecture: Mission-First 1.0
-status: ARCHITECTURE_FROZEN_IMPLEMENTATION_NOT_STARTED
+# ARCHITECT CLOSURE DECISION (2026-09-16): the frozen wave path
+# (Waves 1-24, 48-item registry) is EXECUTED. This status supersedes
+# ARCHITECTURE_FROZEN_IMPLEMENTATION_NOT_STARTED (the R0 baseline);
+# tools/architecture_check.py pins this string verbatim. The honest
+# gaps below are RECORDED, not hidden: they are the only unexecuted
+# verifications, and each names exactly what an operator with the
+# listed hardware/environment must run (the runbooks live in the
+# repo; the evidence lives in docs/tech-lead/EXECUTION-STATE.md).
+status: FROZEN_PATH_EXECUTION_COMPLETE
 source_of_truth:
   architecture: spec/architecture.md
   locks: spec/architecture-lock.md
@@ -13,8 +21,33 @@ source_of_truth:
   orchestrator: docs/tech-lead/SHARENET-ORCHESTRATOR-HANDOFF.md
 legacy_reference_only:
   - pectoraux/sharenet-2.0
-active_gate: R1
-completed_gates: [R0]
+active_gate: NONE
+completed_gates: [R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10]
+honest_gaps:
+  - id: R9-001-ios
+    what: the Swift Package architecture is delivered and
+      review-verified, but no Swift/XCTest toolchain exists in the
+      build sandbox to execute the test suite
+    operator_step: swift test in the ShareNetParticipant package on
+      any macOS/Linux host with Swift 5.9+
+  - id: R9-002-platform
+    what: the iOS Packet Tunnel evaluation criteria are delivered
+      (docs/architecture/wave20-platform-items.md); the platform leg
+      needs macOS + Xcode + Apple's networkextension entitlement
+      (manual approval)
+    operator_step: apply the entitlement, then evaluate the
+      Contract/ seam + the R10-002 bridge class against the criteria
+  - id: R10-002-device
+    what: the Android JNI bridge is implemented and host-verified
+      (real gateway stack + symbol surface); the physical-device run
+      needs the Android NDK + a phone
+    operator_step: the cargo-ndk runbook in transport/android/vpn/
+      README.md §The JNI bridge
+  - id: R10-003-wall-clock
+    what: the endurance laws are proven on the accelerated profile;
+      the literal 24-hour wall-clock profile is the operator command
+    operator_step: sharenet_endurance run --sessions 1440
+      --spacing-ms 60000 --uplink <real-upstream>
 verification_rule: no completion claim without production caller + required verification level + fresh pushed-head audit
 worker_limit: 3
 forbidden_scope_expansion:

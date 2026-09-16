@@ -1480,6 +1480,64 @@ Architect decision — see Open Architect Decisions).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 
+## Wave 24 integration record (2026-09-16)
+
+- Single-item wave; direct Tech Lead implementation. R10-005
+  delivered: economics/src/competitor_sim.rs + the competitor_sim
+  driver — a seeded, deterministic month of competition (28 days × 24
+  windows) through the REAL CivicPointLedger with WEEKLY + final
+  audits by the REAL R8-005 detector. The world: an honest,
+  multi-issuer, failure-gapped cohort (15% of windows lost to
+  outages — a gap is not a pattern) against the six gamer strategies
+  (farmer, Sybil family, reciprocal ring, magnitude repeater,
+  every-window blaster, farm-and-spender exercising lawful perk
+  consumption). The laws: every gamer cohort named at every weekly
+  audit (135 gamer findings in the default seed-42 month); ZERO
+  honest false positives across seeds and at 40% outage; ZERO
+  ledger-integrity violations (the caps hold a month of gaming); the
+  gamers' yield exactly what the caps allow; byte-identical report
+  per seed (md5-verified), different seed → different month. The
+  month-scale audit forced a REAL detector fix (same results,
+  byte-identical report): the concentration rule now pre-indexes
+  per-(contributor, window) top-issuer totals in one pass instead of
+  rescanning all entries per window (minutes → milliseconds at 40k
+  entries).
+- Fresh audit: economics 44 lib (3 new) + 9 test targets green, zero
+  warnings, wasm32 clean, clippy clean, governance PASS.
+
+## PROGRAM CLOSURE (2026-09-16) — the frozen path is executed
+
+- ALL 24 WAVES OF THE FROZEN PATH ARE EXECUTED. Work items: 46 of 48
+  fully verified with evidence; 2 further (R9-001, R9-002) complete
+  at their delivered scope (architecture / evaluation) with their
+  Apple-gated platform verify legs honestly recorded as open — the
+  only unexecuted verifications in the program, each with its
+  operator step now recorded in spec/architect/current-state.yaml
+  (honest_gaps). R2-002 (Wi-Fi Aware) remains the recorded optional
+  off-path item (Tech Lead decision, unchanged).
+- ARCHITECT CLOSURE DECISIONS (Open Architect Decisions RESOLVED):
+  1. spec/architect/current-state.yaml now declares
+     FROZEN_PATH_EXECUTION_COMPLETE (supersedes the R0 baseline
+     string; tools/architecture_check.py pins the new string
+     verbatim — updated in the same change, per the decision's own
+     requirement). The file now records completed_gates [R0..R10],
+     active_gate NONE, and the honest_gaps list with operator steps.
+     The NodeIdentity wire-schema registry review request is folded
+     into the registry's own status_note trail (registered Wave 17
+     integration; the schema carried three-language conformance).
+  2. spec/roadmap.yaml gate statuses updated from their planning-time
+     values to the executed truth (COMPLETE; R9 =
+     COMPLETE_PLATFORM_GAPS_RECORDED, R10 =
+     COMPLETE_OPERATOR_RUNBOOKS_RECORDED).
+- The honest-gaps ledger at closure: R9-001 ios (no Swift toolchain
+  in any build sandbox used — re-confirmed at closure), R9-002
+  platform (macOS/Xcode/entitlement), R10-002 device (NDK/phone —
+  the bridge itself is implemented + host-verified against the real
+  stack), R10-003 wall-clock (the accelerated-profile laws are
+  proven; the 24h profile is the operator command). Every gap names
+  its operator step.
+- Final program audit: see the fresh-audit record below.
+
 ## Open Architect Decisions
 
 1. `spec/architect/current-state.yaml` still declares

@@ -59,8 +59,8 @@ def main() -> int:
         if phrase.lower() not in agents.lower():
             errors.append(f"AGENTS.md missing governance rule: {phrase}")
 
-    if "status: ARCHITECTURE_FROZEN_IMPLEMENTATION_NOT_STARTED" not in current:
-        errors.append("current-state does not declare the implementation baseline")
+    if "status: FROZEN_PATH_EXECUTION_COMPLETE" not in current:
+        errors.append("current-state does not declare the execution-complete closure status")
 
     entries = re.findall(r"- \{id: ([A-Z0-9-]+), .*?depends: \[([^]]*)\]", items)
     ids = {item_id for item_id, _ in entries}

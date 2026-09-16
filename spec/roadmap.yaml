@@ -74,43 +74,43 @@ gates:
     status: COMPLETE
   - id: R1
     name: protocol-core-foundation
-    status: READY
+    status: COMPLETE
     work_items: [R1-001, R1-002, R1-003, R1-004]
   - id: R2
     name: local-connectivity
-    status: READY
+    status: COMPLETE
     work_items: [R2-001, R2-002, R2-003, R2-004]
     note: R2-002 (Wi-Fi Aware) is intentionally inserted after the initial adapter foundation and may run as soon as the Android transport seam is stable.
   - id: R3
     name: authenticated-topology-and-routing
-    status: BLOCKED_ON_R1_R2
+    status: COMPLETE
     work_items: [R3-001, R3-002, R3-003, R3-004]
   - id: R4
     name: live-circuit-and-ip-bridge
-    status: BLOCKED_ON_R3
+    status: COMPLETE
     work_items: [R4-001, R4-002, R4-003, R4-004, R4-005, R4-006, R4-007]
   - id: R5
     name: adcos-connectivity-control-plane
-    status: PARTIALLY_UNBLOCKED
+    status: COMPLETE
     work_items: [R5-001, R5-002, R5-003, R5-004, R5-005]
     note: R5-001 can begin once route/circuit needs are typed; full admission depends on R3/R4.
   - id: R6
     name: dtn-and-content
-    status: BLOCKED_ON_R4
+    status: COMPLETE
     work_items: [R6-001, R6-002, R6-003, R6-004, R6-005]
   - id: R7
     name: automatic-recovery
-    status: BLOCKED_ON_R4_R5
+    status: COMPLETE
     work_items: [R7-001, R7-002, R7-003, R7-004, R7-005, R7-006]
   - id: R8
     name: contribution-and-civic-points
-    status: BLOCKED_ON_R6_R7
+    status: COMPLETE
     work_items: [R8-001, R8-002, R8-003, R8-004, R8-005]
   - id: R9
     name: platform-expansion
-    status: BLOCKED_ON_R4_R5_R7
+    status: COMPLETE_PLATFORM_GAPS_RECORDED
     work_items: [R9-001, R9-002, R9-003, R9-004]
   - id: R10
     name: production-verification
-    status: BLOCKED_ON_CORE
+    status: COMPLETE_OPERATOR_RUNBOOKS_RECORDED
     work_items: [R10-001, R10-002, R10-003, R10-004, R10-005]

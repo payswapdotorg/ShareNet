@@ -16,9 +16,7 @@ mod common;
 
 use common::from_hex;
 use serde::{Deserialize, Serialize};
-use sharenet_protocol::capability::{
-    Capability, CapabilityStatement, SignedCapabilityStatement,
-};
+use sharenet_protocol::capability::{Capability, CapabilityStatement, SignedCapabilityStatement};
 use sharenet_protocol::cbor::{decode, encode, Value};
 use sharenet_protocol::identity::{
     Identity, NodeIdentity, SCHEME_VERSION, SEED_LEN, SIGNATURE_LEN,
@@ -811,9 +809,7 @@ signature over payload_hex with the given seed."
 // ---------------------------------------------------------------------------
 
 fn link_vectors() -> LinkVectorsFile {
-    use sharenet_protocol::link::{
-        LinkInitiator, LinkResponder, LinkSession,
-    };
+    use sharenet_protocol::link::{LinkInitiator, LinkResponder, LinkSession};
     let mk = |seed_hex: &str, created: u64| -> Identity {
         let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
         Identity::from_seed(seed, created, None).unwrap()
@@ -892,7 +888,8 @@ fn link_vectors() -> LinkVectorsFile {
             None,
         )
         .unwrap();
-        let responder2 = LinkResponder::new(mk(rseed, *rcreated), envelopes.last().cloned().flatten());
+        let responder2 =
+            LinkResponder::new(mk(rseed, *rcreated), envelopes.last().cloned().flatten());
         let m1 = initiator2.initiate();
         let m1b = m1.to_wire_bytes();
         let (m2, _p2) = responder2
@@ -912,7 +909,11 @@ fn link_vectors() -> LinkVectorsFile {
             msg2_hex: common_hex(&msg2_bytes),
             msg3_hex: common_hex(&msg3_bytes),
             shared_secret_hex: String::new(), // filled below via a shim
-            link_id_hex: session.link_id().iter().map(|b| format!("{b:02x}")).collect(),
+            link_id_hex: session
+                .link_id()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
             key_i2r_hex: String::new(),
             key_r2i_hex: String::new(),
         });
@@ -955,7 +956,8 @@ fn link_vectors() -> LinkVectorsFile {
         let (m3, mut si) = initiator.confirm(&m1b, &m2, &m2b).unwrap();
         let m3b = m3.to_wire_bytes();
         let mut sr = pending.finish(&m1b, &m2b, &m3, &m3b).unwrap();
-        let payloads: [(&[u8], u8); 3] = [(b"hello", 1u8), (b"", 1u8), (b"welcome to sharenet", 2u8)];
+        let payloads: [(&[u8], u8); 3] =
+            [(b"hello", 1u8), (b"", 1u8), (b"welcome to sharenet", 2u8)];
         let mut seq_i = 0u64;
         let mut seq_r = 0u64;
         for (payload, direction) in payloads {
@@ -989,7 +991,8 @@ harness MUST: rebuild both identities from seeds+created_at, run the full 3-mess
 handshake with the fixed X25519 scalars, reproduce msg1/msg2/msg3 byte-exactly, \
 derive the same link_id, and reproduce every frame byte-exactly from the derived \
 session keys (frames pin key_i2r/key_r2i without exporting them). Scalars are \
-TEST-ONLY.".into(),
+TEST-ONLY."
+            .into(),
         cases,
         frames,
     }
@@ -1008,7 +1011,15 @@ fn advertisement_vectors() -> AdvertisementVectorsFile {
         let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
         Identity::from_seed(seed, created, None).unwrap()
     };
-    let cases_in: Vec<(&str, &str, u64, Option<Vec<(&str, i64)>>, Vec<(&str, &str)>, u64, u64)> = vec![
+    let cases_in: Vec<(
+        &str,
+        &str,
+        u64,
+        Option<Vec<(&str, i64)>>,
+        Vec<(&str, &str)>,
+        u64,
+        u64,
+    )> = vec![
         (
             "single udp endpoint, no capabilities",
             "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
@@ -1141,9 +1152,12 @@ fn advertisement_vectors() -> AdvertisementVectorsFile {
             (Value::Int(1), Value::Int(1)),
             (
                 Value::Int(2),
-                mk("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0)
-                    .node_identity()
-                    .to_wire(),
+                mk(
+                    "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+                    0,
+                )
+                .node_identity()
+                .to_wire(),
             ),
             (
                 Value::Int(4),
@@ -1165,9 +1179,12 @@ fn advertisement_vectors() -> AdvertisementVectorsFile {
             (Value::Int(1), Value::Int(1)),
             (
                 Value::Int(2),
-                mk("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0)
-                    .node_identity()
-                    .to_wire(),
+                mk(
+                    "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+                    0,
+                )
+                .node_identity()
+                .to_wire(),
             ),
             (
                 Value::Int(4),
@@ -1195,9 +1212,12 @@ fn advertisement_vectors() -> AdvertisementVectorsFile {
             (Value::Int(1), Value::Int(1)),
             (
                 Value::Int(2),
-                mk("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0)
-                    .node_identity()
-                    .to_wire(),
+                mk(
+                    "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+                    0,
+                )
+                .node_identity()
+                .to_wire(),
             ),
             (
                 Value::Int(4),
@@ -1219,9 +1239,12 @@ fn advertisement_vectors() -> AdvertisementVectorsFile {
             (Value::Int(1), Value::Int(1)),
             (
                 Value::Int(2),
-                mk("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0)
-                    .node_identity()
-                    .to_wire(),
+                mk(
+                    "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+                    0,
+                )
+                .node_identity()
+                .to_wire(),
             ),
             (Value::Int(4), Value::Array(vec![])),
             (Value::Int(5), Value::Int(1)),
@@ -1237,9 +1260,12 @@ fn advertisement_vectors() -> AdvertisementVectorsFile {
             (Value::Int(1), Value::Int(1)),
             (
                 Value::Int(2),
-                mk("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0)
-                    .node_identity()
-                    .to_wire(),
+                mk(
+                    "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+                    0,
+                )
+                .node_identity()
+                .to_wire(),
             ),
             (
                 Value::Int(4),
@@ -1264,7 +1290,8 @@ MUST: rebuild the announcer identity from seed+created_at, rebuild the \
 advertisement (canonical transport order), re-derive the wire bytes and \
 signature byte-exactly, and re-derive advertisement_id = SHA-256(wire). \
 receive[] cases run the full receiver verification pipeline and expect the \
-named outcome. parse_reject[] bytes MUST fail with the named typed error.".into(),
+named outcome. parse_reject[] bytes MUST fail with the named typed error."
+            .into(),
         cases,
         receive,
         parse_reject,
@@ -1276,9 +1303,7 @@ named outcome. parse_reject[] bytes MUST fail with the named typed error.".into(
 // ---------------------------------------------------------------------------
 
 fn topology_vectors() -> TopologyVectorsFile {
-    use sharenet_protocol::topology::{
-        LinkQualitySnapshot, Observation, TopologyEvidence as TE,
-    };
+    use sharenet_protocol::topology::{LinkQualitySnapshot, Observation, TopologyEvidence as TE};
     let mk = |seed_hex: &str, created: u64| -> Identity {
         let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
         Identity::from_seed(seed, created, None).unwrap()
@@ -1293,10 +1318,19 @@ fn topology_vectors() -> TopologyVectorsFile {
         loss_ratio_ppm: 15_000,
     };
     let observer_seeds: [(&str, u64); 2] = [
-        ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", 0),
-        ("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb", 1_700_000_000),
+        (
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+            0,
+        ),
+        (
+            "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+            1_700_000_000,
+        ),
     ];
-    let subject = mk("c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573", 42);
+    let subject = mk(
+        "c5aa8df43f9f837bedb7472f960be3677c5a0e5e140718b32a6903607a8a0573",
+        42,
+    );
     let subject_hex = common_hex(subject.node_id().as_bytes());
     let mut cases = Vec::new();
     // case 0: link evidence
@@ -1447,7 +1481,10 @@ fn topology_vectors() -> TopologyVectorsFile {
         let v = Value::Map(vec![
             (Value::Int(1), Value::Int(1)),
             (Value::Int(2), subj_wire.clone()),
-            (Value::Int(3), Value::Bytes(subj.node_id().as_bytes().to_vec())),
+            (
+                Value::Int(3),
+                Value::Bytes(subj.node_id().as_bytes().to_vec()),
+            ),
             (Value::Int(4), Value::Text("link".into())),
             (Value::Int(5), Value::Int(1_000)),
             (Value::Int(6), Value::Int(1_060)),
@@ -1565,7 +1602,8 @@ rebuild the observer identity from seed+created_at, rebuild the evidence \
 record from the fields, re-derive wire bytes + signature + evidence_id \
 byte-exactly. receive[] cases run the full collector pipeline and expect \
 the named outcome. parse_reject[] bytes MUST fail with the named typed \
-error.".into(),
+error."
+            .into(),
         cases,
         receive,
         parse_reject,
@@ -1631,8 +1669,8 @@ fn route_vectors() -> RouteVectorsFile {
         let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
         path.push(*proposer.node_id().as_bytes());
         let nonce: [u8; 32] = from_hex(nonce_hex).try_into().unwrap();
-        let proposal = RouteProposal::new(&proposer, path.clone(), *service, 1_000, 600, nonce)
-            .unwrap();
+        let proposal =
+            RouteProposal::new(&proposer, path.clone(), *service, 1_000, 600, nonce).unwrap();
         let proposal_env = proposal.sign(&proposer).unwrap();
         let proposal_id = derive_proposal_id(proposal_env.bytes());
         // acceptances for every path member (positions follow the SORTED path)
@@ -1742,7 +1780,8 @@ rebuild the proposer + hops from seeds, rebuild the proposal (path = proposer \
 reproduce every acceptance envelope, rebuild the commitment (Merkle root \
 over the acceptance bytes ordered by position, route_id = SHA-256(context || \
 root)) byte-exactly. rejects[] are full commitment wire bytes that MUST fail \
-verification with the named typed error (verification at the recorded times).".into(),
+verification with the named typed error (verification at the recorded times)."
+            .into(),
         cases,
         rejects,
     }
@@ -1772,7 +1811,9 @@ fn circuit_vectors() -> CircuitVectorsFile {
         derive_circuit_id, CircuitDestroy, CircuitFrame, CircuitRegistry, CircuitSetup,
         CircuitSetupAck,
     };
-    use sharenet_protocol::route::{derive_proposal_id, RouteAcceptance, RouteCommitment, RouteProposal};
+    use sharenet_protocol::route::{
+        derive_proposal_id, RouteAcceptance, RouteCommitment, RouteProposal,
+    };
     let mk = |seed_hex: &str, created: u64| -> Identity {
         let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
         Identity::from_seed(seed, created, None).unwrap()
@@ -1837,9 +1878,15 @@ fn circuit_vectors() -> CircuitVectorsFile {
         let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
         path.push(*proposer.node_id().as_bytes());
         let proposal_nonce: [u8; 32] = from_hex(proposal_nonce_hex).try_into().unwrap();
-        let proposal =
-            RouteProposal::new(&proposer, path.clone(), cin.service, 1_000, 600, proposal_nonce)
-                .unwrap();
+        let proposal = RouteProposal::new(
+            &proposer,
+            path.clone(),
+            cin.service,
+            1_000,
+            600,
+            proposal_nonce,
+        )
+        .unwrap();
         let proposal_env = proposal.sign(&proposer).unwrap();
         let proposal_id = derive_proposal_id(proposal_env.bytes());
         let mut members: Vec<&Identity> = hops.iter().collect();
@@ -1863,8 +1910,8 @@ fn circuit_vectors() -> CircuitVectorsFile {
             .iter()
             .enumerate()
             .map(|(i, m)| {
-                let a = CircuitSetupAck::new(circuit_id, &setup_env, m, i as u64, 1_101, 500)
-                    .unwrap();
+                let a =
+                    CircuitSetupAck::new(circuit_id, &setup_env, m, i as u64, 1_101, 500).unwrap();
                 a.sign(m).unwrap()
             })
             .collect();
@@ -2097,19 +2144,24 @@ derive circuit_id = SHA-256(context || route_id || setup_nonce), reproduce every
 ack envelope, every frame wire, and the destroy envelope byte-exactly, and replay \
 the admission sequence at admission_now_unix (setup admitted, acks -> established, \
 frames accepted, destroy terminal). rejects[] are full envelope/frame wire bytes \
-that MUST fail at the named step with the named typed error.".into(),
+that MUST fail at the named step with the named typed error."
+            .into(),
         cases,
         rejects,
     }
 }
 
 fn revocation_vectors() -> RevocationVectorsFile {
-    use sharenet_protocol::circuit::{derive_circuit_id, CircuitRegistry, CircuitSetup, CircuitSetupAck};
+    use sharenet_protocol::circuit::{
+        derive_circuit_id, CircuitRegistry, CircuitSetup, CircuitSetupAck,
+    };
     use sharenet_protocol::revocation::{
         CircuitRevocation, EvidenceValue, RevocationAdmitOutcome, RevocationLedger,
         RevocationReason, SignedCircuitRevocation, EVIDENCE_FAILURE_KIND,
     };
-    use sharenet_protocol::route::{derive_proposal_id, RouteAcceptance, RouteCommitment, RouteProposal};
+    use sharenet_protocol::route::{
+        derive_proposal_id, RouteAcceptance, RouteCommitment, RouteProposal,
+    };
     let mk = |seed_hex: &str, created: u64| -> Identity {
         let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
         Identity::from_seed(seed, created, None).unwrap()
@@ -2152,7 +2204,10 @@ fn revocation_vectors() -> RevocationVectorsFile {
             revoker_position: 0,
             reason: "evidence_timeout",
             evidence: Some(vec![
-                ("failure_kind", JEvidenceValue::Text("evidence_stale".into())),
+                (
+                    "failure_kind",
+                    JEvidenceValue::Text("evidence_stale".into()),
+                ),
                 ("stale_since_unix", JEvidenceValue::Int(1_140)),
             ]),
             revoked_at_unix: 1_200,
@@ -2181,7 +2236,10 @@ fn revocation_vectors() -> RevocationVectorsFile {
             revoker_position: 2,
             reason: "operator",
             evidence: Some(vec![
-                ("failure_kind", JEvidenceValue::Text("operator_command".into())),
+                (
+                    "failure_kind",
+                    JEvidenceValue::Text("operator_command".into()),
+                ),
                 ("operator", JEvidenceValue::Text("node-operator-7".into())),
             ]),
             revoked_at_unix: 1_250,
@@ -2198,9 +2256,15 @@ fn revocation_vectors() -> RevocationVectorsFile {
         let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
         path.push(*proposer.node_id().as_bytes());
         let proposal_nonce: [u8; 32] = from_hex(proposal_nonce_hex).try_into().unwrap();
-        let proposal =
-            RouteProposal::new(&proposer, path.clone(), cin.service, 1_000, 600, proposal_nonce)
-                .unwrap();
+        let proposal = RouteProposal::new(
+            &proposer,
+            path.clone(),
+            cin.service,
+            1_000,
+            600,
+            proposal_nonce,
+        )
+        .unwrap();
         let proposal_env = proposal.sign(&proposer).unwrap();
         let proposal_id = derive_proposal_id(proposal_env.bytes());
         let mut members: Vec<&Identity> = hops.iter().collect();
@@ -2224,9 +2288,8 @@ fn revocation_vectors() -> RevocationVectorsFile {
         let mut registry = CircuitRegistry::new();
         registry.admit_setup(1_150, &setup_env).unwrap();
         for (pos, member) in members.iter().enumerate() {
-            let ack =
-                CircuitSetupAck::new(circuit_id, &setup_env, member, pos as u64, 1_101, 500)
-                    .unwrap();
+            let ack = CircuitSetupAck::new(circuit_id, &setup_env, member, pos as u64, 1_101, 500)
+                .unwrap();
             let env = ack.sign(member).unwrap();
             registry.admit_ack(1_150, &env).unwrap();
         }
@@ -2246,14 +2309,21 @@ fn revocation_vectors() -> RevocationVectorsFile {
             });
         let reason = RevocationReason::from_name(cin.reason).expect("frozen reason");
         let revoker = &members[cin.revoker_position as usize];
-        let revocation =
-            CircuitRevocation::new(revoker, circuit_id, reason, evidence.clone(), cin.revoked_at_unix)
-                .unwrap();
+        let revocation = CircuitRevocation::new(
+            revoker,
+            circuit_id,
+            reason,
+            evidence.clone(),
+            cin.revoked_at_unix,
+        )
+        .unwrap();
         let signed = revocation.sign(revoker).unwrap();
         // generation-time validation: the revocation must admit as First
         let ledger = RevocationLedger::new();
         assert_eq!(
-            ledger.admit(cin.revoked_at_unix, &signed, &registry).unwrap(),
+            ledger
+                .admit(cin.revoked_at_unix, &signed, &registry)
+                .unwrap(),
             RevocationAdmitOutcome::First
         );
         cases.push(RevocationCase {
@@ -2319,11 +2389,8 @@ fn revocation_vectors() -> RevocationVectorsFile {
             let (members, _circuit_id, registry, _commitment) = build_case(cin);
             let revoker = match r.revoker.as_str() {
                 "primary" => &members[cin.revoker_position as usize],
-                "second" => &members
-                    [((cin.revoker_position + 1) % members.len() as u64) as usize],
-                "outsider" => {
-                    &Identity::from_seed([0xEE; 32], 1, None).unwrap()
-                }
+                "second" => &members[((cin.revoker_position + 1) % members.len() as u64) as usize],
+                "outsider" => &Identity::from_seed([0xEE; 32], 1, None).unwrap(),
                 other => panic!("unknown revoker kind {other:?}"),
             };
             let (reason, evidence, revoked_at) = if r.revoker == "primary" {
@@ -2339,11 +2406,9 @@ fn revocation_vectors() -> RevocationVectorsFile {
             } else {
                 (RevocationReason::Policy, None, cin.revoked_at_unix)
             };
-            let circuit_id: [u8; 32] = from_hex(&cases[r.case].circuit_id_hex)
-                .try_into()
-                .unwrap();
-            let revocation = CircuitRevocation::new(revoker, circuit_id, reason, evidence, revoked_at)
-                .unwrap();
+            let circuit_id: [u8; 32] = from_hex(&cases[r.case].circuit_id_hex).try_into().unwrap();
+            let revocation =
+                CircuitRevocation::new(revoker, circuit_id, reason, evidence, revoked_at).unwrap();
             let signed = revocation.sign(revoker).unwrap();
             let target = if r.registry.as_deref() == Some("empty") {
                 &empty_registry
@@ -2375,9 +2440,14 @@ fn revocation_vectors() -> RevocationVectorsFile {
             .iter()
             .map(|(k, v)| (k.to_string(), EvidenceValue::from(v)))
             .collect();
-        let base =
-            CircuitRevocation::new(revoker, circuit_id, RevocationReason::LinkFailure, Some(base_evidence), 1_200)
-                .unwrap();
+        let base = CircuitRevocation::new(
+            revoker,
+            circuit_id,
+            RevocationReason::LinkFailure,
+            Some(base_evidence),
+            1_200,
+        )
+        .unwrap();
         let base_signed = base.sign(revoker).unwrap();
 
         // helper: mutate the base wire, re-sign with the revoker (the
@@ -2416,12 +2486,24 @@ fn revocation_vectors() -> RevocationVectorsFile {
             });
         }
         // 2. unknown reason
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "reason outside the frozen set", "reason_unknown", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "reason outside the frozen set",
+            "reason_unknown",
+            &|wire| {
                 set_field(wire, 4, Value::Text("because".into()));
             },
         );
         // 3. evidence with 9 fields beyond failure_kind
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence map with 9 fields beyond failure_kind", "evidence_too_many_fields", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "evidence map with 9 fields beyond failure_kind",
+            "evidence_too_many_fields",
+            &|wire| {
                 let mut entries: Vec<(Value, Value)> = (0..9)
                     .map(|i| (Value::Text(format!("f{i}")), Value::Int(i as i64)))
                     .collect();
@@ -2437,7 +2519,13 @@ fn revocation_vectors() -> RevocationVectorsFile {
             },
         );
         // 4. evidence without failure_kind
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence map without failure_kind", "failure_kind_missing", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "evidence map without failure_kind",
+            "failure_kind_missing",
+            &|wire| {
                 set_field(
                     wire,
                     5,
@@ -2446,7 +2534,13 @@ fn revocation_vectors() -> RevocationVectorsFile {
             },
         );
         // 5. failure_kind not text
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence failure_kind as an integer", "failure_kind_not_text", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "evidence failure_kind as an integer",
+            "failure_kind_not_text",
+            &|wire| {
                 set_field(
                     wire,
                     5,
@@ -2455,7 +2549,13 @@ fn revocation_vectors() -> RevocationVectorsFile {
             },
         );
         // 6. oversized evidence key (65 bytes)
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence key of 65 bytes", "evidence_key_invalid", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "evidence key of 65 bytes",
+            "evidence_key_invalid",
+            &|wire| {
                 set_field(
                     wire,
                     5,
@@ -2467,7 +2567,13 @@ fn revocation_vectors() -> RevocationVectorsFile {
             },
         );
         // 7. oversized text evidence value (129 bytes)
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence text value of 129 bytes", "evidence_text_too_long", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "evidence text value of 129 bytes",
+            "evidence_text_too_long",
+            &|wire| {
                 set_field(
                     wire,
                     5,
@@ -2479,7 +2585,13 @@ fn revocation_vectors() -> RevocationVectorsFile {
             },
         );
         // 8. non-int/text evidence entry (bytes value)
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "evidence entry with a bytes value", "evidence_entry_malformed", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "evidence entry with a bytes value",
+            "evidence_entry_malformed",
+            &|wire| {
                 set_field(
                     wire,
                     5,
@@ -2491,33 +2603,61 @@ fn revocation_vectors() -> RevocationVectorsFile {
             },
         );
         // 9. scheme version 2
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "scheme version 2", "scheme_version_unsupported", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "scheme version 2",
+            "scheme_version_unsupported",
+            &|wire| {
                 set_field(wire, 1, Value::Int(2));
             },
         );
         // 10. circuit_id of 31 bytes
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "circuit_id of 31 bytes", "circuit_id_wrong_length", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "circuit_id of 31 bytes",
+            "circuit_id_wrong_length",
+            &|wire| {
                 set_field(wire, 2, Value::Bytes(vec![0u8; 31]));
             },
         );
         // 11. missing revoked_at
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "missing revoked_at (field 6)", "missing_field", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "missing revoked_at (field 6)",
+            "missing_field",
+            &|wire| {
                 if let Value::Map(ref mut entries) = wire {
                     entries.retain(|(k, _)| !matches!(k, Value::Int(6)));
                 }
             },
         );
         // 12. negative revoked_at
-        reject_with(&mut parse_reject, base_signed.revocation_bytes(), revoker, "negative revoked_at", "timestamp_out_of_range", &|wire| {
+        reject_with(
+            &mut parse_reject,
+            base_signed.revocation_bytes(),
+            revoker,
+            "negative revoked_at",
+            "timestamp_out_of_range",
+            &|wire| {
                 set_field(wire, 6, Value::Int(-1));
             },
         );
         // 13. envelope confusion: a CircuitDestroy envelope fed to the
         // revocation path (destroy field 5 = integer destroyed_at)
         {
-            let destroy =
-                sharenet_protocol::circuit::CircuitDestroy::new(circuit_id, revoker, "link_failure", 1_200)
-                    .unwrap();
+            let destroy = sharenet_protocol::circuit::CircuitDestroy::new(
+                circuit_id,
+                revoker,
+                "link_failure",
+                1_200,
+            )
+            .unwrap();
             let destroy_env = destroy.sign(revoker).unwrap();
             parse_reject.push(RevocationReject {
                 note: Some("a CircuitDestroy envelope fed to the revocation path".into()),
@@ -2550,16 +2690,24 @@ fn revocation_vectors() -> RevocationVectorsFile {
             .iter()
             .map(|(k, v)| (k.to_string(), EvidenceValue::from(v)))
             .collect();
-        let base =
-            CircuitRevocation::new(revoker, circuit_id, RevocationReason::LinkFailure, Some(base_evidence), 1_200)
-                .unwrap();
+        let base = CircuitRevocation::new(
+            revoker,
+            circuit_id,
+            RevocationReason::LinkFailure,
+            Some(base_evidence),
+            1_200,
+        )
+        .unwrap();
         let wire_bytes = base.to_wire_bytes();
         let good_sig = revoker.sign_detached(&wire_bytes);
 
         // 1. signature of 63 bytes
         let env = crate_bytes(&Value::Map(vec![
             (Value::Int(1), Value::Bytes(wire_bytes.clone())),
-            (Value::Int(2), Value::Bytes(good_sig.to_vec()[..63].to_vec())),
+            (
+                Value::Int(2),
+                Value::Bytes(good_sig.to_vec()[..63].to_vec()),
+            ),
         ]));
         envelope_reject.push(RevocationReject {
             note: Some("envelope signature of 63 bytes".into()),
@@ -2617,7 +2765,8 @@ order: revoker primary = the case's revoker_position member; second = member at 
 case's revoked_at_unix; outsider = the fixed foreign seed 0xEE*32, same shape; \
 registry \"empty\" = a fresh registry with no circuits. parse_reject[] and \
 envelope_reject[] are full carrying-envelope bytes that MUST fail with the named \
-typed error.".into(),
+typed error."
+            .into(),
         cases,
         receive,
         parse_reject,
@@ -2670,9 +2819,9 @@ fn content_metadata(
             .map(|(k, v)| {
                 let value = match v {
                     serde_json::Value::String(s) => MetadataValue::Text(s.clone()),
-                    serde_json::Value::Number(n) => MetadataValue::Int(
-                        n.as_i64().expect("vector metadata ints are integers"),
-                    ),
+                    serde_json::Value::Number(n) => {
+                        MetadataValue::Int(n.as_i64().expect("vector metadata ints are integers"))
+                    }
                     other => panic!("bad vector metadata value {other:?}"),
                 };
                 (k.clone(), value)
@@ -2683,11 +2832,7 @@ fn content_metadata(
 
 /// Apply one reassembly mutation (the frozen vocabulary shared by all
 /// three conformance legs).
-fn content_apply_mutation(
-    chunks: &mut Vec<Vec<u8>>,
-    mutation: &str,
-    slot: Option<usize>,
-) {
+fn content_apply_mutation(chunks: &mut Vec<Vec<u8>>, mutation: &str, slot: Option<usize>) {
     let slot = slot.unwrap_or(0);
     match mutation {
         "swap_first_two" => chunks.swap(0, 1),
@@ -2738,7 +2883,14 @@ fn content_reassembly_outcome(
 fn content_vectors() -> ContentVectorsFile {
     use sharenet_protocol::content::ContentManifest;
 
-    let case_inputs: Vec<(&str, &[u8], u64, &str, Option<std::collections::BTreeMap<String, serde_json::Value>>, u64)> = vec![
+    let case_inputs: Vec<(
+        &str,
+        &[u8],
+        u64,
+        &str,
+        Option<std::collections::BTreeMap<String, serde_json::Value>>,
+        u64,
+    )> = vec![
         (
             "multi-chunk (5 chunks, short last)",
             b"ShareNet content addressing vector zero",
@@ -2770,9 +2922,18 @@ fn content_vectors() -> ContentVectorsFile {
             "image/png",
             Some(
                 [
-                    ("title".to_string(), serde_json::Value::String("mission photo".into())),
-                    ("priority".to_string(), serde_json::Value::Number(2u32.into())),
-                    ("ttl_secs".to_string(), serde_json::Value::Number(3600u32.into())),
+                    (
+                        "title".to_string(),
+                        serde_json::Value::String("mission photo".into()),
+                    ),
+                    (
+                        "priority".to_string(),
+                        serde_json::Value::Number(2u32.into()),
+                    ),
+                    (
+                        "ttl_secs".to_string(),
+                        serde_json::Value::Number(3600u32.into()),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -2784,9 +2945,14 @@ fn content_vectors() -> ContentVectorsFile {
     let mut cases: Vec<ContentCaseV> = Vec::new();
     let mut built: Vec<(ContentManifest, Vec<Vec<u8>>)> = Vec::new();
     for (note, content, chunk_size, content_type, metadata, created_at) in case_inputs {
-        let (manifest, chunks) =
-            ContentManifest::chunk(content, chunk_size, content_type, content_metadata(metadata.as_ref()), created_at)
-                .unwrap_or_else(|e| panic!("content case must build: {e}"));
+        let (manifest, chunks) = ContentManifest::chunk(
+            content,
+            chunk_size,
+            content_type,
+            content_metadata(metadata.as_ref()),
+            created_at,
+        )
+        .unwrap_or_else(|e| panic!("content case must build: {e}"));
         cases.push(ContentCaseV {
             note: Some(note.to_string()),
             content_hex: common_hex(content),
@@ -2808,17 +2974,42 @@ fn content_vectors() -> ContentVectorsFile {
     // reassembly outcomes: (case index, mutation, slot, expected)
     let reassembly_inputs: Vec<(usize, Option<&str>, Option<usize>, &str)> = vec![
         (0, None, None, "ok"),
-        (0, Some("swap_first_two"), None, "chunk_hash_mismatch slot=0"),
-        (0, Some("corrupt_slot"), Some(1), "chunk_hash_mismatch slot=1"),
+        (
+            0,
+            Some("swap_first_two"),
+            None,
+            "chunk_hash_mismatch slot=0",
+        ),
+        (
+            0,
+            Some("corrupt_slot"),
+            Some(1),
+            "chunk_hash_mismatch slot=1",
+        ),
         (0, Some("drop_last"), None, "missing_chunk slot=4"),
-        (0, Some("drop_middle"), Some(2), "chunk_hash_mismatch slot=2"),
+        (
+            0,
+            Some("drop_middle"),
+            Some(2),
+            "chunk_hash_mismatch slot=2",
+        ),
         (0, Some("extra_last"), None, "extra_chunk slot=5"),
         (0, Some("short_last"), None, "chunk_length_wrong slot=4"),
         (0, Some("short_first"), None, "chunk_length_wrong slot=0"),
-        (1, Some("corrupt_slot"), Some(0), "chunk_hash_mismatch slot=0"),
+        (
+            1,
+            Some("corrupt_slot"),
+            Some(0),
+            "chunk_hash_mismatch slot=0",
+        ),
         (2, None, None, "ok"),
         (3, None, None, "ok"),
-        (3, Some("replace_slot_with_prev"), Some(2), "chunk_hash_mismatch slot=2"),
+        (
+            3,
+            Some("replace_slot_with_prev"),
+            Some(2),
+            "chunk_hash_mismatch slot=2",
+        ),
     ];
     let mut reassembly: Vec<ContentReasmV> = Vec::new();
     for (case, mutation, slot, expect) in reassembly_inputs {
@@ -2847,7 +3038,9 @@ fn content_vectors() -> ContentVectorsFile {
     // map, so insertion order never matters)
     let patch = |field: i64, value: Value| -> Vec<u8> {
         let mut v = decode(&base_wire).unwrap();
-        let Value::Map(entries) = &mut v else { unreachable!() };
+        let Value::Map(entries) = &mut v else {
+            unreachable!()
+        };
         let mut replaced = false;
         for (k, val) in entries.iter_mut() {
             if let Value::Int(kn) = k {
@@ -2873,7 +3066,9 @@ fn content_vectors() -> ContentVectorsFile {
     // count mismatches (drop one hash / add one hash / empty the list)
     {
         let mut v = decode(&base_wire).unwrap();
-        let Value::Map(entries) = &mut v else { unreachable!() };
+        let Value::Map(entries) = &mut v else {
+            unreachable!()
+        };
         for (k, val) in entries.iter_mut() {
             if let (Value::Int(4), Value::Array(items)) = (k, val) {
                 items.pop();
@@ -2887,7 +3082,9 @@ fn content_vectors() -> ContentVectorsFile {
     }
     {
         let mut v = decode(&base_wire).unwrap();
-        let Value::Map(entries) = &mut v else { unreachable!() };
+        let Value::Map(entries) = &mut v else {
+            unreachable!()
+        };
         for (k, val) in entries.iter_mut() {
             if let (Value::Int(4), Value::Array(items)) = (k, val) {
                 items.push(Value::Bytes(vec![0u8; 32]));
@@ -2927,7 +3124,9 @@ fn content_vectors() -> ContentVectorsFile {
     ));
     {
         let mut v = decode(&base_wire).unwrap();
-        let Value::Map(entries) = &mut v else { unreachable!() };
+        let Value::Map(entries) = &mut v else {
+            unreachable!()
+        };
         for (k, val) in entries.iter_mut() {
             if let (Value::Int(4), Value::Array(items)) = (k, val) {
                 items[1] = Value::Bytes(vec![0u8; 31]);
@@ -2961,10 +3160,7 @@ fn content_vectors() -> ContentVectorsFile {
         ));
     }
     {
-        let hostile = Value::Map(vec![(
-            Value::Text("k".repeat(65)),
-            Value::Int(1),
-        )]);
+        let hostile = Value::Map(vec![(Value::Text("k".repeat(65)), Value::Int(1))]);
         parse_reject.push(rej(
             common_hex(&patch(6, hostile)),
             "metadata_key_invalid",
@@ -2997,7 +3193,9 @@ fn content_vectors() -> ContentVectorsFile {
     ));
     {
         let mut v = decode(&base_wire).unwrap();
-        let Value::Map(entries) = &mut v else { unreachable!() };
+        let Value::Map(entries) = &mut v else {
+            unreachable!()
+        };
         entries.push((Value::Int(8), Value::Null));
         parse_reject.push(rej(
             common_hex(&encode(&v).unwrap()),
@@ -3007,7 +3205,9 @@ fn content_vectors() -> ContentVectorsFile {
     }
     {
         let mut v = decode(&base_wire).unwrap();
-        let Value::Map(entries) = &mut v else { unreachable!() };
+        let Value::Map(entries) = &mut v else {
+            unreachable!()
+        };
         entries.retain(|(k, _)| !matches!(k, Value::Int(5)));
         parse_reject.push(rej(
             common_hex(&encode(&v).unwrap()),
@@ -3040,10 +3240,462 @@ chunked objects per the protocol registry entry — multi-chunk, single-chunk, e
 and metadata-carrying builds; reassembly outcomes over the shared mutation vocabulary \
 (valid, swap, corrupt, drop, extra, short, duplicate); strict parse rejections (geometry \
 exactness, bounds, non-canonical). Every hex is re-derived by all three legs; the \
-committed values are the pinned expectations.".into(),
+committed values are the pinned expectations."
+            .into(),
         cases,
         reassembly,
         parse_reject,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Contribution receipt vectors (R8-001)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct ContributionCaseV {
+    note: Option<String>,
+    issuer_seed_hex: String,
+    issuer_created_at_unix: u64,
+    contributor_node_id_hex: String,
+    content_id_hex: String,
+    kind: String,
+    delivered_bytes: u64,
+    receipt_seq: u64,
+    issued_at_unix: u64,
+    wire_hex: String,
+    sig_hex: String,
+    env_hex: String,
+    receipt_id_hex: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct ContributionAdmitV {
+    case: usize,
+    now_unix: u64,
+    mutation: Option<String>,
+    expect: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct ContributionRejectV {
+    hex: String,
+    error: String,
+    note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct ContributionVectorsFile {
+    scheme: String,
+    description: String,
+    cases: Vec<ContributionCaseV>,
+    admit: Vec<ContributionAdmitV>,
+    parse_reject: Vec<ContributionRejectV>,
+    envelope_reject: Vec<ContributionRejectV>,
+}
+
+fn contribution_vectors() -> ContributionVectorsFile {
+    use sharenet_protocol::contribution::{
+        ContributionKind, ContributionReceipt, ReceiptAdmitOutcome, ReceiptLedger,
+        SignedContributionReceipt,
+    };
+
+    // RFC 8032 test-vector seeds (shared with the identity vectors) plus a
+    // foreign seed used ONLY for the foreign-signer mutation (never a case
+    // issuer, so its signature can never be the right one).
+    let seed_a = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+    let seed_b = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
+    let seed_foreign = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    let contributor_a: [u8; 32] = [0x22; 32];
+    let contributor_b: [u8; 32] = [0x33; 32];
+    let content_x: [u8; 32] = [0x01; 32];
+    let content_y: [u8; 32] = [0x02; 32];
+
+    // (note, issuer seed, issuer created_at, contributor, content, kind,
+    //  delivered, seq, issued_at)
+    let case_inputs: Vec<(&str, &str, u64, [u8; 32], [u8; 32], &str, u64, u64, u64)> = vec![
+        (
+            "carried, minimal (pair A begins)",
+            seed_a,
+            0,
+            contributor_a,
+            content_x,
+            "carried",
+            17,
+            1,
+            2_000,
+        ),
+        (
+            "delivered, same pair advances",
+            seed_a,
+            0,
+            contributor_a,
+            content_x,
+            "delivered",
+            17,
+            2,
+            2_010,
+        ),
+        (
+            "carried, other content, pair A seq 3",
+            seed_a,
+            0,
+            contributor_a,
+            content_y,
+            "carried",
+            9,
+            3,
+            2_020,
+        ),
+        (
+            "cross-contributor: same issuer, fresh namespace",
+            seed_a,
+            0,
+            contributor_b,
+            content_x,
+            "carried",
+            17,
+            1,
+            2_005,
+        ),
+        (
+            "cross-issuer: same contributor, fresh namespace",
+            seed_b,
+            1,
+            contributor_a,
+            content_x,
+            "carried",
+            21,
+            1,
+            2_015,
+        ),
+        (
+            "future-dated (issued_at ahead of the verifying clock)",
+            seed_a,
+            0,
+            contributor_a,
+            content_y,
+            "delivered",
+            9,
+            5,
+            9_999,
+        ),
+        (
+            "pair B advances to 7",
+            seed_a,
+            0,
+            contributor_b,
+            content_y,
+            "delivered",
+            21,
+            7,
+            2_040,
+        ),
+        (
+            "re-issued sequence 2 with different bytes (regression fodder)",
+            seed_a,
+            0,
+            contributor_a,
+            content_x,
+            "delivered",
+            5,
+            2,
+            2_025,
+        ),
+    ];
+
+    let mk = |seed_hex: &str, created: u64| -> Identity {
+        let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
+        Identity::from_seed(seed, created, None).unwrap()
+    };
+
+    let mut cases: Vec<ContributionCaseV> = Vec::new();
+    let mut built: Vec<SignedContributionReceipt> = Vec::new();
+    for (note, seed, created, contributor, content, kind, delivered, seq, issued_at) in case_inputs
+    {
+        let issuer = mk(seed, created);
+        let receipt = ContributionReceipt::new(
+            &issuer,
+            contributor,
+            content,
+            ContributionKind::from_name(kind).expect("frozen kind"),
+            delivered,
+            seq,
+            issued_at,
+        )
+        .unwrap_or_else(|e| panic!("contribution case must build: {e}"));
+        let signed = receipt
+            .sign(&issuer)
+            .unwrap_or_else(|e| panic!("contribution case must sign: {e}"));
+        cases.push(ContributionCaseV {
+            note: Some(note.to_string()),
+            issuer_seed_hex: seed.to_string(),
+            issuer_created_at_unix: created,
+            contributor_node_id_hex: common_hex(&contributor),
+            content_id_hex: common_hex(&content),
+            kind: kind.to_string(),
+            delivered_bytes: delivered,
+            receipt_seq: seq,
+            issued_at_unix: issued_at,
+            wire_hex: common_hex(&signed.receipt_bytes()),
+            sig_hex: common_hex(signed.signature()),
+            env_hex: common_hex(&signed.to_envelope_bytes()),
+            receipt_id_hex: common_hex(&signed.receipt_id()),
+        });
+        built.push(signed);
+    }
+
+    // admit legs: (case, now, mutation, expected) — ONE shared ledger, the
+    // full admit_envelope verification path every time (parse + signature +
+    // clock + idempotency + the per-pair sequence law); the order is itself
+    // the test, exactly like the connectivity receive vectors.
+    let admit_inputs: Vec<(usize, u64, Option<&str>, &str)> = vec![
+        (0, 2_100, None, "admitted"),
+        (0, 2_100, None, "duplicate"),
+        (1, 2_100, Some("tamper_signature"), "signature_invalid"),
+        (1, 2_100, Some("foreign_signer"), "signature_invalid"),
+        (2, 2_100, None, "admitted"),
+        (7, 2_100, None, "sequence_regressed"),
+        (5, 2_100, None, "issued_at_in_future"),
+        (3, 2_100, None, "admitted"),
+        (4, 2_100, None, "admitted"),
+        (6, 2_100, None, "admitted"),
+        (2, 2_100, None, "duplicate"),
+    ];
+    let mut admit: Vec<ContributionAdmitV> = Vec::new();
+    {
+        let ledger = ReceiptLedger::new();
+        let foreign = mk(seed_foreign, 0);
+        for (case, now, mutation, expect) in admit_inputs {
+            let env = match mutation {
+                None => built[case].to_envelope_bytes(),
+                Some("tamper_signature") => {
+                    let mut sig = *built[case].signature();
+                    sig[0] ^= 0x01;
+                    encode(&Value::Map(vec![
+                        (
+                            Value::Int(1),
+                            Value::Bytes(built[case].receipt_bytes().to_vec()),
+                        ),
+                        (Value::Int(2), Value::Bytes(sig.to_vec())),
+                    ]))
+                    .expect("in-profile")
+                }
+                Some("foreign_signer") => {
+                    let sig = foreign.sign_detached(built[case].receipt_bytes());
+                    encode(&Value::Map(vec![
+                        (
+                            Value::Int(1),
+                            Value::Bytes(built[case].receipt_bytes().to_vec()),
+                        ),
+                        (Value::Int(2), Value::Bytes(sig.to_vec())),
+                    ]))
+                    .expect("in-profile")
+                }
+                Some(other) => panic!("unknown admit mutation {other:?}"),
+            };
+            let outcome = match ledger.admit_envelope(now, &env) {
+                Ok(ReceiptAdmitOutcome::Admitted) => "admitted".to_string(),
+                Ok(ReceiptAdmitOutcome::Duplicate) => "duplicate".to_string(),
+                Err(e) => e.name().to_string(),
+            };
+            assert_eq!(outcome, expect, "contribution admit leg (case {case})");
+            admit.push(ContributionAdmitV {
+                case,
+                now_unix: now,
+                mutation: mutation.map(str::to_string),
+                expect: expect.to_string(),
+            });
+        }
+    }
+
+    // strict parse rejects: patch ONE field of the (valid) case-0 wire — the
+    // family the adversarial suite attacks structurally. Every leg of this
+    // list is asserted through the real parser before being committed.
+    let parse_reject: Vec<ContributionRejectV> = {
+        let patch = |key: i64, value: Value| -> Vec<u8> {
+            let mut v = decode(built[0].receipt_bytes()).expect("case 0 parses");
+            let Value::Map(ref mut entries) = v else {
+                unreachable!("receipt is a map")
+            };
+            for (k, val) in entries.iter_mut() {
+                if let Value::Int(n) = k {
+                    if *n == key {
+                        *val = value;
+                        return encode(&v).expect("in-profile");
+                    }
+                }
+            }
+            panic!("field {key} not found");
+        };
+        let issuer_a = mk(seed_a, 0);
+        let mut legs: Vec<(Vec<u8>, &str, &str)> = vec![
+            (
+                patch(1, Value::Int(2)),
+                "scheme_version_unsupported",
+                "scheme version bumped",
+            ),
+            (
+                patch(3, Value::Bytes(vec![0u8; 31])),
+                "contributor_id_wrong_length",
+                "31-byte contributor id",
+            ),
+            (
+                patch(4, Value::Bytes(vec![0u8; 33])),
+                "content_id_wrong_length",
+                "33-byte content id",
+            ),
+            (
+                patch(5, Value::Text("relayed".into())),
+                "kind_unknown",
+                "kind outside the frozen two",
+            ),
+            (
+                patch(6, Value::Int(0)),
+                "delivered_bytes_out_of_range",
+                "zero delivered bytes",
+            ),
+            (
+                patch(6, Value::Int(-5)),
+                "delivered_bytes_out_of_range",
+                "negative delivered bytes",
+            ),
+            (
+                patch(7, Value::Int(0)),
+                "receipt_seq_invalid",
+                "sequence below the minimum",
+            ),
+            (
+                patch(8, Value::Int(-1)),
+                "timestamp_out_of_range",
+                "negative issued_at",
+            ),
+            (
+                patch(3, Value::Bytes(issuer_a.node_id().as_bytes().to_vec())),
+                "self_receipt",
+                "contributor equals the issuer (self-receipt)",
+            ),
+        ];
+        // unknown field smuggled in
+        let mut v = decode(built[0].receipt_bytes()).expect("case 0 parses");
+        if let Value::Map(ref mut entries) = v {
+            entries.push((Value::Int(9), Value::Int(1)));
+        }
+        legs.push((
+            encode(&v).expect("in-profile"),
+            "unknown_field",
+            "field 9 smuggled",
+        ));
+        // missing field: drop the sequence
+        let mut v = decode(built[0].receipt_bytes()).expect("case 0 parses");
+        if let Value::Map(ref mut entries) = v {
+            entries.retain(|(k, _)| !matches!(k, Value::Int(7)));
+        }
+        legs.push((
+            encode(&v).expect("in-profile"),
+            "missing_field",
+            "sequence dropped",
+        ));
+        // missing field: drop the issuer
+        let mut v = decode(built[0].receipt_bytes()).expect("case 0 parses");
+        if let Value::Map(ref mut entries) = v {
+            entries.retain(|(k, _)| !matches!(k, Value::Int(2)));
+        }
+        legs.push((
+            encode(&v).expect("in-profile"),
+            "missing_field",
+            "issuer dropped",
+        ));
+
+        use sharenet_protocol::contribution::ContributionReceipt as R;
+        legs.into_iter()
+            .map(|(bytes, error, note)| {
+                match R::from_wire_bytes(&bytes) {
+                    Err(e) => assert_eq!(e.name(), error, "parse reject {note}"),
+                    Ok(_) => panic!("parse reject {note} was accepted"),
+                }
+                ContributionRejectV {
+                    hex: common_hex(&bytes),
+                    error: error.to_string(),
+                    note: Some(note.to_string()),
+                }
+            })
+            .collect()
+    };
+
+    // envelope rejects: the carrying-envelope discipline
+    let envelope_reject: Vec<ContributionRejectV> = {
+        let wire = built[0].receipt_bytes().to_vec();
+        let good_sig = built[0].signature().to_vec();
+        let env = |sig_len: Option<usize>, payload: Value| -> Vec<u8> {
+            let sig = match sig_len {
+                None => Value::Bytes(good_sig.clone()),
+                Some(n) => Value::Bytes(good_sig[..n].to_vec()),
+            };
+            encode(&Value::Map(vec![
+                (Value::Int(1), payload),
+                (Value::Int(2), sig),
+            ]))
+            .expect("in-profile")
+        };
+        let mut flipped = built[0].to_envelope_bytes();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 0x01;
+        let legs: Vec<(Vec<u8>, &str, &str)> = vec![
+            (
+                env(Some(63), Value::Bytes(wire.clone())),
+                "signature_wrong_length",
+                "63-byte signature",
+            ),
+            (
+                encode(&Value::Map(vec![(
+                    Value::Int(1),
+                    Value::Bytes(wire.clone()),
+                )]))
+                .expect("in-profile"),
+                "envelope_wrong_entry_count",
+                "payload-only envelope",
+            ),
+            (
+                env(None, Value::Int(5)),
+                "field_not_expected_type",
+                "payload not bytes",
+            ),
+            (
+                encode(&Value::Array(vec![Value::Int(1)])).expect("in-profile"),
+                "not_a_map",
+                "envelope is an array",
+            ),
+            (flipped, "signature_invalid", "one flipped signature bit"),
+        ];
+        legs.into_iter()
+            .map(|(bytes, error, note)| {
+                match SignedContributionReceipt::from_envelope_bytes(&bytes) {
+                    Err(e) => assert_eq!(e.name(), error, "envelope reject {note}"),
+                    Ok(_) => panic!("envelope reject {note} was accepted"),
+                }
+                ContributionRejectV {
+                    hex: common_hex(&bytes),
+                    error: error.to_string(),
+                    note: Some(note.to_string()),
+                }
+            })
+            .collect()
+    };
+
+    ContributionVectorsFile {
+        scheme: "sharenet-contribution-receipt-v1".into(),
+        description: "ContributionReceipt conformance vectors (R8-001): the bilateral \
+recipient-signed acknowledgement per the protocol registry entry — carried/delivered kinds, \
+per-(issuer, contributor) monotonic sequence namespaces, future-dating, tamper/foreign \
+signatures, idempotent re-delivery and typed sequence refusal over ONE shared ledger \
+(the full admit_envelope verification path); strict parse + envelope rejections. Every hex \
+is re-derived by all three legs; the committed values are the pinned expectations."
+            .into(),
+        cases,
+        admit,
+        parse_reject,
+        envelope_reject,
     }
 }
 
@@ -3059,14 +3711,7 @@ fn capability_vectors() -> CapabilityVectorsFile {
     use sharenet_protocol::capability::Capability as Cap;
     let cap_text = |c: Cap| c.wire_text().to_string();
     // (seed byte pattern, capabilities, issued, expires, limits, note)
-    let cases_in: Vec<(
-        &str,
-        Vec<Cap>,
-        u64,
-        u64,
-        Option<Vec<(&str, i64)>>,
-        &str,
-    )> = vec![
+    let cases_in: Vec<(&str, Vec<Cap>, u64, u64, Option<Vec<(&str, i64)>>, &str)> = vec![
         (
             "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bcc8e0e6b9b0d",
             Capability::ALL.to_vec(),
@@ -3101,7 +3746,12 @@ fn capability_vectors() -> CapabilityVectorsFile {
         ),
         (
             "8d3d3a3a9b9b7c7c6d6d5e5e4f4f303021212222323434555667778899aabbcc",
-            vec![Cap::Infrastructure, Cap::Relay, Cap::Gateway, Cap::DtnCustodian],
+            vec![
+                Cap::Infrastructure,
+                Cap::Relay,
+                Cap::Gateway,
+                Cap::DtnCustodian,
+            ],
             1_754_000_000,
             1_755_000_000,
             Some(vec![("a", 1), ("b", 2), ("c", 3), ("d", 4), ("e", 5)]),
@@ -3112,17 +3762,9 @@ fn capability_vectors() -> CapabilityVectorsFile {
     for (seed_hex, caps, issued, expires, limits, note) in cases_in {
         let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed length");
         let id = Identity::from_seed(seed, 0, None).unwrap();
-        let limits_map = limits.map(|kv| {
-            kv.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
-        });
-        let st = CapabilityStatement::new(
-            id.node_id(),
-            &caps,
-            issued,
-            expires,
-            limits_map,
-        )
-        .unwrap();
+        let limits_map = limits.map(|kv| kv.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+        let st =
+            CapabilityStatement::new(id.node_id(), &caps, issued, expires, limits_map).unwrap();
         let signed = st.sign(&id).unwrap();
         cases.push(CapabilityCase {
             note: Some(note.to_string()),
@@ -3340,10 +3982,7 @@ fn capability_vectors() -> CapabilityVectorsFile {
         ];
         let mut limits = Vec::new();
         for i in 0..33 {
-            limits.push((
-                Value::Text(format!("k{i:02}")),
-                Value::Int(i as i64),
-            ));
+            limits.push((Value::Text(format!("k{i:02}")), Value::Int(i as i64)));
         }
         entries.push((Value::Int(6), Value::Map(limits)));
         parse_reject.push(rej(
@@ -3369,18 +4008,21 @@ fn capability_vectors() -> CapabilityVectorsFile {
         signature_rule: "signature_hex is the RFC 8032 deterministic detached Ed25519 \
 signature over statement_wire_hex (the exact canonical CBOR bytes of the statement map) \
 produced from seed_hex; carrying envelope = canonical CBOR {1: statement bstr, \
-2: signature bstr}".into(),
+2: signature bstr}"
+            .into(),
         admission_rule: "admission = strict parse + node_id binding \
 (node_id = SHA-256(canonical_cbor({1: scheme_version, 2: public_key}))) + strict Ed25519 \
 verification over statement_wire_hex + (issued_at <= now < expires_at) + capability \
-lookup; no caller-controlled trust booleans".into(),
+lookup; no caller-controlled trust booleans"
+            .into(),
         description: "Signed capability statement vectors (R1-004). For every case \
 the harness MUST: derive the public key from seed_hex, derive node_id and compare \
 node_id_hex, rebuild the statement map from the fields, encode it canonically and \
 compare statement_wire_hex byte-exactly, and reproduce signature_hex byte-exactly. \
 admit[] cases run full admission and expect the named outcome (for node_id_mismatch \
 the harness verifies with a DIFFERENT valid key, e.g. the seed of the next case). \
-parse_reject[] bytes MUST fail CapabilityStatement parsing with the named typed error.".into(),
+parse_reject[] bytes MUST fail CapabilityStatement parsing with the named typed error."
+            .into(),
         cases,
         admit,
         parse_reject,
@@ -3615,7 +4257,11 @@ fn vectors_conformance() {
             let seed: [u8; SEED_LEN] = from_hex(&c.responder_seed_hex).try_into().expect("seed");
             Identity::from_seed(seed, c.responder_created_at_unix, None).unwrap()
         };
-        let envelope = if c.note.as_deref().is_some_and(|n| n.contains("capability envelope")) {
+        let envelope = if c
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("capability envelope"))
+        {
             let st = sharenet_protocol::capability::CapabilityStatement::new(
                 b.node_id(),
                 &[sharenet_protocol::capability::Capability::Gateway],
@@ -3639,7 +4285,11 @@ fn vectors_conformance() {
         let msg1_bytes = msg1.to_wire_bytes();
         assert_eq!(common_hex(&msg1_bytes), c.msg1_hex, "msg1 mismatch");
         let (msg2, pending) = responder
-            .respond_fixed(&msg1, &msg1_bytes, &from_hex(&c.responder_scalar_hex).try_into().unwrap())
+            .respond_fixed(
+                &msg1,
+                &msg1_bytes,
+                &from_hex(&c.responder_scalar_hex).try_into().unwrap(),
+            )
             .unwrap();
         let msg2_bytes = msg2.to_wire_bytes();
         assert_eq!(common_hex(&msg2_bytes), c.msg2_hex, "msg2 mismatch");
@@ -3650,11 +4300,18 @@ fn vectors_conformance() {
             .finish(&msg1_bytes, &msg2_bytes, &msg3, &msg3_bytes)
             .unwrap();
         assert_eq!(session_i.link_id(), session_r.link_id());
-        let link_id_hex: String = session_i.link_id().iter().map(|b| format!("{b:02x}")).collect();
+        let link_id_hex: String = session_i
+            .link_id()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         (link_id_hex, session_i, session_r)
     };
-    let mut sessions: Vec<(String, sharenet_protocol::link::LinkSession, sharenet_protocol::link::LinkSession)> =
-        Vec::new();
+    let mut sessions: Vec<(
+        String,
+        sharenet_protocol::link::LinkSession,
+        sharenet_protocol::link::LinkSession,
+    )> = Vec::new();
     for c in &link_file.cases {
         let (link_id_hex, si, sr) = mk_link_id(c);
         assert_eq!(link_id_hex, c.link_id_hex, "link_id mismatch");
@@ -3711,8 +4368,16 @@ fn vectors_conformance() {
         );
         let signed = ad.sign(&id).unwrap();
         assert_eq!(common_hex(signed.signature()), c.signature_hex, "case {i}");
-        assert_eq!(common_hex(&signed.advertisement_id()), c.advertisement_id_hex, "case {i}");
-        assert_eq!(common_hex(&signed.to_envelope_bytes()), c.envelope_hex, "case {i}");
+        assert_eq!(
+            common_hex(&signed.advertisement_id()),
+            c.advertisement_id_hex,
+            "case {i}"
+        );
+        assert_eq!(
+            common_hex(&signed.to_envelope_bytes()),
+            c.envelope_hex,
+            "case {i}"
+        );
     }
     // receive pipeline: one persistent cache per vector CASE (dedup
     // expectations require state across receive entries of the same case)
@@ -3758,7 +4423,9 @@ fn vectors_conformance() {
             .expect("subject len");
         let observation = match c.kind.as_str() {
             "link" => Observation::Link {
-                link_id: from_hex(c.link_id_hex.as_deref().unwrap()).try_into().unwrap(),
+                link_id: from_hex(c.link_id_hex.as_deref().unwrap())
+                    .try_into()
+                    .unwrap(),
                 established_at_unix: c.established_at_unix.unwrap(),
                 quality: {
                     let q = c.quality.as_ref().unwrap();
@@ -3781,8 +4448,14 @@ fn vectors_conformance() {
             },
             other => panic!("bad kind {other}"),
         };
-        let ev = TE::new(&obs, subject, observation, c.observed_at_unix, c.validity_secs)
-            .unwrap_or_else(|e| panic!("topo case {i} must build: {e}"));
+        let ev = TE::new(
+            &obs,
+            subject,
+            observation,
+            c.observed_at_unix,
+            c.validity_secs,
+        )
+        .unwrap_or_else(|e| panic!("topo case {i} must build: {e}"));
         assert_eq!(
             common_hex(&ev.to_wire_bytes()),
             c.evidence_wire_hex,
@@ -3790,8 +4463,16 @@ fn vectors_conformance() {
         );
         let signed = ev.sign(&obs).unwrap();
         assert_eq!(common_hex(signed.signature()), c.signature_hex, "topo {i}");
-        assert_eq!(common_hex(&signed.evidence_id()), c.evidence_id_hex, "topo {i}");
-        assert_eq!(common_hex(&signed.to_envelope_bytes()), c.envelope_hex, "topo {i}");
+        assert_eq!(
+            common_hex(&signed.evidence_id()),
+            c.evidence_id_hex,
+            "topo {i}"
+        );
+        assert_eq!(
+            common_hex(&signed.to_envelope_bytes()),
+            c.envelope_hex,
+            "topo {i}"
+        );
     }
     {
         let mut stores: std::collections::HashMap<usize, TopologyStore> =
@@ -3826,8 +4507,8 @@ fn vectors_conformance() {
     .expect("route_vectors.json parses");
     assert_eq!(route_file.scheme, "sharenet-route-v1");
     use sharenet_protocol::route::{
-        derive_proposal_id, RouteAcceptance as RAcc, RouteCommitment as RCom, RouteProposal as RProp,
-        SignedEnvelope as REnv,
+        derive_proposal_id, RouteAcceptance as RAcc, RouteCommitment as RCom,
+        RouteProposal as RProp, SignedEnvelope as REnv,
     };
     for (i, c) in route_file.cases.iter().enumerate() {
         let proposer = {
@@ -3868,8 +4549,14 @@ fn vectors_conformance() {
             .iter()
             .enumerate()
             .map(|(pos, m)| {
-                let a = RAcc::new(m, proposal_id, pos as u64, c.accepted_at_unix, c.acceptance_validity_secs)
-                    .unwrap();
+                let a = RAcc::new(
+                    m,
+                    proposal_id,
+                    pos as u64,
+                    c.accepted_at_unix,
+                    c.acceptance_validity_secs,
+                )
+                .unwrap();
                 a.sign(m).unwrap()
             })
             .collect();
@@ -3881,14 +4568,30 @@ fn vectors_conformance() {
             );
         }
         let commitment = RCom::build(1_200, env, acceptance_envs).unwrap();
-        assert_eq!(common_hex(&commitment.to_wire_bytes()), c.commitment_wire_hex, "route case {i}");
-        assert_eq!(common_hex(commitment.commitment_root()), c.commitment_root_hex, "route case {i}");
-        assert_eq!(common_hex(commitment.route_id()), c.route_id_hex, "route case {i}");
+        assert_eq!(
+            common_hex(&commitment.to_wire_bytes()),
+            c.commitment_wire_hex,
+            "route case {i}"
+        );
+        assert_eq!(
+            common_hex(commitment.commitment_root()),
+            c.commitment_root_hex,
+            "route case {i}"
+        );
+        assert_eq!(
+            common_hex(commitment.route_id()),
+            c.route_id_hex,
+            "route case {i}"
+        );
     }
     // unique route ids across cases with identical memberships but fresh nonces
     let ids: Vec<&String> = route_file.cases.iter().map(|c| &c.route_id_hex).collect();
     let unique: std::collections::HashSet<&String> = ids.iter().cloned().collect();
-    assert_eq!(ids.len(), unique.len(), "fresh nonces must yield fresh route ids");
+    assert_eq!(
+        ids.len(),
+        unique.len(),
+        "fresh nonces must yield fresh route ids"
+    );
     for r in &route_file.rejects {
         let bytes = from_hex(&r.hex);
         let commitment = RCom::from_wire_bytes(&bytes).expect("parse");
@@ -3953,8 +4656,14 @@ fn vectors_conformance() {
             .iter()
             .enumerate()
             .map(|(pos, m)| {
-                let a = CAcc::new(m, proposal_id, pos as u64, c.accepted_at_unix, c.acceptance_validity_secs)
-                    .unwrap();
+                let a = CAcc::new(
+                    m,
+                    proposal_id,
+                    pos as u64,
+                    c.accepted_at_unix,
+                    c.acceptance_validity_secs,
+                )
+                .unwrap();
                 a.sign(m).unwrap()
             })
             .collect();
@@ -3966,12 +4675,26 @@ fn vectors_conformance() {
             );
         }
         let commitment = CCom::build(1_100, proposal_env, acceptance_envs).unwrap();
-        assert_eq!(common_hex(&commitment.to_wire_bytes()), c.commitment_wire_hex, "circuit case {i}");
-        assert_eq!(common_hex(commitment.route_id()), c.route_id_hex, "circuit case {i}");
+        assert_eq!(
+            common_hex(&commitment.to_wire_bytes()),
+            c.commitment_wire_hex,
+            "circuit case {i}"
+        );
+        assert_eq!(
+            common_hex(commitment.route_id()),
+            c.route_id_hex,
+            "circuit case {i}"
+        );
         // circuit objects
         let setup_nonce: [u8; 32] = from_hex(&c.setup_nonce_hex).try_into().unwrap();
-        let setup = CSetup::new(&commitment, &proposer, setup_nonce, c.setup_issued_at_unix, c.setup_validity_secs)
-            .unwrap();
+        let setup = CSetup::new(
+            &commitment,
+            &proposer,
+            setup_nonce,
+            c.setup_issued_at_unix,
+            c.setup_validity_secs,
+        )
+        .unwrap();
         let setup_env = setup.sign(&proposer).unwrap();
         assert_eq!(
             common_hex(&setup_env.to_envelope_bytes()),
@@ -3980,7 +4703,11 @@ fn vectors_conformance() {
         );
         let circuit_id =
             sharenet_protocol::circuit::derive_circuit_id(commitment.route_id(), &setup_nonce);
-        assert_eq!(common_hex(&circuit_id), c.circuit_id_hex, "circuit case {i}");
+        assert_eq!(
+            common_hex(&circuit_id),
+            c.circuit_id_hex,
+            "circuit case {i}"
+        );
         let acks: Vec<_> = members
             .iter()
             .enumerate()
@@ -4005,13 +4732,8 @@ fn vectors_conformance() {
             );
         }
         for (j, f) in c.frames.iter().enumerate() {
-            let frame = CFrm::new(
-                circuit_id,
-                f.direction,
-                f.seq,
-                from_hex(&f.payload_hex),
-            )
-            .unwrap();
+            let frame =
+                CFrm::new(circuit_id, f.direction, f.seq, from_hex(&f.payload_hex)).unwrap();
             assert_eq!(
                 common_hex(&frame.to_wire_bytes()),
                 c.frame_wire_hexes[j],
@@ -4019,9 +4741,13 @@ fn vectors_conformance() {
             );
         }
         let destroy_sender = members[c.destroy_sender_position as usize];
-        let destroy =
-            CDest::new(circuit_id, destroy_sender, c.destroy_reason.clone(), c.destroyed_at_unix)
-                .unwrap();
+        let destroy = CDest::new(
+            circuit_id,
+            destroy_sender,
+            c.destroy_reason.clone(),
+            c.destroyed_at_unix,
+        )
+        .unwrap();
         let destroy_env = destroy.sign(destroy_sender).unwrap();
         assert_eq!(
             common_hex(&destroy_env.to_envelope_bytes()),
@@ -4030,29 +4756,44 @@ fn vectors_conformance() {
         );
         // admission replay at the recorded time
         let mut registry = CReg::new();
-        let admitted = registry.admit_setup(c.admission_now_unix, &setup_env).unwrap();
+        let admitted = registry
+            .admit_setup(c.admission_now_unix, &setup_env)
+            .unwrap();
         assert_eq!(admitted, circuit_id);
         for (j, ack) in acks.iter().enumerate() {
             let outcome = registry.admit_ack(c.admission_now_unix, ack).unwrap();
-            assert_eq!(outcome.established(), j == acks.len() - 1, "circuit case {i}");
+            assert_eq!(
+                outcome.established(),
+                j == acks.len() - 1,
+                "circuit case {i}"
+            );
         }
         for f in c.frames.iter() {
             let frame =
                 CFrm::new(circuit_id, f.direction, f.seq, from_hex(&f.payload_hex)).unwrap();
-            registry.admit_frame(&frame).unwrap_or_else(|e| {
-                panic!("frame admission failed in circuit case {i}: {e}")
-            });
+            registry
+                .admit_frame(&frame)
+                .unwrap_or_else(|e| panic!("frame admission failed in circuit case {i}: {e}"));
         }
         registry.admit_destroy(&destroy_env).unwrap();
         assert!(registry.circuit(&circuit_id).unwrap().destroyed());
         assert!(
-            !registry.is_established(&circuit_id) || registry.circuit(&circuit_id).unwrap().destroyed()
+            !registry.is_established(&circuit_id)
+                || registry.circuit(&circuit_id).unwrap().destroyed()
         );
     }
     // unique circuit ids across cases with identical memberships but fresh setup nonces
-    let cids: Vec<&String> = circuit_file.cases.iter().map(|c| &c.circuit_id_hex).collect();
+    let cids: Vec<&String> = circuit_file
+        .cases
+        .iter()
+        .map(|c| &c.circuit_id_hex)
+        .collect();
     let cunique: std::collections::HashSet<&String> = cids.iter().cloned().collect();
-    assert_eq!(cids.len(), cunique.len(), "fresh setup nonces must yield fresh circuit ids");
+    assert_eq!(
+        cids.len(),
+        cunique.len(),
+        "fresh setup nonces must yield fresh circuit ids"
+    );
     for r in &circuit_file.rejects {
         let bytes = from_hex(&r.hex);
         let err: sharenet_protocol::circuit::CircuitError =
@@ -4088,13 +4829,20 @@ fn vectors_conformance() {
             c.manifest_wire_hex,
             "wire mismatch in content case {i}"
         );
-        assert_eq!(common_hex(&manifest.content_id()), c.content_id_hex, "content case {i}");
+        assert_eq!(
+            common_hex(&manifest.content_id()),
+            c.content_id_hex,
+            "content case {i}"
+        );
         let hashes: Vec<String> = manifest
             .chunk_hashes()
             .iter()
             .map(|h| common_hex(h))
             .collect();
-        assert_eq!(hashes, c.chunk_hashes_hex, "chunk hashes in content case {i}");
+        assert_eq!(
+            hashes, c.chunk_hashes_hex,
+            "chunk hashes in content case {i}"
+        );
         assert_eq!(
             manifest.chunk_count() as u64,
             (c.content_hex.len() / 2).div_ceil(c.chunk_size as usize) as u64,
@@ -4113,7 +4861,11 @@ fn vectors_conformance() {
             content_apply_mutation(&mut stream, m, r.slot);
         }
         let outcome = content_reassembly_outcome(manifest, &stream);
-        assert_eq!(outcome, r.expect, "content reassembly {i} (case {})", r.case);
+        assert_eq!(
+            outcome, r.expect,
+            "content reassembly {i} (case {})",
+            r.case
+        );
     }
     for r in &content_file.parse_reject {
         let bytes = from_hex(&r.hex);
@@ -4130,14 +4882,19 @@ fn vectors_conformance() {
     )
     .expect("revocation_vectors.json parses");
     assert_eq!(rev_file.scheme, "sharenet-circuit-revocation-v1");
-    assert!(rev_file.cases.len() >= 4, "expected all four reasons covered");
+    assert!(
+        rev_file.cases.len() >= 4,
+        "expected all four reasons covered"
+    );
     {
         use sharenet_protocol::circuit::{CircuitRegistry, CircuitSetup, CircuitSetupAck};
         use sharenet_protocol::revocation::{
             CircuitRevocation, EvidenceValue, RevocationLedger, RevocationReason,
             SignedCircuitRevocation,
         };
-        use sharenet_protocol::route::{derive_proposal_id, RouteAcceptance, RouteCommitment, RouteProposal};
+        use sharenet_protocol::route::{
+            derive_proposal_id, RouteAcceptance, RouteCommitment, RouteProposal,
+        };
 
         let mk = |seed_hex: &str, created: u64| -> Identity {
             let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
@@ -4153,8 +4910,7 @@ fn vectors_conformance() {
                 .collect();
             let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
             path.push(*proposer.node_id().as_bytes());
-            let proposal_nonce: [u8; 32] =
-                from_hex(&c.proposal_nonce_hex).try_into().unwrap();
+            let proposal_nonce: [u8; 32] = from_hex(&c.proposal_nonce_hex).try_into().unwrap();
             let proposal = RouteProposal::new(
                 &proposer,
                 path,
@@ -4184,17 +4940,23 @@ fn vectors_conformance() {
                     a.sign(m).unwrap()
                 })
                 .collect();
-            let commitment =
-                RouteCommitment::build(1_100, proposal_env, acceptance_envs).unwrap();
+            let commitment = RouteCommitment::build(1_100, proposal_env, acceptance_envs).unwrap();
             let setup_nonce: [u8; 32] = from_hex(&c.setup_nonce_hex).try_into().unwrap();
-            let setup =
-                CircuitSetup::new(&commitment, &proposer, setup_nonce, c.setup_issued_at_unix, c.setup_validity_secs)
-                    .unwrap();
+            let setup = CircuitSetup::new(
+                &commitment,
+                &proposer,
+                setup_nonce,
+                c.setup_issued_at_unix,
+                c.setup_validity_secs,
+            )
+            .unwrap();
             let setup_env = setup.sign(&proposer).unwrap();
             let circuit_id =
                 sharenet_protocol::circuit::derive_circuit_id(commitment.route_id(), &setup_nonce);
             let mut registry = CircuitRegistry::new();
-            registry.admit_setup(c.admission_now_unix, &setup_env).unwrap();
+            registry
+                .admit_setup(c.admission_now_unix, &setup_env)
+                .unwrap();
             for (pos, member) in members.iter().enumerate() {
                 let ack = CircuitSetupAck::new(
                     circuit_id,
@@ -4217,15 +4979,19 @@ fn vectors_conformance() {
         let mut seen_reasons = std::collections::HashSet::new();
         for (i, c) in rev_file.cases.iter().enumerate() {
             let (members, circuit_id, registry) = build(c);
-            assert_eq!(common_hex(&circuit_id), c.circuit_id_hex, "revocation case {i}");
+            assert_eq!(
+                common_hex(&circuit_id),
+                c.circuit_id_hex,
+                "revocation case {i}"
+            );
             let reason = RevocationReason::from_name(&c.reason)
                 .unwrap_or_else(|| panic!("revocation case {i}: reason not frozen"));
             seen_reasons.insert(c.reason.clone());
-            let evidence: Option<std::collections::BTreeMap<String, EvidenceValue>> = c
-                .evidence
-                .as_ref()
-                .map(|ev| {
-                    ev.iter().map(|(k, v)| (k.clone(), EvidenceValue::from(v))).collect()
+            let evidence: Option<std::collections::BTreeMap<String, EvidenceValue>> =
+                c.evidence.as_ref().map(|ev| {
+                    ev.iter()
+                        .map(|(k, v)| (k.clone(), EvidenceValue::from(v)))
+                        .collect()
                 });
             let revoker = &members[c.revoker_position as usize];
             let revocation =
@@ -4278,17 +5044,20 @@ fn vectors_conformance() {
             let (members, _circuit_id, registry) = build(c);
             let revoker = match r.revoker.as_str() {
                 "primary" => &members[c.revoker_position as usize],
-                "second" => {
-                    &members[((c.revoker_position + 1) % members.len() as u64) as usize]
-                }
-                "outsider" => &mk("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", 1),
+                "second" => &members[((c.revoker_position + 1) % members.len() as u64) as usize],
+                "outsider" => &mk(
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    1,
+                ),
                 other => panic!("unknown revoker kind {other:?}"),
             };
             let (reason, evidence, revoked_at) = if r.revoker == "primary" {
                 (
                     RevocationReason::from_name(&c.reason).unwrap(),
                     c.evidence.as_ref().map(|ev| {
-                        ev.iter().map(|(k, v)| (k.clone(), EvidenceValue::from(v))).collect()
+                        ev.iter()
+                            .map(|(k, v)| (k.clone(), EvidenceValue::from(v)))
+                            .collect()
                     }),
                     c.revoked_at_unix,
                 )
@@ -4327,6 +5096,139 @@ fn vectors_conformance() {
             }
         }
     }
+
+    // ---- contribution receipt vectors (R8-001) ----
+    let contrib_file: ContributionVectorsFile = serde_json::from_str(
+        &std::fs::read_to_string(vectors_path("contribution_vectors.json"))
+            .expect("contribution_vectors.json must exist (run the regenerate test if missing)"),
+    )
+    .expect("contribution_vectors.json parses");
+    assert_eq!(contrib_file.scheme, "sharenet-contribution-receipt-v1");
+    assert!(
+        contrib_file.cases.len() >= 8,
+        "expected all case families covered"
+    );
+    {
+        use sharenet_protocol::contribution::{
+            ContributionKind, ContributionReceipt as R, ReceiptAdmitOutcome, ReceiptLedger,
+            SignedContributionReceipt,
+        };
+
+        let mk = |seed_hex: &str, created: u64| -> Identity {
+            let seed: [u8; SEED_LEN] = from_hex(seed_hex).try_into().expect("seed len");
+            Identity::from_seed(seed, created, None).unwrap()
+        };
+        let foreign = mk(
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            0,
+        );
+        // every case: rebuild + pin wire/sig/env/receipt_id through the real
+        // API (never trusting the committed hex)
+        let mut rebuilt: Vec<SignedContributionReceipt> = Vec::new();
+        for (i, c) in contrib_file.cases.iter().enumerate() {
+            let issuer = mk(&c.issuer_seed_hex, c.issuer_created_at_unix);
+            let contributor: [u8; 32] = from_hex(&c.contributor_node_id_hex)
+                .try_into()
+                .expect("contributor len");
+            let content: [u8; 32] = from_hex(&c.content_id_hex).try_into().expect("content len");
+            let kind = ContributionKind::from_name(&c.kind)
+                .unwrap_or_else(|| panic!("contribution case {i}: kind not frozen"));
+            let receipt = R::new(
+                &issuer,
+                contributor,
+                content,
+                kind,
+                c.delivered_bytes,
+                c.receipt_seq,
+                c.issued_at_unix,
+            )
+            .unwrap_or_else(|e| panic!("contribution case {i}: {e}"));
+            let signed = receipt.sign(&issuer).unwrap();
+            assert_eq!(
+                common_hex(&signed.receipt_bytes().to_vec()),
+                c.wire_hex,
+                "contribution wire mismatch in case {i}"
+            );
+            assert_eq!(
+                common_hex(signed.signature()),
+                c.sig_hex,
+                "contribution signature mismatch in case {i}"
+            );
+            assert_eq!(
+                common_hex(&signed.to_envelope_bytes()),
+                c.env_hex,
+                "contribution envelope mismatch in case {i}"
+            );
+            assert_eq!(
+                common_hex(&signed.receipt_id()),
+                c.receipt_id_hex,
+                "contribution receipt_id mismatch in case {i}"
+            );
+            // the committed envelope must round-trip through the real path
+            let reparsed = SignedContributionReceipt::from_envelope_bytes(&from_hex(&c.env_hex))
+                .unwrap_or_else(|e| panic!("contribution case {i} envelope: {e}"));
+            assert_eq!(reparsed.receipt_id(), signed.receipt_id());
+            rebuilt.push(signed);
+        }
+        // the frozen two kinds are both covered
+        let kinds: std::collections::HashSet<String> =
+            contrib_file.cases.iter().map(|c| c.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            std::collections::HashSet::from(["carried".to_string(), "delivered".to_string()]),
+            "both frozen kinds must be covered"
+        );
+
+        // admit: ONE shared ledger replayed in order (the full
+        // admit_envelope verification path; the order is the test)
+        let ledger = ReceiptLedger::new();
+        for (i, r) in contrib_file.admit.iter().enumerate() {
+            let case = &rebuilt[r.case];
+            let env = match r.mutation.as_deref() {
+                None => case.to_envelope_bytes(),
+                Some("tamper_signature") => {
+                    let mut sig = *case.signature();
+                    sig[0] ^= 0x01;
+                    encode(&Value::Map(vec![
+                        (Value::Int(1), Value::Bytes(case.receipt_bytes().to_vec())),
+                        (Value::Int(2), Value::Bytes(sig.to_vec())),
+                    ]))
+                    .expect("in-profile")
+                }
+                Some("foreign_signer") => {
+                    let sig = foreign.sign_detached(case.receipt_bytes());
+                    encode(&Value::Map(vec![
+                        (Value::Int(1), Value::Bytes(case.receipt_bytes().to_vec())),
+                        (Value::Int(2), Value::Bytes(sig.to_vec())),
+                    ]))
+                    .expect("in-profile")
+                }
+                Some(other) => panic!("unknown admit mutation {other:?}"),
+            };
+            let outcome = match ledger.admit_envelope(r.now_unix, &env) {
+                Ok(ReceiptAdmitOutcome::Admitted) => "admitted".to_string(),
+                Ok(ReceiptAdmitOutcome::Duplicate) => "duplicate".to_string(),
+                Err(e) => e.name().to_string(),
+            };
+            assert_eq!(outcome, r.expect, "contribution admit {i} diverged");
+        }
+
+        // rejects: parse + envelope level through the real verification path
+        for (i, r) in contrib_file.parse_reject.iter().enumerate() {
+            let bytes = from_hex(&r.hex);
+            match R::from_wire_bytes(&bytes) {
+                Err(e) => assert_eq!(e.name(), r.error, "contribution parse_reject {i}"),
+                Ok(_) => panic!("contribution parse_reject {i} was accepted"),
+            }
+        }
+        for (i, r) in contrib_file.envelope_reject.iter().enumerate() {
+            let bytes = from_hex(&r.hex);
+            match SignedContributionReceipt::from_envelope_bytes(&bytes) {
+                Err(e) => assert_eq!(e.name(), r.error, "contribution envelope_reject {i}"),
+                Ok(_) => panic!("contribution envelope_reject {i} was accepted"),
+            }
+        }
+    }
 }
 
 /// Object-level reject check by kind: setups/acks/destroys arrive as
@@ -4335,9 +5237,7 @@ fn circuit_reject_check(
     kind: &str,
     bytes: &[u8],
 ) -> Result<(), sharenet_protocol::circuit::CircuitError> {
-    use sharenet_protocol::circuit::{
-        CircuitDestroy, CircuitFrame, CircuitSetup, CircuitSetupAck,
-    };
+    use sharenet_protocol::circuit::{CircuitDestroy, CircuitFrame, CircuitSetup, CircuitSetupAck};
     use sharenet_protocol::route::SignedEnvelope;
     match kind {
         "frame" => {
@@ -4394,8 +5294,7 @@ fn regenerate_vectors() {
     std::fs::write(vectors_path("topology_vectors.json"), topo_json)
         .expect("write topology vectors");
     let route_json = serde_json::to_string_pretty(&route_vectors()).unwrap() + "\n";
-    std::fs::write(vectors_path("route_vectors.json"), route_json)
-        .expect("write route vectors");
+    std::fs::write(vectors_path("route_vectors.json"), route_json).expect("write route vectors");
     let circuit_json = serde_json::to_string_pretty(&circuit_vectors()).unwrap() + "\n";
     std::fs::write(vectors_path("circuit_vectors.json"), circuit_json)
         .expect("write circuit vectors");
@@ -4405,6 +5304,9 @@ fn regenerate_vectors() {
     let rev_json = serde_json::to_string_pretty(&revocation_vectors()).unwrap() + "\n";
     std::fs::write(vectors_path("revocation_vectors.json"), rev_json)
         .expect("write revocation vectors");
+    let contrib_json = serde_json::to_string_pretty(&contribution_vectors()).unwrap() + "\n";
+    std::fs::write(vectors_path("contribution_vectors.json"), contrib_json)
+        .expect("write contribution vectors");
     eprintln!("vectors regenerated under {VECTORS_DIR}");
 }
 

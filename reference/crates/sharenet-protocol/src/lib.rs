@@ -32,11 +32,12 @@
 #![forbid(unsafe_code)]
 
 pub mod advertisement;
-pub mod cbor;
 pub mod capability;
+pub mod cbor;
 pub mod circuit;
 pub mod connectivity_evidence;
 pub mod content;
+pub mod contribution;
 pub mod identity;
 pub mod link;
 pub mod revocation;
@@ -47,18 +48,42 @@ pub mod topology;
 pub use advertisement::{
     Advertisement, AdvertisementError, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement,
     TransportDescriptor, AD_MAX_ENDPOINT_BYTES, AD_MAX_TRANSPORTS, AD_MAX_WINDOW,
-    AD_TRANSPORT_KINDS, AD_SCHEME_VERSION,
+    AD_SCHEME_VERSION, AD_TRANSPORT_KINDS,
 };
-pub use cbor::{decode, encode, DecodeError, EncodeError, Value};
 pub use capability::{
-    admit, Admitted, AdmissionError, Capability, CapabilityError, CapabilityStatement,
+    admit, AdmissionError, Admitted, Capability, CapabilityError, CapabilityStatement,
     SignedCapabilityStatement, CAP_SCHEME_VERSION, MAX_LIMITS_ENTRIES, MAX_LIMIT_KEY_BYTES,
 };
+pub use cbor::{decode, encode, DecodeError, EncodeError, Value};
 pub use circuit::{
     derive_circuit_id, setup_digest, AckOutcome, CircuitDestroy, CircuitError, CircuitFrame,
-    CircuitRegistry, CircuitSetup, CircuitSetupAck, CIRCUIT_MAX_PAYLOAD, CIRCUIT_MAX_PATH,
+    CircuitRegistry, CircuitSetup, CircuitSetupAck, CIRCUIT_MAX_PATH, CIRCUIT_MAX_PAYLOAD,
     CIRCUIT_MAX_WINDOW, CIRCUIT_SCHEME_VERSION, DESTROY_REASONS, DIRECTION_EXIT_TO_INITIATOR,
     DIRECTION_INITIATOR_TO_EXIT,
+};
+pub use connectivity_evidence::{
+    AdmissionOutcome, ConnectivityEvidenceError, ConnectivityObservationStatement, EvidenceKind,
+    ObservationAdmission, SignedConnectivityObservation, CONNECTIVITY_EVIDENCE_SCHEME_VERSION,
+    EXECUTION_MAX_ENTRIES, EXECUTION_MAX_KEY_BYTES, SEQUENCE_MIN,
+};
+pub use content::{
+    chunk_hash, ContentError, ContentManifest, MetadataValue, CHUNK_HASH_LEN,
+    CONTENT_MAX_CHUNK_SIZE, CONTENT_MIN_CHUNK_SIZE, CONTENT_SCHEME_VERSION, CONTENT_TYPE_MAX_BYTES,
+    METADATA_MAX_ENTRIES, METADATA_MAX_KEY_BYTES, METADATA_MAX_VALUE_TEXT_BYTES,
+};
+pub use contribution::{
+    ContributionKind, ContributionReceipt, ReceiptAdmitOutcome, ReceiptError, ReceiptLedger,
+    SignedContributionReceipt, CONTRIBUTION_KINDS, CONTRIBUTION_SCHEME_VERSION,
+    CONTRIBUTION_SNAPSHOT_VERSION, DELIVERED_BYTES_MAX, RECEIPT_SEQ_MIN,
+};
+pub use identity::{
+    derive_node_id, Identity, IdentityError, NodeId, NodeIdentity, VerifyError,
+    MAX_DISPLAY_NAME_BYTES, NODE_ID_LEN, PUBLIC_KEY_LEN, SCHEME_VERSION, SEED_LEN, SIGNATURE_LEN,
+};
+pub use link::{
+    LinkConfirm, LinkError, LinkInitiate, LinkInitiator, LinkRespond, LinkResponder,
+    LinkResponderPending, LinkSession, LinkTransport, EPHEMERAL_LEN, LINK_ID_LEN,
+    LINK_SCHEME_VERSION, NONCE_LEN, REPLAY_WINDOW, SESSION_KEY_LEN,
 };
 pub use revocation::{
     CircuitRevocation, EvidenceValue, FailureDetector, FailureDetectorConfig, FailureVerdict,
@@ -68,37 +93,16 @@ pub use revocation::{
     REVOCATION_SNAPSHOT_VERSION,
 };
 pub use route::{
-    derive_proposal_id, derive_route_id, merkle_root, RouteAcceptance, RouteCommitment,
-    RouteError, RouteProposal, SignedEnvelope, VerifiedRoute, ROUTE_MAX_PATH, ROUTE_MAX_WINDOW,
+    derive_proposal_id, derive_route_id, merkle_root, RouteAcceptance, RouteCommitment, RouteError,
+    RouteProposal, SignedEnvelope, VerifiedRoute, ROUTE_MAX_PATH, ROUTE_MAX_WINDOW,
     ROUTE_SCHEME_VERSION, SERVICE_CLASSES,
 };
+pub use store::{load_identity_file, IdentityStore, StoreError, IDENTITY_FILE_NAME};
 pub use topology::{
     BilateralLink, LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence,
-    TopologyError, TopologyEvidence, TopologyStore, EVIDENCE_MAX_WINDOW,
-    EVIDENCE_SCHEME_VERSION, LOSS_RATIO_PPM_MAX,
+    TopologyError, TopologyEvidence, TopologyStore, EVIDENCE_MAX_WINDOW, EVIDENCE_SCHEME_VERSION,
+    LOSS_RATIO_PPM_MAX,
 };
-pub use connectivity_evidence::{
-    AdmissionOutcome, ConnectivityEvidenceError, ConnectivityObservationStatement,
-    EvidenceKind, ObservationAdmission, SignedConnectivityObservation,
-    CONNECTIVITY_EVIDENCE_SCHEME_VERSION, EXECUTION_MAX_ENTRIES, EXECUTION_MAX_KEY_BYTES,
-    SEQUENCE_MIN,
-};
-pub use content::{
-    chunk_hash, ContentError, ContentManifest, MetadataValue, CHUNK_HASH_LEN,
-    CONTENT_MAX_CHUNK_SIZE, CONTENT_MIN_CHUNK_SIZE, CONTENT_SCHEME_VERSION,
-    CONTENT_TYPE_MAX_BYTES, METADATA_MAX_ENTRIES, METADATA_MAX_KEY_BYTES,
-    METADATA_MAX_VALUE_TEXT_BYTES,
-};
-pub use link::{
-    LinkConfirm, LinkError, LinkInitiate, LinkInitiator, LinkRespond, LinkResponder,
-    LinkResponderPending, LinkSession, LinkTransport, EPHEMERAL_LEN, LINK_ID_LEN,
-    LINK_SCHEME_VERSION, NONCE_LEN, REPLAY_WINDOW, SESSION_KEY_LEN,
-};
-pub use identity::{
-    derive_node_id, Identity, IdentityError, NodeId, NodeIdentity, VerifyError,
-    MAX_DISPLAY_NAME_BYTES, NODE_ID_LEN, PUBLIC_KEY_LEN, SCHEME_VERSION, SEED_LEN, SIGNATURE_LEN,
-};
-pub use store::{load_identity_file, IdentityStore, StoreError, IDENTITY_FILE_NAME};
 
 #[cfg(test)]
 pub(crate) mod testutil {

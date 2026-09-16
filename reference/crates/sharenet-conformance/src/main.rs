@@ -29,30 +29,33 @@ use std::process::ExitCode;
 
 use serde::Deserialize;
 
+use sharenet_protocol::advertisement::{
+    Advertisement, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement, TransportDescriptor,
+};
+use sharenet_protocol::capability::{admit, Capability, CapabilityStatement};
 use sharenet_protocol::cbor::{decode, encode, Value};
 use sharenet_protocol::circuit::{
     CircuitDestroy, CircuitFrame, CircuitRegistry, CircuitSetup, CircuitSetupAck,
-};
-use sharenet_protocol::revocation::{
-    CircuitRevocation, EvidenceValue, RevocationLedger, RevocationReason,
-    SignedCircuitRevocation,
-};
-use sharenet_protocol::route::{RouteAcceptance, RouteCommitment, RouteProposal};
-use sharenet_protocol::topology::{
-    LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence, TopologyEvidence,
-    TopologyStore,
 };
 use sharenet_protocol::connectivity_evidence::{
     AdmissionOutcome, ConnectivityObservationStatement, EvidenceKind, ObservationAdmission,
     SignedConnectivityObservation,
 };
 use sharenet_protocol::content::{ContentError, ContentManifest, MetadataValue};
-use sharenet_protocol::advertisement::{
-    Advertisement, DiscoveryCache, DiscoveryOutcome, SignedAdvertisement, TransportDescriptor,
+use sharenet_protocol::contribution::{
+    ContributionKind, ContributionReceipt, ReceiptAdmitOutcome, ReceiptLedger,
+    SignedContributionReceipt,
 };
-use sharenet_protocol::capability::{admit, Capability, CapabilityStatement};
 use sharenet_protocol::identity::{derive_node_id, Identity};
 use sharenet_protocol::link::{LinkInitiator, LinkResponder, LinkSession};
+use sharenet_protocol::revocation::{
+    CircuitRevocation, EvidenceValue, RevocationLedger, RevocationReason, SignedCircuitRevocation,
+};
+use sharenet_protocol::route::{RouteAcceptance, RouteCommitment, RouteProposal};
+use sharenet_protocol::topology::{
+    LinkQualitySnapshot, Observation, ReceiveOutcome, SignedTopologyEvidence, TopologyEvidence,
+    TopologyStore,
+};
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -205,7 +208,11 @@ fn main() -> ExitCode {
     };
     for (i, case) in caps_file.cases.iter().enumerate() {
         let id = identity_of(case);
-        let caps: Vec<Capability> = case.capabilities.iter().map(|t| parse_capability(t)).collect();
+        let caps: Vec<Capability> = case
+            .capabilities
+            .iter()
+            .map(|t| parse_capability(t))
+            .collect();
         let st = CapabilityStatement::new(
             id.node_id(),
             &caps,
@@ -235,7 +242,11 @@ fn main() -> ExitCode {
         };
         let require: Vec<Capability> = a.require.iter().map(|t| parse_capability(t)).collect();
         // Rebuild the statement wire (independent re-derivation).
-        let caps: Vec<Capability> = case.capabilities.iter().map(|t| parse_capability(t)).collect();
+        let caps: Vec<Capability> = case
+            .capabilities
+            .iter()
+            .map(|t| parse_capability(t))
+            .collect();
         let st = CapabilityStatement::new(
             id.node_id(),
             &caps,
@@ -303,10 +314,14 @@ fn main() -> ExitCode {
         let seed_r: [u8; 32] = from_hex(&c.responder_seed_hex).try_into().expect("seed");
         let id_i = Identity::from_seed(seed_i, c.initiator_created_at_unix, None).expect("id");
         let id_r = Identity::from_seed(seed_r, c.responder_created_at_unix, None).expect("id");
-        let scalar_i: [u8; 32] = from_hex(&c.initiator_scalar_hex).try_into().expect("scalar");
-        let scalar_r: [u8; 32] = from_hex(&c.responder_scalar_hex).try_into().expect("scalar");
-        let initiator = LinkInitiator::from_ephemeral_bytes(&scalar_i, id_i, None)
-            .expect("initiator");
+        let scalar_i: [u8; 32] = from_hex(&c.initiator_scalar_hex)
+            .try_into()
+            .expect("scalar");
+        let scalar_r: [u8; 32] = from_hex(&c.responder_scalar_hex)
+            .try_into()
+            .expect("scalar");
+        let initiator =
+            LinkInitiator::from_ephemeral_bytes(&scalar_i, id_i, None).expect("initiator");
         let responder = LinkResponder::new(id_r, None);
         let msg1 = initiator.initiate();
         let msg1_bytes = msg1.to_wire_bytes();
@@ -415,9 +430,8 @@ fn main() -> ExitCode {
             std::collections::HashMap::new();
         for (i, r) in ad_file.receive.iter().enumerate() {
             let c = &ad_file.cases[r.case];
-            let signed =
-                SignedAdvertisement::from_envelope_bytes(&from_hex(&c.envelope_hex))
-                    .expect("envelope");
+            let signed = SignedAdvertisement::from_envelope_bytes(&from_hex(&c.envelope_hex))
+                .expect("envelope");
             let cache = caches.entry(r.case).or_insert_with(DiscoveryCache::new);
             let outcome = match cache.receive(&signed, r.now_unix) {
                 Ok(DiscoveryOutcome::Discovered) => "discovered".to_string(),
@@ -516,8 +530,14 @@ fn main() -> ExitCode {
             },
             other => panic!("bad kind {other}"),
         };
-        let ev = TopologyEvidence::new(&obs, subject, observation, c.observed_at_unix, c.validity_secs)
-            .expect("builds");
+        let ev = TopologyEvidence::new(
+            &obs,
+            subject,
+            observation,
+            c.observed_at_unix,
+            c.validity_secs,
+        )
+        .expect("builds");
         let signed = ev.sign(&obs).expect("signs");
         println!(
             "TOPO {i} wire={} sig={} id={} env={}",
@@ -595,12 +615,17 @@ fn main() -> ExitCode {
         let mut path: Vec<[u8; 32]> = hops.iter().map(|h| *h.node_id().as_bytes()).collect();
         path.push(*proposer.node_id().as_bytes());
         let nonce: [u8; 32] = from_hex(&c.proposal_nonce_hex).try_into().unwrap();
-        let proposal =
-            RouteProposal::new(&proposer, path, c.service_class.clone(), c.proposed_at_unix, 600, nonce)
-                .expect("proposal");
+        let proposal = RouteProposal::new(
+            &proposer,
+            path,
+            c.service_class.clone(),
+            c.proposed_at_unix,
+            600,
+            nonce,
+        )
+        .expect("proposal");
         let env = proposal.sign(&proposer).expect("sign");
-        let proposal_id =
-            sharenet_protocol::route::derive_proposal_id(env.bytes());
+        let proposal_id = sharenet_protocol::route::derive_proposal_id(env.bytes());
         let mut members: Vec<&Identity> = hops.iter().collect();
         members.push(&proposer);
         members.sort_by_key(|m| *m.node_id().as_bytes());
@@ -731,9 +756,14 @@ fn main() -> ExitCode {
         let commitment =
             RouteCommitment::build(1_100, proposal_env, acceptance_envs).expect("commit");
         let setup_nonce: [u8; 32] = from_hex(&c.setup_nonce_hex).try_into().unwrap();
-        let setup =
-            CircuitSetup::new(&commitment, &proposer, setup_nonce, c.setup_issued_at_unix, c.setup_validity_secs)
-                .expect("setup");
+        let setup = CircuitSetup::new(
+            &commitment,
+            &proposer,
+            setup_nonce,
+            c.setup_issued_at_unix,
+            c.setup_validity_secs,
+        )
+        .expect("setup");
         let setup_env = setup.sign(&proposer).expect("sign");
         let circuit_id =
             sharenet_protocol::circuit::derive_circuit_id(commitment.route_id(), &setup_nonce);
@@ -770,16 +800,24 @@ fn main() -> ExitCode {
             })
             .collect();
         let destroy_sender = members[c.destroy_sender_position as usize];
-        let destroy =
-            CircuitDestroy::new(circuit_id, destroy_sender, c.destroy_reason.clone(), c.destroyed_at_unix)
-                .expect("destroy");
+        let destroy = CircuitDestroy::new(
+            circuit_id,
+            destroy_sender,
+            c.destroy_reason.clone(),
+            c.destroyed_at_unix,
+        )
+        .expect("destroy");
         let destroy_env = destroy.sign(destroy_sender).expect("sign");
         // admission replay at the recorded time
         let mut registry = CircuitRegistry::new();
-        let admitted = registry.admit_setup(c.admission_now_unix, &setup_env).expect("admit");
+        let admitted = registry
+            .admit_setup(c.admission_now_unix, &setup_env)
+            .expect("admit");
         assert_eq!(admitted, circuit_id);
         for ack in &acks {
-            registry.admit_ack(c.admission_now_unix, ack).expect("ack admit");
+            registry
+                .admit_ack(c.admission_now_unix, ack)
+                .expect("ack admit");
         }
         for frame in &frame_objs {
             registry.admit_frame(frame).expect("frame admit");
@@ -825,21 +863,19 @@ fn main() -> ExitCode {
                     Err(e) => e.to_string(),
                 }
             }
-            "ack" => {
-                match sharenet_protocol::route::SignedEnvelope::from_envelope_bytes(&bytes) {
-                    Ok(env) => match CircuitSetupAck::from_wire_bytes(env.bytes()) {
-                        Err(e) => e.name().to_string(),
-                        Ok(ack) => match ack
-                            .accepting_identity()
-                            .verify_detached(env.bytes(), env.signature())
-                        {
-                            Err(_) => "ack_signature_invalid".to_string(),
-                            Ok(()) => "ok".to_string(),
-                        },
+            "ack" => match sharenet_protocol::route::SignedEnvelope::from_envelope_bytes(&bytes) {
+                Ok(env) => match CircuitSetupAck::from_wire_bytes(env.bytes()) {
+                    Err(e) => e.name().to_string(),
+                    Ok(ack) => match ack
+                        .accepting_identity()
+                        .verify_detached(env.bytes(), env.signature())
+                    {
+                        Err(_) => "ack_signature_invalid".to_string(),
+                        Ok(()) => "ok".to_string(),
                     },
-                    Err(e) => e.to_string(),
-                }
-            }
+                },
+                Err(e) => e.to_string(),
+            },
             "destroy" => {
                 match sharenet_protocol::route::SignedEnvelope::from_envelope_bytes(&bytes) {
                     Ok(env) => match CircuitDestroy::from_wire_bytes(env.bytes()) {
@@ -919,19 +955,20 @@ fn main() -> ExitCode {
         error: String,
     }
     let rev_file: RevocationFile = load_json(&vectors_dir.join("revocation_vectors.json"));
-    let rev_evidence = |ev: &BTreeMap<String, RevocationEvidenceV>| -> BTreeMap<String, EvidenceValue> {
-        ev.iter()
-            .map(|(k, v)| {
-                (
-                    k.clone(),
-                    match v {
-                        RevocationEvidenceV::Int(n) => EvidenceValue::Int(*n),
-                        RevocationEvidenceV::Text(t) => EvidenceValue::Text(t.clone()),
-                    },
-                )
-            })
-            .collect()
-    };
+    let rev_evidence =
+        |ev: &BTreeMap<String, RevocationEvidenceV>| -> BTreeMap<String, EvidenceValue> {
+            ev.iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        match v {
+                            RevocationEvidenceV::Int(n) => EvidenceValue::Int(*n),
+                            RevocationEvidenceV::Text(t) => EvidenceValue::Text(t.clone()),
+                        },
+                    )
+                })
+                .collect()
+        };
     // Rebuild one case's full chain and establish the circuit in a fresh
     // registry (admitted setup + acks, mirroring the reference vectors
     // test): owned member identities in sorted-path (position) order, the
@@ -979,7 +1016,8 @@ fn main() -> ExitCode {
                 a.sign(m).expect("sign")
             })
             .collect();
-        let commitment = RouteCommitment::build(1_100, proposal_env, acceptance_envs).expect("commit");
+        let commitment =
+            RouteCommitment::build(1_100, proposal_env, acceptance_envs).expect("commit");
         let setup_nonce: [u8; 32] = from_hex(&c.setup_nonce_hex).try_into().unwrap();
         let setup = CircuitSetup::new(
             &commitment,
@@ -1007,7 +1045,9 @@ fn main() -> ExitCode {
             )
             .expect("ack");
             let env = ack.sign(member).expect("sign");
-            registry.admit_ack(c.admission_now_unix, &env).expect("ack admit");
+            registry
+                .admit_ack(c.admission_now_unix, &env)
+                .expect("ack admit");
         }
         let owned: Vec<Identity> = members.into_iter().cloned().collect();
         (owned, circuit_id, registry)
@@ -1019,9 +1059,7 @@ fn main() -> ExitCode {
     for (i, c) in rev_file.cases.iter().enumerate() {
         let (members, circuit_id, registry) = build_rev_world(c);
         if to_hex(&circuit_id) != c.circuit_id_hex {
-            eprintln!(
-                "FAIL revocation {i}: derived circuit id differs from the committed vector"
-            );
+            eprintln!("FAIL revocation {i}: derived circuit id differs from the committed vector");
             failures += 1;
         }
         let reason = RevocationReason::from_name(&c.reason)
@@ -1035,9 +1073,7 @@ fn main() -> ExitCode {
         let wire = to_hex(signed.revocation_bytes());
         let env = to_hex(&signed.to_envelope_bytes());
         if wire != c.revocation_wire_hex || env != c.revocation_envelope_hex {
-            eprintln!(
-                "FAIL revocation {i}: re-derived image differs from the committed vector"
-            );
+            eprintln!("FAIL revocation {i}: re-derived image differs from the committed vector");
             failures += 1;
         }
         println!(
@@ -1080,12 +1116,7 @@ fn main() -> ExitCode {
                     None,
                     c.revoked_at_unix,
                 ),
-                "outsider" => (
-                    &foreign,
-                    RevocationReason::Policy,
-                    None,
-                    c.revoked_at_unix,
-                ),
+                "outsider" => (&foreign, RevocationReason::Policy, None, c.revoked_at_unix),
                 other => panic!("unknown revoker kind {other:?}"),
             };
             let revocation =
@@ -1201,11 +1232,12 @@ fn main() -> ExitCode {
     for (i, c) in obs_file.cases.iter().enumerate() {
         let seed: [u8; 32] = from_hex(&c.seed_hex).try_into().expect("seed");
         let provider = Identity::from_seed(seed, c.created_at_unix, None).expect("identity");
-        let contract: [u8; 32] = from_hex(&c.contract_ref_hex)
-            .try_into()
-            .expect("contract");
+        let contract: [u8; 32] = from_hex(&c.contract_ref_hex).try_into().expect("contract");
         let kind = EvidenceKind::from_name(&c.kind).unwrap_or_else(|| {
-            panic!("vector kind {kind:?} is not one of the frozen six", kind = c.kind)
+            panic!(
+                "vector kind {kind:?} is not one of the frozen six",
+                kind = c.kind
+            )
         });
         let statement = ConnectivityObservationStatement::new(
             &provider,
@@ -1233,7 +1265,11 @@ fn main() -> ExitCode {
     // so the vector order is itself the test.
     {
         let mut admission = ObservationAdmission::new(
-            obs_file.receive.first().map(|r| r.window_secs).unwrap_or(600),
+            obs_file
+                .receive
+                .first()
+                .map(|r| r.window_secs)
+                .unwrap_or(600),
         );
         let foreign_seed: [u8; 32] = [0xEE; 32];
         let foreign = Identity::from_seed(foreign_seed, 0, None).expect("foreign identity");
@@ -1245,18 +1281,13 @@ fn main() -> ExitCode {
                 );
             }
             if r.contract_known {
-                admission.register_contract(
-                    from_hex(&c.contract_ref_hex)
-                        .try_into()
-                        .expect("contract"),
-                );
+                admission
+                    .register_contract(from_hex(&c.contract_ref_hex).try_into().expect("contract"));
             }
             // rebuild the signed observation, apply the mutation, admit
             let seed: [u8; 32] = from_hex(&c.seed_hex).try_into().expect("seed");
             let provider = Identity::from_seed(seed, c.created_at_unix, None).expect("identity");
-            let contract: [u8; 32] = from_hex(&c.contract_ref_hex)
-                .try_into()
-                .expect("contract");
+            let contract: [u8; 32] = from_hex(&c.contract_ref_hex).try_into().expect("contract");
             let kind = EvidenceKind::from_name(&c.kind).expect("kind");
             let statement = ConnectivityObservationStatement::new(
                 &provider,
@@ -1316,9 +1347,7 @@ fn main() -> ExitCode {
                 println!("CONN_OBS_REJ {i} {name}");
             }
             Ok(_) => {
-                eprintln!(
-                    "FAIL connectivity evidence parse_reject {i}: unexpectedly parsed"
-                );
+                eprintln!("FAIL connectivity evidence parse_reject {i}: unexpectedly parsed");
                 failures += 1;
             }
         }
@@ -1338,10 +1367,183 @@ fn main() -> ExitCode {
                 println!("CONN_OBS_ENV_REJ {i} {name}");
             }
             Ok(_) => {
+                eprintln!("FAIL connectivity evidence envelope_reject {i}: unexpectedly parsed");
+                failures += 1;
+            }
+        }
+    }
+
+    // ---------------- contribution receipt vectors (R8-001) ----------------
+    #[derive(Deserialize)]
+    struct ContribFile {
+        cases: Vec<ContribCaseV>,
+        admit: Vec<ContribAdmitV>,
+        parse_reject: Vec<ContribRejectV>,
+        envelope_reject: Vec<ContribRejectV>,
+    }
+    #[derive(Deserialize)]
+    struct ContribCaseV {
+        #[allow(dead_code)]
+        note: Option<String>,
+        issuer_seed_hex: String,
+        issuer_created_at_unix: u64,
+        contributor_node_id_hex: String,
+        content_id_hex: String,
+        kind: String,
+        delivered_bytes: u64,
+        receipt_seq: u64,
+        issued_at_unix: u64,
+        wire_hex: String,
+        sig_hex: String,
+        env_hex: String,
+        receipt_id_hex: String,
+    }
+    #[derive(Deserialize)]
+    struct ContribAdmitV {
+        case: usize,
+        now_unix: u64,
+        mutation: Option<String>,
+        expect: String,
+    }
+    #[derive(Deserialize)]
+    struct ContribRejectV {
+        hex: String,
+        error: String,
+        #[allow(dead_code)]
+        note: Option<String>,
+    }
+    let contrib_file: ContribFile = load_json(&vectors_dir.join("contribution_vectors.json"));
+    // cases: re-derive wire/sig/env/receipt_id from the inputs through the
+    // REAL protocol API and pin them against the committed hex.
+    {
+        let mk = |seed_hex: &str, created: u64| -> Identity {
+            let seed: [u8; 32] = from_hex(seed_hex).try_into().expect("seed len");
+            Identity::from_seed(seed, created, None).expect("identity")
+        };
+        let foreign = mk(
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            0,
+        );
+        let mut rebuilt: Vec<SignedContributionReceipt> = Vec::new();
+        for (i, c) in contrib_file.cases.iter().enumerate() {
+            let issuer = mk(&c.issuer_seed_hex, c.issuer_created_at_unix);
+            let contributor: [u8; 32] = from_hex(&c.contributor_node_id_hex)
+                .try_into()
+                .expect("contributor len");
+            let content: [u8; 32] = from_hex(&c.content_id_hex).try_into().expect("content len");
+            let kind = ContributionKind::from_name(&c.kind).unwrap_or_else(|| {
+                panic!(
+                    "contribution kind {kind:?} is not one of the frozen two",
+                    kind = c.kind
+                )
+            });
+            let receipt = ContributionReceipt::new(
+                &issuer,
+                contributor,
+                content,
+                kind,
+                c.delivered_bytes,
+                c.receipt_seq,
+                c.issued_at_unix,
+            )
+            .expect("receipt builds");
+            let signed = receipt.sign(&issuer).expect("signs");
+            let wire = to_hex(signed.receipt_bytes());
+            let sig = to_hex(signed.signature());
+            let env = to_hex(&signed.to_envelope_bytes());
+            let id = to_hex(&signed.receipt_id());
+            if wire != c.wire_hex || sig != c.sig_hex || env != c.env_hex || id != c.receipt_id_hex
+            {
                 eprintln!(
-                    "FAIL connectivity evidence envelope_reject {i}: unexpectedly parsed"
+                    "FAIL contribution {i}: re-derived image differs from the committed vector"
                 );
                 failures += 1;
+            }
+            println!("CONTRIB {i} wire={wire} sig={sig} env={env} id={id}");
+            rebuilt.push(signed);
+        }
+        // admit: ONE shared ledger (the per-(issuer, contributor) sequence
+        // namespaces are global across entries, so the vector order is
+        // itself the test) through the full admit_envelope path.
+        let ledger = ReceiptLedger::new();
+        for (i, r) in contrib_file.admit.iter().enumerate() {
+            let case = &rebuilt[r.case];
+            let env = match r.mutation.as_deref() {
+                None => case.to_envelope_bytes(),
+                Some("tamper_signature") => {
+                    let mut sig = *case.signature();
+                    sig[0] ^= 0x01;
+                    let sig = Value::Bytes(sig.to_vec());
+                    encode(&Value::Map(vec![
+                        (Value::Int(1), Value::Bytes(case.receipt_bytes().to_vec())),
+                        (Value::Int(2), sig),
+                    ]))
+                    .expect("in-profile")
+                }
+                Some("foreign_signer") => {
+                    let sig = foreign.sign_detached(case.receipt_bytes());
+                    encode(&Value::Map(vec![
+                        (Value::Int(1), Value::Bytes(case.receipt_bytes().to_vec())),
+                        (Value::Int(2), Value::Bytes(sig.to_vec())),
+                    ]))
+                    .expect("in-profile")
+                }
+                Some(other) => panic!("unknown contribution admit mutation {other:?}"),
+            };
+            let outcome = match ledger.admit_envelope(r.now_unix, &env) {
+                Ok(ReceiptAdmitOutcome::Admitted) => "admitted".to_string(),
+                Ok(ReceiptAdmitOutcome::Duplicate) => "duplicate".to_string(),
+                Err(e) => e.name().to_string(),
+            };
+            if outcome != r.expect {
+                eprintln!(
+                    "FAIL contribution admit {i}: {outcome} != expected {}",
+                    r.expect
+                );
+                failures += 1;
+            }
+            println!("CONTRIB_ADMIT {i} now={} {outcome}", r.now_unix);
+        }
+        // strict parse is Rust-core scope (documented in the conformance
+        // README); the lines above pin the builder, these pin the taxonomy
+        for (i, r) in contrib_file.parse_reject.iter().enumerate() {
+            let bytes = from_hex(&r.hex);
+            match ContributionReceipt::from_wire_bytes(&bytes) {
+                Err(e) => {
+                    let name = e.name();
+                    if name != r.error {
+                        eprintln!(
+                            "FAIL contribution parse_reject {i}: {} != expected {}",
+                            name, r.error
+                        );
+                        failures += 1;
+                    }
+                    println!("CONTRIB_REJ {i} {name}");
+                }
+                Ok(_) => {
+                    eprintln!("FAIL contribution parse_reject {i}: unexpectedly parsed");
+                    failures += 1;
+                }
+            }
+        }
+        for (i, r) in contrib_file.envelope_reject.iter().enumerate() {
+            let bytes = from_hex(&r.hex);
+            match SignedContributionReceipt::from_envelope_bytes(&bytes) {
+                Err(e) => {
+                    let name = e.name();
+                    if name != r.error {
+                        eprintln!(
+                            "FAIL contribution envelope_reject {i}: {} != expected {}",
+                            name, r.error
+                        );
+                        failures += 1;
+                    }
+                    println!("CONTRIB_ENV_REJ {i} {name}");
+                }
+                Ok(_) => {
+                    eprintln!("FAIL contribution envelope_reject {i}: unexpectedly parsed");
+                    failures += 1;
+                }
             }
         }
     }
@@ -1416,12 +1618,13 @@ fn main() -> ExitCode {
         let id = to_hex(&manifest.content_id());
         let hashes: Vec<String> = manifest.chunk_hashes().iter().map(|h| to_hex(h)).collect();
         if wire != c.manifest_wire_hex || id != c.content_id_hex || hashes != c.chunk_hashes_hex {
-            eprintln!(
-                "FAIL content {i}: re-derived image differs from the committed vector"
-            );
+            eprintln!("FAIL content {i}: re-derived image differs from the committed vector");
             failures += 1;
         }
-        println!("CONTENT {i} wire={wire} id={id} chunks={}", hashes.join(","));
+        println!(
+            "CONTENT {i} wire={wire} id={id} chunks={}",
+            hashes.join(",")
+        );
     }
     for (i, r) in content_file.reassembly.iter().enumerate() {
         let (manifest, mut stream) = build_case(&content_file.cases[r.case]);
@@ -1488,12 +1691,7 @@ fn main() -> ExitCode {
 /// internal monotonic counter per DIRECTION, and the conformance vectors
 /// pin (direction, seq) pairs; advance the counter to the requested seq by
 /// sealing (and discarding) intermediate frames.
-fn reseal_at(
-    session: &mut LinkSession,
-    _direction: u8,
-    seq: u64,
-    payload: &[u8],
-) -> Vec<u8> {
+fn reseal_at(session: &mut LinkSession, _direction: u8, seq: u64, payload: &[u8]) -> Vec<u8> {
     let current = session.frames_sent();
     if seq < current {
         panic!("vector frames must be sealed in nondecreasing seq per direction");
@@ -1537,10 +1735,7 @@ fn apply_content_mutation(chunks: &mut Vec<Vec<u8>>, mutation: &str, slot: Optio
 
 /// Format a content reassembly outcome as the harness line suffix (the
 /// shared slot-carrying vocabulary).
-fn content_reassembly_outcome(
-    manifest: &ContentManifest,
-    chunks: &[Vec<u8>],
-) -> String {
+fn content_reassembly_outcome(manifest: &ContentManifest, chunks: &[Vec<u8>]) -> String {
     match manifest.reassemble(chunks) {
         Ok(_) => "ok".to_string(),
         Err(ContentError::ChunkHashMismatch { slot }) => format!("chunk_hash_mismatch slot={slot}"),

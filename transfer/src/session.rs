@@ -853,24 +853,55 @@ mod tests {
                     .encode(),
                 )?;
                 // Then behave honestly for every request round.
+                //
+                // The forged COMPLETE consumes the receiver's first
+                // round, so the receiver re-requests — and its SECOND
+                // request races the receiver's own completion: the
+                // receiver banks the first response's chunks, derives
+                // completion, sends DELIVERED and returns (dropping its
+                // end) while this sender may still be responding to that
+                // second request. A `Closed` there is the BENIGN
+                // early-shutdown (the peer completed and hung up), not a
+                // transfer loss — the receiver's outcome is asserted
+                // independently below (byte-exact content, the recorded
+                // forgery, all 10 chunks), so mapping it to an early
+                // success keeps the oracle exactly as strong.
+                let mut responded_rounds: u32 = 0;
                 loop {
                     match Message::decode(&s_end.recv_frame()?)? {
                         Message::Request(slots) => {
                             for slot in slots {
-                                s_end.send_frame(
+                                let send = s_end.send_frame(
                                     &Message::Chunk {
                                         slot,
                                         data: chunks[slot as usize].clone(),
                                     }
                                     .encode(),
-                                )?;
+                                );
+                                if matches!(send, Err(TransferError::Closed))
+                                    && responded_rounds >= 1
+                                {
+                                    return Ok(SenderOutcome {
+                                        content_id: manifest.content_id(),
+                                    });
+                                }
+                                send?;
                             }
-                            s_end.send_frame(
+                            let send = s_end.send_frame(
                                 &Message::Complete {
                                     content_id: manifest.content_id(),
                                 }
                                 .encode(),
-                            )?;
+                            );
+                            if matches!(send, Err(TransferError::Closed))
+                                && responded_rounds >= 1
+                            {
+                                return Ok(SenderOutcome {
+                                    content_id: manifest.content_id(),
+                                });
+                            }
+                            send?;
+                            responded_rounds += 1;
                         }
                         Message::Delivered { .. } => {
                             return Ok(SenderOutcome {

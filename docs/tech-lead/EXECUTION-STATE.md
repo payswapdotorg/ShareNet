@@ -1094,10 +1094,33 @@ Architect decision — see Open Architect Decisions).
   conformance harness PASS (283 lines), governance PASS. 35 of 48 work
   items complete.
 
+## Wave 16 integration record (2026-09-15)
+
+- Single-item wave; dispatch skipped (the 15-a pattern: direct Tech
+  Lead implementation is faster and more reliable for single-crate
+  extensions). R7-006 delivered: the coordination view
+  (`recoveries(now, policy)` — typed in-flight/retryable/awaiting/
+  terminal states, deterministic id order, the daemon scheduler's pure
+  input), the terminal cleanup (`cleanup_terminal` — prunes ABANDONED
+  history age-gated and typed, retaining the terminal record + high
+  water + §11 anchor + zeroization; the L015 LEDGER never touched; a
+  cleaned circuit stays `recovery_already_complete` — no
+  resurrection), and the L014 second-failure cycle (the replacement
+  circuit revoked in turn opens its OWN fresh recovery — end-to-end
+  in-lib and across processes via the new probe commands
+  abandon/recoveries/cleanup/revoke-replacement).
+- Fresh audit: recovery 90/90, reference 218/218, conformance harness
+  PASS (283 lines), governance PASS. 36 of 48 work items complete.
+  **GATE R7 (failure handling/recovery) IS NOW COMPLETE** — all six
+  items R7-001..R7-006 integrated.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 16 (single): R7-006 (concurrent recovery/second failure/cleanup
-  — R7-005 ✓). Waves 17+ per the spec's wave table (R8-001, R9-001).
+- Wave 17 (two-way parallel): R8-001 (contribution evidence — R6-003 ✓,
+  R7-004 ✓) + R9-001 (iOS Network.framework participant — R4-001 ✓,
+  R3-001 ✓; verify levels architecture/ios: sandbox delivers the
+  architecture review + scaffolding, the iOS build is honestly out of
+  reach — record gaps). Waves 18+ per the spec's wave table.
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).
 

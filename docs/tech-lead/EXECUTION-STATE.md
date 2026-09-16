@@ -1177,14 +1177,57 @@ Architect decision — see Open Architect Decisions).
   green. wasm32 reference clean. Conformance harness PASS (319 lines).
   Governance PASS. 38 of 48 work items complete.
 
+## Wave 18 integration record (2026-09-16)
+
+- Two-way parallel wave, both legs direct Tech Lead work after dispatch
+  deaths (the established pattern):
+  * R8-002 (useful-work valuation): NEW crate `economics/`
+    (sharenet-economics) — VALUATION_FORMULA_VERSION = 1 (architecture
+    §13 "versioned and explicit"): billable = min(delivered_bytes,
+    per-receipt cap); intrinsic = kind weight (carried 1.0× / delivered
+    1.5×, basis points, truncating integer math); award = min(intrinsic,
+    pair-cap remaining, contributor-cap remaining); window =
+    issued_at/window_secs. The §14 minimums this layer owns:
+    per-counterparty + per-time-window caps (pair AND
+    contributor-across-issuers — the Sybil bound), contribution-quality
+    weighting. Capped receipts stay valid evidence (verdict reports
+    intrinsic/awarded/binding cap — never refused). Defense in depth:
+    receipt_id idempotency, future-clock refusal. sim.rs (the
+    simulation verify level): seeded deterministic adversarial
+    simulation — the 8-issuer sybil ring's 160k/window potential held at
+    the 50k contributor cap, circular pair bounded by its two
+    directional pair caps, window straddler never double-bills,
+    zero cap violations every seeded run; economics_sim driver prints
+    the byte-identical report line. 28 tests (14 unit+sim, 14
+    adversarial), zero warnings, wasm32 clean, governance PASS. Honest
+    scope: durability R8-003, consumption R8-004, anomaly DETECTION
+    R8-005 (the caps bound abuse, they do not catch it).
+  * R9-003 (dedicated gateway appliance): transport/linux
+    src/appliance.rs + the `appliance` subcommand — the long-running
+    service form: durable identity (0600 seed file, created once from
+    /dev/urandom, same node id across restarts), one stable bound
+    address, sequential admission-verified sessions, append-only CBOR
+    session journal (fsync'd per record; fail-closed reload). The
+    endurance verify level: multiprocess soak with a MID-RUN HARD
+    RESTART — durable identity, ordinal continuity (resumes at 5 after
+    4 journaled) and cumulative totals all proven. The real-network
+    verify level: a REAL 61-byte DNS response from 8.8.8.8 through the
+    ENTIRE appliance stack (the R4-007 gated discipline; typed
+    REAL_INTERNET_UNAVAILABLE skip on restrictive networks). 66 linux
+    tests green (61 prior + 3 journal + 2 endurance), zero warnings.
+    Endurance honesty: minutes-scale here; 24h endurance is R10-003's.
+- Fresh audit (2026-09-16): economics 28/28, linux 66/66, governance
+  PASS. 40 of 48 work items complete.
+
 ## Ready set (recomputed from actual predecessor completion)
 
-- Wave 18 (two-way parallel): R8-002 (useful-work valuation — R8-001 ✓;
-  verify: unit, adversarial, simulation) + R9-003 (dedicated gateway
-  appliance — R4-007 ✓, R5-005 ✓, R7-004 ✓; verify: real-network,
-  endurance — needs sandbox-honest scoping like the R4-003/R4-004
-  precedents). Wave 19: R8-003 (Civic Point ledger, needs R8-002).
-  Wave 20: R9-002 + R9-004 + R8-004. Wave 21: R8-005. Waves 22–24:
+- Wave 19 (single): R8-003 (Civic Point ledger — R8-002 ✓; verify:
+  unit, restart, concurrency, adversarial — the durable ledger over the
+  valuation engine's awards).
+  Wave 20: R9-002 (iOS Packet Tunnel evaluation — needs the Mac
+  runner; sandbox-honest record like R9-001's) + R9-004 (additional
+  access adapters) + R8-004 (priority/perk consumption — needs
+  R8-003). Wave 21: R8-005 (anti-gaming/audit). Waves 22–24:
   R10-001..R10-005 (the integration gate).
 - R2-002 (Wi-Fi Aware) remains optionally schedulable inside gate R2
   (Tech Lead decision; not on the frozen wave path).

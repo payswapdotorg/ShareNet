@@ -80,6 +80,7 @@ use sharenet_protocol::{
 };
 
 use sharenet_transport_linux::gateway::GatewayClient;
+use sharenet_transport_linux::scratch::clear_scratch_path;
 
 /// The R5-003 store window the candidate's health view is built with
 /// (the recovery_probe convention).
@@ -223,11 +224,19 @@ fn candidate_material(
 
     // Feed a real R5-003 durable store through the verified path (the
     // recovery_probe convention) and read the health view back. The
-    // store is per-RUN: create refuses an existing dir, and the
-    // endurance harness reuses the recovery dir across participant
-    // runs — each participant process builds its own evidence view.
+    // store is per-RUN scratch, persisted as a REGULAR FILE: the
+    // store's create fail-closed refuses to clobber ANY existing
+    // path (correct product law — no silent data loss; load it
+    // instead), and the endurance harness reuses the recovery dir
+    // across participant runs while the OS eventually recycles a
+    // process id — so this run can meet a stale `b-<pid>.store` an
+    // earlier run left behind (the R10-006 collision). Clear BOTH
+    // forms of a prior occupant before creating — file first, then
+    // directory — with errors non-fatal: scratch cleanup must never
+    // kill the run by itself; the store's own fail-closed refusal
+    // remains the last-resort safety.
     let store_path = store_dir.join(format!("b-{}.store", std::process::id()));
-    let _ = std::fs::remove_dir_all(&store_path);
+    clear_scratch_path(&store_path);
     let mut admission = ObservationAdmission::new(STORE_WINDOW_SECS);
     admission.register_contract(*contract.id());
     let mut store = DurableProjectionStore::create(&store_path, STORE_WINDOW_SECS)

@@ -52,6 +52,9 @@ honest_gaps:
   - id: R10-003-wall-clock
     what: the endurance laws are proven on the accelerated profile;
       the literal 24-hour wall-clock profile is the operator command
+      (run 1 died at 438/1440 to the R10-006 harness defect — fixed
+      2026-09-17; the sweeper + repo fix make run 2 the candidate
+      certificate)
     operator_step: sharenet_endurance run --sessions 1440
       --spacing-ms 60000 --uplink <real-upstream>
   - id: R2-002-device

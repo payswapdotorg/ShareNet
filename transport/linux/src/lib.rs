@@ -23,6 +23,10 @@
 //!    the telemetry crate's `FrameTransport` for [`UdpTransport`] and
 //!    offers [`udp_prober`](telemetry_bridge::udp_prober), the one-call
 //!    active RTT prober used by the `probe-rtt` subcommand.
+//! 5. [`scratch`]: one tiny filesystem helper for the verification
+//!    binaries (the R10-006 extraction) — clearing a per-run scratch
+//!    path of any prior occupant before a fail-closed `create`. The
+//!    crate itself still persists nothing.
 //!
 //! ## What this crate is NOT
 //!
@@ -47,6 +51,7 @@
 pub mod appliance;
 pub mod gateway;
 pub mod probe;
+pub mod scratch;
 pub mod telemetry_bridge;
 pub mod tun;
 pub mod udp;

@@ -1670,3 +1670,84 @@ untouched by the closure).
   `evidence_w1_v1_report.md` on the orchestrator host (replay2 checkout).
 - Raw transcripts: `scripts/logs/transcript_{w1-foreign,w2-foreign,
   proto-foreign}.txt`.
+
+## R10-006 execution record (2026-09-17) — post-closure defect fix
+
+- **Trigger**: the R10-003 24-hour wall-clock endurance run (operator
+  profile, re-armed after the sandbox reset) died at cycle 438/1440 at
+  01:09 UTC — `sharenet_loopback` panicked at `sharenet_loopback.rs:234`
+  (`projection store: StoreAlreadyExists`) and the harness failed fast.
+- **Root cause** (Tech Lead forensics, verified in code and on disk): the
+  participant's per-run projection store is a REGULAR FILE, and
+  `DurableProjectionStore::create` fail-closed refuses ANY existing path
+  (correct product law — no silent data loss). The harness's scratch
+  cleanup called `remove_dir_all` — ENOTDIR on a file, error swallowed:
+  a SILENT NO-OP. 438 stale `b-<pid>.store` files had accumulated in the
+  shared recovery dir (exactly one per cycle); with pid_max 32768 and
+  ~100 PIDs consumed per cycle, the PID space wraps every ~5.5 h, and
+  cycle 438's participant drew the recycled PID 21255 (first used at
+  cycle ~19). The Wave-23 record's "create refuses an existing dir"
+  note shows the cleanup intent existed but used the wrong syscall —
+  a latent defect in the R10-003 deliverable that ONLY a sustained
+  wall-clock run could catch (the accelerated profile is 8 cycles,
+  well inside the first PID-space wrap). The 24 h run did exactly what
+  it exists to do.
+- **Dispatch**: worker `sharenet-w2-r1006` (the operator's standing rule
+  — workers implement). Contract: fix the harness cleanup to remove BOTH
+  occupant forms; NO changes to connectivity (the store's law stands);
+  regression test that FAILS on current code; five adversarial
+  minimums; accelerated endurance profile with a LOCAL UDP echo.
+  Delivery via the R2-002 pattern (worker sandboxes carry no
+  credentials): artifacts in the sandbox `download/r10-006/` (work.diff
+  731 lines, commits.txt, status.txt, worklog.md), harvested through
+  the workspace files API — which since R2-002 no longer requires the
+  workspace_id (chatId alone resolves the chat's active workspace).
+- **Worker delivery**: branch `work/r10-006-endurance-store-collision`,
+  commits 8e5c26d (red tests) + 65b0b58 (fix), 4 files, +678/−4:
+  `src/scratch.rs` (NEW `clear_scratch_path`: remove_file then
+  remove_dir_all, errors non-fatal by law), `src/lib.rs` (module + doc
+  entry), `src/bin/sharenet_loopback.rs` (uses the helper; call-site
+  comment corrected), `tests/store_collision.rs` (623 lines).
+- **Tech Lead independent verification** (this sandbox, never trusted):
+  - RED reproduced on pristine main + the tests only: the regression
+    case (`recycled_pid_stale_store_file_completes_the_run`) failed with
+    the EXACT production panic (exit 101, Phase 4 after
+    LOOPBACK_ATTEMPT 1, no LOOPBACK_DONE); the garbage-file case
+    failed; the directory case PASSED (the defect's file/dir
+    asymmetry); the store-law case PASSED — matching the worker's red
+    matrix exactly.
+  - `cargo test -p sharenet-transport-linux` at HEAD: **78 passed / 0
+    failed** (73 baseline + 5 new), including
+    `accelerated_endurance_profile_holds_every_law` (8 cycles / 8
+    kills / 8 restarts).
+  - `store_collision` 5/5 across three runs; zero warnings on the new
+    code.
+  - Adversarial substance read: real multiprocess bridges (two gateway
+    processes + the real participant binary); the occupant placed at
+    the child's REAL per-run path between spawn and the induced gateway
+    death — strictly before the Phase-4 store preparation, no race;
+    case 1 reuses run 1's REAL stale store bytes (load-verified) as
+    run 2's collision; case 5 bypasses the cleanup entirely and pins
+    the store's refuse-to-clobber law (file/plain/dir, typed).
+- **Integration**: applied cleanly at 81c70d2, committed with full
+  provenance, governance PASS, merged to main, pushed.
+- **Honest note on run 1**: the first 24 h certificate attempt is DEAD
+  at 438/1440 by this now-fixed harness defect (all laws green at
+  death: identity stable across 219 restarts, RSS ~4.5 MB bounded,
+  ordinals continuous). Run 2 (re-armed 02:41 UTC the same day, same
+  state dir — journals continue, ordinals carried across the harness
+  restart) is expected to certify; the sweep also recorded that
+  run 1's failure was NOT a product failure.
+
+## Endurance re-arm record (2026-09-17, orchestrator infrastructure)
+
+- `/home/z/endurance/sweeper.sh`: every 5 min deletes `b-*.store` files
+  older than 30 min from the shared recovery dir — a stale file can
+  only collide after ≥1 full PID-space wrap (~5.5 h at current churn),
+  so the 30-minute rule is >10× margin. This bridges run 2 only; the
+  repo fix (R10-006) is the durable answer.
+- Run 2 launched via `launch_detached.py` (the plain nohup pattern dies
+  at the tool-call process-group boundary — the setsid pattern is the
+  law for long-lived orchestrator processes), same state dir: identity
+  continuity verified across the harness restart (same node ids, same
+  participant identity, journal ordinals continued 219→220+).

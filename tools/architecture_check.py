@@ -52,7 +52,7 @@ def main() -> int:
 
     product_entries = re.findall(r"^  (C[123]-[0-9]{3}): \{owner: ([^,]+), wave: ([0-9]+), depends: \[([^]]*)\]", product_plan, re.MULTILINE)
     product_ids = {item_id for item_id, _, _, _ in product_entries}
-    if len(product_ids) != 19:
+    if len(product_ids) != 22:
         errors.append(f"expected 22 productization work items, found {len(product_ids)}")
 
     wave_entries = re.findall(r"- \{id: (P[0-9]+), parallel: \[([^]]*)\]\}", product_plan)

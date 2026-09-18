@@ -1,0 +1,33 @@
+[package]
+name = "sharenet-developer-api"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "ShareNet hosted Developer API model layer (C2-005): the application registry, developer public-key credentials, the scope taxonomy and decision API, the webhook registration/delivery model with signed events (HMAC-SHA-256 over canonical bytes, timestamp + nonce replay protection), and the quota/rate-limit policy model. Application-scoped control-plane data only: NO protocol-core dependencies, no node private keys, no route/circuit authority, no raw packet forwarding, no ConnectivityContract authority, no durable node state. Pure model: no I/O, no wall clock (time is a parameter), no transport (deployment/serving is C3-005)."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "sharenet_developer_api"
+path = "src/lib.rs"
+
+# Dependency policy (the crate's architecture boundary, enforced by review):
+# - ed25519-dalek / sha2 / hmac / zeroize: the SAME RustCrypto palette the
+#   repository already uses (reference workspace deps). ed25519 for developer
+#   credential authentication (asymmetric: the registry stores PUBLIC keys
+#   only), HMAC-SHA-256 for signed webhook events (symmetric: the secret is
+#   the one the developer registers with the webhook — the GitHub/Stripe
+#   pattern the contract names), sha2 for id minting, zeroize for secrets.
+# - serde / serde_json: the model snapshot round-trip (persistence contract of
+#   the work item) and the canonical webhook payload value tree.
+# DELIBERATELY ABSENT: sharenet-protocol and every other sharenet-* crate.
+# The hosted API boundary (architecture lock L030/L031, the W2 ownership list
+# in SHARENET-CONSOLE-IMPLEMENTATION-HANDOFF.md) forbids protocol-core
+# dependencies; application-scoped data only.
+[dependencies]
+ed25519-dalek = { version = "2", features = ["zeroize"] }
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+zeroize = "1"

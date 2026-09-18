@@ -14,6 +14,7 @@ source_of_truth:
   platform_adapters: spec/platform-adapters.yaml
   developer_integration: spec/developer-integration.yaml
   plan: spec/product-console-plan.yaml
+  handoff: docs/tech-lead/SHARENET-CONSOLE-IMPLEMENTATION-HANDOFF.md
 design_reference:
   ui_inspiration:
     site: https://sharenet-conformance.vercel.app
@@ -125,13 +126,21 @@ work_items:
   C3-004: {owner: W3, wave: 4, depends: [C1-003, C1-004, C1-005, C1-006, C2-002, C2-003, C2-008, C3-001, C3-002, C3-003], verify: [browser-e2e, multiprocess, mobile, desktop], title: Cross-platform major-journey E2E harness}
   C3-005: {owner: W3, wave: 5, depends: [C1-003, C1-004, C1-006, C2-004, C2-008, C2-010, C3-004], verify: [deploy, smoke, security], title: Free-tier deployment and hosted developer API}
   C3-006: {owner: W3, wave: 5, depends: [C3-005], verify: [reproducibility, runbook], title: Production demo seed, SDK quickstarts and operator runbooks}
+execution_rules:
+  max_direct_workers: 3
+  wave_rule: every listed predecessor must complete in an earlier wave; never rely on same-wave ordering
+  worker_fill_rule: do not fill a worker slot artificially; dependency independence takes priority
+  integration_rule: Tech Lead integrates each completed item before it becomes a predecessor for a later wave
 waves:
-  - {id: P1, parallel: [C1-001, C2-001, C3-001]}
+  - {id: P1, parallel: [C1-001, C2-001, C2-005]}
   - {id: P2, parallel: [C1-002, C2-002, C2-003]}
-  - {id: P3, parallel: [C1-003, C1-004, C2-004]}
-  - {id: P4, parallel: [C1-005, C1-006, C2-007, C2-008, C2-009, C3-003]}
-  - {id: P5, parallel: [C2-010, C3-004]}
-  - {id: P6, parallel: [C3-005, C3-006]}
+  - {id: P3, parallel: [C1-003, C1-004, C2-006]}
+  - {id: P4, parallel: [C2-004, C3-001, C3-002]}
+  - {id: P5, parallel: [C2-007, C2-009, C1-005]}
+  - {id: P6, parallel: [C2-008, C1-006, C3-003]}
+  - {id: P7, parallel: [C2-010, C3-004]}
+  - {id: P8, parallel: [C3-005]}
+  - {id: P9, parallel: [C3-006]}
 non_goals:
   - change frozen protocol wire semantics
   - move ADCOS authority into the console or developer API

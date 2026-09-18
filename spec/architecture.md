@@ -366,7 +366,125 @@ ADCOS fails?
     → ShareNet keeps local and already-authorized operation alive.
 ```
 
-## 18. Sources informing this architecture
+
+## 18. Productization and platform-adapter model
+
+ShareNet is exposed to users through adapters, not by moving protocol semantics into each client platform.
+
+### 18.1 Common product/runtime path
+
+```
+User / Host App
+      │
+      ▼
+ShareNet Experience or Embedded SDK
+      │
+      ▼
+Platform Adapter
+      │
+      ▼
+ShareNet Node Runtime
+      │
+      ├── reference/ protocol core
+      ├── transport/ platform seams
+      ├── DTN / content / recovery / economics
+      └── ConnectivityPort → ADCOS when external connectivity is required
+```
+
+Web, desktop and mobile are therefore adapters over one common contract. Host applications never import `reference/` directly.
+
+### 18.2 Web is not a substitute for native offline networking
+
+A web application may be cached/PWA-installable and may operate against a locally reachable ShareNet runtime, but a browser alone cannot be treated as a native ShareNet node for the full mission.
+
+The web adapter MUST NOT claim:
+
+- raw Wi-Fi/BLE/Wi-Fi-Aware radio access;
+- a system TUN interface;
+- system-wide traffic capture;
+- reliable background relay;
+- Internet gateway capability.
+
+For a person with no Internet and no locally reachable ShareNet runtime, the web application cannot bootstrap the mesh by itself. A native platform adapter is required.
+
+### 18.3 Embedded participation without the standalone ShareNet app
+
+Third-party applications are first-class ShareNet hosts:
+
+```
+Host App
+  → ShareNet Embedded SDK
+      → Platform Adapter
+          → Node Runtime
+              → ShareNet
+```
+
+The standalone ShareNet application is therefore optional.
+
+There are two developer surfaces:
+
+1. **Developer API** — application registration, scopes, user authorization, device enrollment, session orchestration, webhooks, quotas and evidence references.
+2. **Embedded SDK** — local node lifecycle, capability negotiation, connectivity, transfers, contribution and events.
+
+The hosted Developer API is a control-plane surface only. It never becomes the packet-forwarding/data-plane authority.
+
+### 18.4 Capability intersection
+
+A host application cannot enable arbitrary ShareNet capabilities. The effective capability set is:
+
+```
+Developer scopes
+∩ User consent
+∩ Platform adapter capabilities
+∩ Runtime policy
+```
+
+Unsupported or unavailable capabilities are typed and visible. A client MUST NOT advertise a capability merely because it was requested.
+
+### 18.5 Product surfaces
+
+The Conformance-inspired web console is the reference product experience for:
+
+- connection overview;
+- network/path visibility;
+- recovery state;
+- transfer/DTN state;
+- contribution/Civic Points;
+- diagnostics/evidence;
+- developer integration and session visibility.
+
+Native platform adapters may expose native UI components implementing the same product contract.
+
+## 19. Developer participation model
+
+### 19.1 Consumer participation
+
+A host application may ask ShareNet for a resilient connection or content path. The app does not need to know whether the underlying route is direct, relayed, recovered or store-and-forward.
+
+### 19.2 User participation
+
+A host application may ask the user to opt into:
+
+- endpoint participation;
+- content sharing/custody;
+- relay capacity where the platform permits it;
+- gateway contribution where the platform/runtime permits it.
+
+Consent and platform policy are enforced locally before activation.
+
+### 19.3 Server-side participation
+
+A developer backend may participate as a ShareNet application/service endpoint through a server SDK/runtime.
+
+The Developer API can provision and observe the application, but raw data-plane participation requires an actual ShareNet-compatible runtime.
+
+### 19.4 Offline and cloud-failure behavior
+
+A connected host app may continue already-authorized local/offline ShareNet operations when the hosted Developer API or ADCOS is temporarily unavailable.
+
+Cloud control-plane unavailability MUST be surfaced distinctly from local ShareNet connectivity failure.
+
+## 20. Sources informing this architecture
 
 - ADCOS Architecture 1.1 and application model.
 - IETF RFC 8445 ICE.

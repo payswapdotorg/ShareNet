@@ -67,7 +67,7 @@ def main() -> int:
                 errors.append(f"{member} appears in multiple productization waves")
             wave_of[member] = wave_num
 
-    for item_id, wave_text, dep_group in product_entries:
+    for item_id, _owner, wave_text, dep_group in product_entries:
         item_wave = int(wave_text)
         deps = [d.strip() for d in dep_group.split(",") if d.strip()]
         for dep in deps:

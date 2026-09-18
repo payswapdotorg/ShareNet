@@ -50,12 +50,12 @@ def main() -> int:
     if "status: FROZEN_POST_CLOSURE_IMPLEMENTATION_PLAN" not in product_plan:
         errors.append("productization plan is not marked frozen")
 
-    product_entries = re.findall(r"^  (C[123]-[0-9]{3}): \\{owner: ([^,]+), wave: ([0-9]+), depends: \\[([^]]*)\\]", product_plan, re.MULTILINE)
+    product_entries = re.findall(r"^  (C[123]-[0-9]{3}): \{owner: ([^,]+), wave: ([0-9]+), depends: \[([^]]*)\]", product_plan, re.MULTILINE)
     product_ids = {item_id for item_id, _, _, _ in product_entries}
     if len(product_ids) != 19:
         errors.append(f"expected 22 productization work items, found {len(product_ids)}")
 
-    wave_entries = re.findall(r"- \\{id: (P[0-9]+), parallel: \\[([^]]*)\\]\\}", product_plan)
+    wave_entries = re.findall(r"- \{id: (P[0-9]+), parallel: \[([^]]*)\]\}", product_plan)
     wave_of: dict[str, int] = {}
     for wave_id, members in wave_entries:
         wave_num = int(wave_id[1:])

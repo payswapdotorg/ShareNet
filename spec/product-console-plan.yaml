@@ -1,0 +1,151 @@
+version: 2
+program: ShareNet Productization
+status: FROZEN_POST_CLOSURE_IMPLEMENTATION_PLAN
+purpose: >
+  Turn the executed ShareNet protocol/runtime into a discoverable product and
+  an embeddable connectivity capability for third-party applications, without
+  reopening the frozen R0-R10 protocol architecture.
+source_of_truth:
+  architecture: spec/architecture.md
+  locks: spec/architecture-lock.md
+  registry: spec/protocol-registry.yaml
+  frozen_execution: spec/work-items.yaml
+  execution_evidence: docs/tech-lead/EXECUTION-STATE.md
+  platform_adapters: spec/platform-adapters.yaml
+  developer_integration: spec/developer-integration.yaml
+  plan: spec/product-console-plan.yaml
+  handoff: docs/tech-lead/SHARENET-CONSOLE-IMPLEMENTATION-HANDOFF.md
+design_reference:
+  ui_inspiration:
+    site: https://sharenet-conformance.vercel.app
+    repository: https://github.com/pectoraux/ShareNet
+  carry_forward_patterns:
+    - persistent high-signal navigation
+    - calm status/health summaries
+    - network path visualization
+    - expandable evidence/details
+    - adapter boundary between UI and protocol
+    - public SDK boundary for embedded apps
+  correction:
+    - never carry forward mock protocol data into production
+    - never carry forward stub production factories
+    - never let host apps import protocol internals
+product_principles:
+  - Users discover outcomes, not R1-R10 identifiers.
+  - Every major runtime capability has a human workflow.
+  - Console is a presentation/control surface, not protocol authority.
+  - Host applications can embed ShareNet participation through SDKs without installing a separate ShareNet app.
+  - Hosted Developer API is control-plane orchestration, not the ShareNet data plane.
+  - Platform adapters truthfully expose only capabilities they can execute.
+  - Web is primarily a control/presentation adapter; native adapters are required for true offline/no-Internet device participation.
+  - ADCOS remains authoritative for ConnectivityContract.
+  - Local/offline ShareNet operation must survive cloud/control-plane outages.
+navigation:
+  consumer_primary: [overview, connect, network, transfers, contribution, activity, diagnostics]
+  consumer_secondary: [devices, connectivity, settings]
+  developer_workspace: [apps, integrations, users, devices, sessions, webhooks, evidence, usage]
+  persistent_status: [internet, active_route, active_gateway, circuit, recovery, peers, queued_transfers, civic_points]
+architecture:
+  layers:
+    consumer_console: console/
+    developer_portal: console/ or developer-console/
+    console_api: console-api/
+    developer_api: developer-api/
+    host_sdk: sdk/
+    node_agent: node-agent/
+    platform_adapters: transport/ + platform-specific adapter packages
+    protocol: reference/
+  runtime_path:
+    - Host App
+    - ShareNet Embedded SDK
+    - Platform Adapter
+    - Node Agent / Runtime
+    - ShareNet Protocol
+    - ADCOS through ConnectivityPort when external connectivity is needed
+  web_rule: >
+    Browser/PWA can display cached UI while offline and can talk to a locally
+    reachable ShareNet runtime, but it cannot by itself provide raw radio/TUN,
+    system-wide traffic capture, or reliable background relay.
+  adcos_rule: >
+    Developer API, console and node-agent must never become a second
+    ConnectivityContract authority.
+  security_rule: >
+    No UI-generated protocol IDs, client-controlled security facts, raw private
+    node seeds, provider credentials, or unrestricted gateway sockets in host apps.
+journeys:
+  consumer:
+    - J1 first-run-no-internet
+    - J2 share-my-internet
+    - J3 connection-degrades-and-recovers
+    - J4 send-content-without-live-internet
+    - J5 earn-and-use-civic-points
+    - J6 understand-the-network
+    - J7 platform-readiness
+    - J8 offline-control-plane-loss
+  developer:
+    - DEV-001 developer-integrates-sdk
+    - DEV-002 user-enables-sharenet-inside-host-app
+    - DEV-003 host-app-gets-connectivity
+    - DEV-004 host-app-works-without-live-internet
+    - DEV-005 user-contributes-from-host-app
+    - DEV-006 recovery-inside-host-app
+    - DEV-007 developer-observes-user-sessions
+    - DEV-008 revoke-participation
+    - DEV-009 web-offline-limit
+    - DEV-010 server-backend-participation
+user_facing_integration_components:
+  - ShareNetConnectControl
+  - ShareNetParticipationConsent
+  - ShareNetConnectionStatus
+  - ShareNetNetworkPath
+  - ShareNetTransferStatus
+  - ShareNetContributionSummary
+  - ShareNetRecoveryBanner
+  - ShareNetEvidencePanel
+  - ShareNetCapabilityPicker
+work_items:
+  C1-001: {owner: W1, wave: 1, depends: [], verify: [spec, journey, architecture], title: UX and capability map}
+  C1-002: {owner: W1, wave: 2, depends: [C1-001], verify: [build, accessibility, e2e], title: Console shell and Conformance-inspired navigation}
+  C1-003: {owner: W1, wave: 3, depends: [C1-002, C2-001], verify: [e2e, accessibility], title: Overview/connect/network/diagnostics surfaces}
+  C1-004: {owner: W1, wave: 3, depends: [C1-002, C2-001], verify: [e2e, accessibility], title: Transfers/contribution/activity surfaces}
+  C1-005: {owner: W1, wave: 4, depends: [C2-006, C2-007], verify: [e2e, accessibility, integration], title: Host-app embedded UI kit and participation consent}
+  C1-006: {owner: W1, wave: 4, depends: [C2-005], verify: [e2e, accessibility], title: Developer portal for app integration and sessions}
+  C2-001: {owner: W2, wave: 1, depends: [], verify: [unit, integration, architecture, multiprocess], title: Node-agent read model and capability API}
+  C2-002: {owner: W2, wave: 2, depends: [C2-001], verify: [unit, adversarial, multiprocess], title: Node-agent command API}
+  C2-003: {owner: W2, wave: 2, depends: [C2-001], verify: [integration, restart], title: Realtime event stream and reconnect semantics}
+  C2-004: {owner: W2, wave: 3, depends: [C2-002, C2-003], verify: [linux, restart], title: Linux node-agent packaging}
+  C2-005: {owner: W2, wave: 2, depends: [], verify: [unit, adversarial, integration, architecture], title: Developer API app registry, auth, scopes and webhook model}
+  C2-006: {owner: W2, wave: 2, depends: [C2-005], verify: [unit, integration, architecture], title: Cross-platform Embedded SDK contract}
+  C2-007: {owner: W2, wave: 3, depends: [C2-005, C2-006], verify: [security, integration, restart], title: User/device enrollment, host-app binding and revocation}
+  C2-008: {owner: W2, wave: 4, depends: [C2-003, C2-007], verify: [integration, webhook, security], title: Developer session API and signed event/webhook delivery}
+  C2-009: {owner: W2, wave: 4, depends: [C2-006, C2-007], verify: [architecture, integration], title: Capability intersection and truthful platform gating}
+  C2-010: {owner: W2, wave: 5, depends: [C2-008, C2-009], verify: [integration, adversarial], title: Server-side developer participation API}
+  C3-001: {owner: W3, wave: 1, depends: [C2-001], verify: [deterministic, e2e], title: Deterministic demo/runtime fixture}
+  C3-002: {owner: W3, wave: 2, depends: [C2-006], verify: [unit, conformance], title: Web adapter and browser capability restrictions}
+  C3-003: {owner: W3, wave: 3, depends: [C2-006, C2-009], verify: [android, ios, desktop, architecture], title: Native platform adapter conformity harness}
+  C3-004: {owner: W3, wave: 4, depends: [C1-003, C1-004, C1-005, C1-006, C2-002, C2-003, C2-008, C3-001, C3-002, C3-003], verify: [browser-e2e, multiprocess, mobile, desktop], title: Cross-platform major-journey E2E harness}
+  C3-005: {owner: W3, wave: 5, depends: [C1-003, C1-004, C1-006, C2-004, C2-008, C2-010, C3-004], verify: [deploy, smoke, security], title: Free-tier deployment and hosted developer API}
+  C3-006: {owner: W3, wave: 5, depends: [C3-005], verify: [reproducibility, runbook], title: Production demo seed, SDK quickstarts and operator runbooks}
+execution_rules:
+  max_direct_workers: 3
+  wave_rule: every listed predecessor must complete in an earlier wave; never rely on same-wave ordering
+  worker_fill_rule: do not fill a worker slot artificially; dependency independence takes priority
+  integration_rule: Tech Lead integrates each completed item before it becomes a predecessor for a later wave
+waves:
+  - {id: P1, parallel: [C1-001, C2-001, C2-005]}
+  - {id: P2, parallel: [C1-002, C2-002, C2-003]}
+  - {id: P3, parallel: [C1-003, C1-004, C2-006]}
+  - {id: P4, parallel: [C2-004, C3-001, C3-002]}
+  - {id: P5, parallel: [C2-007, C2-009, C1-005]}
+  - {id: P6, parallel: [C2-008, C1-006, C3-003]}
+  - {id: P7, parallel: [C2-010, C3-004]}
+  - {id: P8, parallel: [C3-005]}
+  - {id: P9, parallel: [C3-006]}
+non_goals:
+  - change frozen protocol wire semantics
+  - move ADCOS authority into the console or developer API
+  - make console the node runtime
+  - promise offline mesh participation through a browser alone
+  - require cloud availability for local ShareNet operation
+  - expose private node keys to host apps
+  - let host applications import reference/ protocol internals

@@ -346,3 +346,7 @@ Owns:
 - production demo.
 
 No worker may change frozen protocol semantics to make an adapter easier to implement.
+
+## CI takeover gate
+
+The repository's ShareNet Architecture Governance workflow is a mandatory takeover gate. The Tech Lead must not merge implementation work while this gate is failing. Every meaningful productization increment must leave the pushed HEAD passing the repository checker and its fresh integration/audit requirements.

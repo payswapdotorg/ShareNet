@@ -41,6 +41,57 @@ def main() -> int:
     handoff = text("docs/tech-lead/SHARENET-ORCHESTRATOR-HANDOFF.md")
     current = text("spec/architect/current-state.yaml")
     items = text("spec/work-items.yaml")
+    product_plan = text("spec/product-console-plan.yaml")
+    roadmap = text("spec/roadmap.yaml")
+
+    if "program_status: FROZEN_PATH_EXECUTION_COMPLETE__POST_CLOSURE_PRODUCTIZATION_ACTIVE" not in roadmap:
+        errors.append("roadmap does not declare the frozen path complete with post-closure productization active")
+
+    if "status: FROZEN_POST_CLOSURE_IMPLEMENTATION_PLAN" not in product_plan:
+        errors.append("productization plan is not marked frozen")
+
+    # regex escaping fixed 2026-09-18 (merge): the architect's raw string had
+    # double backslashes, which crashed re.compile (unbalanced parenthesis)
+    product_entries = re.findall(r"^  C([123]-[0-9]{3}): \{owner: ([^,]+), wave: ([0-9]+), depends: \[([^]]*)\],", product_plan, re.MULTILINE)
+    product_ids = {"C" + item_id for item_id, _, _, _ in product_entries}
+    if len(product_ids) != 22:
+        errors.append(f"expected 22 productization work items, found {len(product_ids)}")
+
+    wave_entries = re.findall(r"- \{id: (P[0-9]+), parallel: \[([^]]*)\]\}", product_plan)
+    wave_of: dict[str, int] = {}
+    for wave_id, members in wave_entries:
+        wave_num = int(wave_id[1:])
+        member_ids = [m.strip() for m in members.split(",") if m.strip()]
+        if len(member_ids) > 3:
+            errors.append(f"{wave_id} exceeds the three-worker limit")
+        for member in member_ids:
+            if member in wave_of:
+                errors.append(f"{member} appears in multiple productization waves")
+            wave_of[member] = wave_num
+
+    # single-source-of-truth fix 2026-09-18 (merge): compare the WAVE SCHEDULE
+    # number on both sides (the architect's version mixed the per-item wave
+    # field with the schedule number — two numbering systems that had drifted);
+    # the field must agree with the schedule.
+    for item_id_raw, _owner, wave_text, dep_group in product_entries:
+        item_id = "C" + item_id_raw
+        if item_id not in wave_of:
+            continue  # flagged by the missing-schedule check below
+        if int(wave_text) != wave_of[item_id]:
+            errors.append(f"product work item {item_id} wave field {wave_text} disagrees with wave schedule {wave_of[item_id]}")
+        item_wave = wave_of[item_id]
+        deps = [d.strip() for d in dep_group.split(",") if d.strip()]
+        for dep in deps:
+            if dep not in product_ids:
+                errors.append(f"product work item {item_id} references missing predecessor {dep}")
+            elif dep not in wave_of:
+                errors.append(f"product predecessor {dep} is not scheduled in a wave")
+            elif wave_of[dep] >= item_wave:
+                errors.append(f"product work item {item_id} depends on {dep}, but the predecessor is not in an earlier wave")
+    missing_product_waves = product_ids - set(wave_of)
+    if missing_product_waves:
+        errors.append(f"product work items missing from wave schedule: {sorted(missing_product_waves)}")
+
 
     for i in range(1, 26):
         lock_id = f"L{i:03d}"

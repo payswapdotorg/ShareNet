@@ -1,0 +1,154 @@
+version: 1
+program: ShareNet
+status: NORMATIVE_POST_CLOSURE_PRODUCTIZATION
+purpose: >
+  Define the developer integration architecture enabling third-party apps and
+  their users to participate in ShareNet without installing the standalone
+  ShareNet app.
+core_rule: >
+  There are two developer surfaces: a hosted Developer API for application
+  registration, enrollment, policy, events and orchestration; and an Embedded
+  SDK that provides the actual on-device ShareNet runtime/adapter. The hosted
+  API alone cannot turn an arbitrary browser or phone into a mesh node.
+developer_surfaces:
+  developer_api:
+    path: developer-api/
+    owns:
+      - application registration
+      - developer authentication
+      - user authorization/session exchange
+      - device enrollment tokens
+      - capability/scopes
+      - webhook subscriptions
+      - application-level event delivery
+      - quotas/rate limits
+      - evidence references
+    does_not_own:
+      - node private keys
+      - protocol route authority
+      - CircuitId authority
+      - ConnectivityContract authority
+      - raw data-plane forwarding
+  embedded_sdk:
+    path: sdk/
+    owns:
+      - local node lifecycle
+      - platform adapter selection
+      - user consent state
+      - local capability discovery
+      - connection and transfer commands
+      - realtime local events
+      - contribution/points presentation
+    does_not_own:
+      - provider-native ADCOS control
+      - alternative protocol semantics
+      - cloud truth for local network state
+participation_profiles:
+  consumer:
+    purpose: application uses ShareNet to obtain resilient connectivity/content
+    examples: messaging, browser, field app, AI assistant
+  participant:
+    purpose: user opts the host app/device into useful ShareNet participation
+    possible_capabilities:
+      - endpoint
+      - content_source
+      - custody
+      - relay
+      - gateway
+    rule: >
+      Requested capabilities are intersected with the installed platform
+      adapter capability set and user policy. Unsupported capabilities are
+      refused visibly, never silently downgraded to a misleading green state.
+  service_backend:
+    purpose: developer backend participates as an application/service endpoint
+    rule: >
+      Server-side participation uses a server SDK/runtime or managed gateway;
+      the hosted Developer API is control-plane orchestration, not the
+      packet/data plane itself.
+frontend_contract:
+  host_app_components:
+    - ShareNetConnectControl
+    - ShareNetParticipationConsent
+    - ShareNetConnectionStatus
+    - ShareNetNetworkPath
+    - ShareNetTransferStatus
+    - ShareNetContributionSummary
+    - ShareNetRecoveryBanner
+    - ShareNetEvidencePanel
+  design_system: >
+    Components inherit the Conformance-inspired high-signal visual language
+    while remaining embeddable in the host application's design system.
+backend_contract:
+  application_lifecycle:
+    - register_app
+    - create_environment
+    - issue_client_credentials
+    - configure_allowed_scopes
+    - register_webhooks
+    - rotate_credentials
+    - revoke_app
+  user_lifecycle:
+    - begin_user_authorization
+    - exchange_user_code
+    - enroll_device
+    - bind_node_to_host_app
+    - revoke_device
+    - revoke_participation
+  sessions:
+    - create_connectivity_session
+    - create_transfer
+    - observe_session
+    - cancel_session
+  events:
+    - connection_changed
+    - gateway_changed
+    - recovery_started
+    - recovery_completed
+    - transfer_progress
+    - contribution_verified
+    - points_changed
+    - capability_changed
+  security:
+    - oauth2_1_or_equivalent_developer_auth
+    - pkce_for_public_clients
+    - short_lived_device_enrollment_tokens
+    - signed_webhooks
+    - least_privilege_scopes
+    - idempotency_keys_for_mutating_requests
+journeys:
+  - id: DEV-001
+    name: developer-integrates-sdk
+    frontend: developer-portal -> create-app -> choose-scopes -> integration-quickstart
+    backend: register-app -> issue-credentials -> register-webhooks -> validate-install
+  - id: DEV-002
+    name: user-enables-sharenet-inside-host-app
+    frontend: host-app -> explain-benefits -> consent -> capability-preview -> enabled
+    backend: authorize-user -> exchange-session -> enroll-device -> bind-node
+  - id: DEV-003
+    name: host-app-gets-connectivity
+    frontend: app -> ShareNetConnectionStatus -> request-connectivity -> progress -> connected
+    backend: create-session -> route/runtime execution -> events -> final state
+  - id: DEV-004
+    name: host-app-works-without-live-internet
+    frontend: native host app -> cached/local runtime -> opportunistic/DTN -> delivery
+    backend: local-first; cloud control-plane is optional for already-authorized local operation
+  - id: DEV-005
+    name: user-contributes-from-host-app
+    frontend: host-app -> participation consent -> sharing state -> contribution summary
+    backend: adapter evidence -> verified contribution -> points update -> signed event
+  - id: DEV-006
+    name: recovery-inside-host-app
+    frontend: connection degraded -> recovering -> gateway changed -> recovered
+    backend: existing R7 runtime -> event projection -> host app event stream
+  - id: DEV-007
+    name: developer-observes-user-sessions
+    frontend: developer portal -> sessions -> events -> evidence
+    backend: scoped event stream/webhooks; no raw private node material
+  - id: DEV-008
+    name: revoke-participation
+    frontend: host app -> disable -> confirm -> disabled
+    backend: revoke session/device/app grant -> preserve protocol revocation semantics
+  - id: DEV-009
+    name: web-offline-limit
+    frontend: cached web shell -> local-node discovery if reachable -> otherwise explain native adapter required
+    backend: no claim that hosted API can create offline radio/TUN capabilities

@@ -1,6 +1,6 @@
 version: 2
 program: ShareNet
-program_status: ARCHITECTURE_FROZEN_IMPLEMENTATION_NOT_STARTED
+program_status: FROZEN_PATH_EXECUTION_COMPLETE__POST_CLOSURE_PRODUCTIZATION_ACTIVE
 execution_registry: spec/work-items.yaml
 
 completion_rule:

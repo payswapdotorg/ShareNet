@@ -30,6 +30,20 @@ def main() -> int:
     for path in REQUIRED:
         if not (ROOT / path).is_file():
             errors.append(f"missing required authority: {path}")
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}")
+        return 1
+
+    locks = text("spec/architecture-lock.md")
+    architecture = text("spec/architecture.md")
+    agents = text("AGENTS.md")
+    handoff = text("docs/tech-lead/SHARENET-ORCHESTRATOR-HANDOFF.md")
+    current = text("spec/architect/current-state.yaml")
+    items = text("spec/work-items.yaml")
+    product_plan = text("spec/product-console-plan.yaml")
+    roadmap = text("spec/roadmap.yaml")
+
     if "program_status: FROZEN_PATH_EXECUTION_COMPLETE__POST_CLOSURE_PRODUCTIZATION_ACTIVE" not in roadmap:
         errors.append("roadmap does not declare the frozen path complete with post-closure productization active")
 
@@ -67,19 +81,6 @@ def main() -> int:
     if missing_product_waves:
         errors.append(f"product work items missing from wave schedule: {sorted(missing_product_waves)}")
 
-    if errors:
-        for error in errors:
-            print(f"ERROR: {error}")
-        return 1
-
-    locks = text("spec/architecture-lock.md")
-    architecture = text("spec/architecture.md")
-    agents = text("AGENTS.md")
-    handoff = text("docs/tech-lead/SHARENET-ORCHESTRATOR-HANDOFF.md")
-    current = text("spec/architect/current-state.yaml")
-    items = text("spec/work-items.yaml")
-    product_plan = text("spec/product-console-plan.yaml")
-    roadmap = text("spec/roadmap.yaml")
 
     for i in range(1, 26):
         lock_id = f"L{i:03d}"

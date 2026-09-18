@@ -19,6 +19,7 @@ source_of_truth:
   roadmap: spec/roadmap.yaml
   dependency_graph: spec/dependency-graph.md
   orchestrator: docs/tech-lead/SHARENET-ORCHESTRATOR-HANDOFF.md
+  post_closure_productization_handoff: docs/tech-lead/SHARENET-CONSOLE-IMPLEMENTATION-HANDOFF.md
 legacy_reference_only:
   - pectoraux/sharenet-2.0
 active_gate: NONE

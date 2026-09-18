@@ -29,3 +29,10 @@ The following are normative locks for the first implementation.
 | L023 | Tests are not completion evidence without production callers and required verification level. |
 | L024 | Legacy `pectoraux/sharenet-2.0` is reference material, not an authority. |
 | L025 | Every substantial implementation increment must be freshly audited against the repository. |
+
+| L026 | Web, desktop and mobile are platform adapters over the platform-independent protocol/runtime; host applications never define protocol semantics. |
+| L027 | A web/PWA shell may be available offline only as cached UI or against a locally reachable ShareNet runtime; native adapters are required for true offline/no-Internet device participation. |
+| L028 | Third-party apps may participate without installing the standalone ShareNet app through a ShareNet Embedded SDK backed by the platform adapter; the hosted Developer API alone is not a device data plane. |
+| L029 | Developer API scopes, user consent, platform capabilities and runtime policy are intersected before any participation capability is enabled or advertised. |
+| L030 | Node identity, route/circuit authority, durable local state and packet forwarding remain in the ShareNet node/runtime; the console and Developer API are control/presentation surfaces. |
+| L031 | Host applications may use ShareNet through public SDK/API contracts only; protocol internals in `reference/` remain inaccessible as an application integration contract. |

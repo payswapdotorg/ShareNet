@@ -1,0 +1,66 @@
+version: 1
+program: ShareNet Productization
+status: FROZEN_POST_CLOSURE_IMPLEMENTATION_PLAN
+purpose: Turn the executed protocol/runtime into a discoverable user product without reopening R0-R10.
+source_of_truth:
+  architecture: spec/architecture.md
+  locks: spec/architecture-lock.md
+  registry: spec/protocol-registry.yaml
+  frozen_execution: spec/work-items.yaml
+  evidence: docs/tech-lead/EXECUTION-STATE.md
+  plan: spec/product-console-plan.yaml
+design_reference:
+  inspiration: https://sharenet-conformance.vercel.app
+  principles:
+    - dark high-signal operations-console aesthetic
+    - persistent left navigation
+    - compact top-level health cards
+    - search/filter controls
+    - dense evidence tables with expandable details
+    - summary first, protocol evidence one level deeper
+    - use the pattern, not branding or proprietary assets
+navigation:
+  primary: [overview, connect, network, transfers, contribution, activity, diagnostics]
+  secondary: [devices, connectivity, developer, settings]
+  persistent_status: [internet, active_route, active_gateway, circuit, recovery, peers, queued_transfers, civic_points]
+journeys:
+  J1: first-run-no-internet
+  J2: share-my-internet
+  J3: connection-degrades-and-recovers
+  J4: send-content-without-live-internet
+  J5: earn-and-use-civic-points
+  J6: understand-the-network
+  J7: platform-readiness
+  J8: offline-control-plane-loss
+architecture:
+  ui: console/
+  api: console-api/
+  node_agent: node-agent/
+  rule: Console -> Console API -> Node Agent -> existing ShareNet runtime seams
+  adcos_rule: Node Agent -> ConnectivityPort -> ADCOS; console never owns ConnectivityContract authority
+  local_rule: Cloud outages must not disable local ShareNet operation
+  security_rule: no UI-generated protocol identifiers or caller-controlled security facts
+work_items:
+  C1-001: {owner: W1, wave: 1, depends: [], title: UX and capability map}
+  C1-002: {owner: W1, wave: 2, depends: [C1-001], title: Console shell and navigation}
+  C1-003: {owner: W1, wave: 3, depends: [C1-002, C2-001], title: Overview/connect/network/diagnostics}
+  C1-004: {owner: W1, wave: 3, depends: [C1-002, C2-001], title: Transfers/contribution/activity}
+  C2-001: {owner: W2, wave: 1, depends: [], title: Node-agent read model and capability API}
+  C2-002: {owner: W2, wave: 2, depends: [C2-001], title: Node-agent command API}
+  C2-003: {owner: W2, wave: 2, depends: [C2-001], title: Realtime event stream and reconnect semantics}
+  C2-004: {owner: W2, wave: 3, depends: [C2-002, C2-003], title: Linux node-agent packaging}
+  C3-001: {owner: W3, wave: 1, depends: [C2-001], title: Deterministic demo/runtime fixture}
+  C3-002: {owner: W3, wave: 4, depends: [C1-003, C1-004, C2-002, C2-003, C3-001], title: Browser journey E2E harness}
+  C3-003: {owner: W3, wave: 5, depends: [C1-003, C1-004, C2-004], title: Free-tier deployment infrastructure}
+  C3-004: {owner: W3, wave: 5, depends: [C3-003], title: Production demo seed and operator runbooks}
+waves:
+  - {id: P1, parallel: [C1-001, C2-001, C3-001]}
+  - {id: P2, parallel: [C1-002, C2-002, C2-003]}
+  - {id: P3, parallel: [C1-003, C1-004, C2-004]}
+  - {id: P4, parallel: [C3-002]}
+  - {id: P5, parallel: [C3-003, C3-004]}
+non_goals:
+  - change frozen protocol semantics
+  - move ADCOS authority into the console
+  - make console the node runtime
+  - require cloud availability for local ShareNet

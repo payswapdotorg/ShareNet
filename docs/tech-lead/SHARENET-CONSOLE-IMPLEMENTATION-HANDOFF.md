@@ -2,7 +2,7 @@
 
 ## Repository truth
 
-The frozen R0-R10 protocol/runtime program is executed. This post-closure productization plan is currently staged on branch `architect/console-free-tier-productization`, based directly on the latest main closure `609c97147f62974ebcc73da182b29c1530c5aac1`. The PR must be merged or its exact reviewed HEAD must be adopted before implementation begins; do not silently substitute another branch.
+The frozen R0-R10 protocol/runtime program is executed. This post-closure productization plan is currently staged on branch `architect/console-free-tier-productization-final`, based directly on the latest main closure `609c97147f62974ebcc73da182b29c1530c5aac1`. The PR must be merged or its exact reviewed HEAD must be adopted before implementation begins; do not silently substitute another branch.
 
 The repository does not yet contain a first-class end-user console. The current user-facing surfaces are operator-oriented CLI/probe binaries: identity, discovery, Linux gateway/participant/appliance, DTN, recovery and economics simulations.
 

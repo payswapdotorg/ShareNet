@@ -2,7 +2,7 @@
 
 ## Repository truth
 
-The frozen R0-R10 protocol/runtime program is executed. This post-closure productization plan is currently staged on branch `architect/console-free-tier-productization`, based directly on main `660e81916dda25be8a5e441e3b9b7da951250af9`. The PR must be merged or its exact reviewed HEAD must be adopted before implementation begins; do not silently substitute another branch.
+The frozen R0-R10 protocol/runtime program is executed. This post-closure productization plan is currently staged on branch `architect/console-free-tier-productization-final`, based directly on the latest main closure `609c97147f62974ebcc73da182b29c1530c5aac1`. The PR must be merged or its exact reviewed HEAD must be adopted before implementation begins; do not silently substitute another branch.
 
 The repository does not yet contain a first-class end-user console. The current user-facing surfaces are operator-oriented CLI/probe binaries: identity, discovery, Linux gateway/participant/appliance, DTN, recovery and economics simulations.
 
@@ -141,11 +141,12 @@ The authoritative machine-readable schedule is `spec/product-console-plan.yaml`.
 | P2 | C1-002, C2-002, C2-003 |
 | P3 | C1-003, C1-004, C2-006 |
 | P4 | C2-004, C3-001, C3-002 |
-| P5 | C2-007, C2-009, C1-005 |
-| P6 | C2-008, C1-006, C3-003 |
-| P7 | C2-010, C3-004 |
-| P8 | C3-005 |
-| P9 | C3-006 |
+| P5 | C2-007, C1-006 |
+| P6 | C2-009, C1-005, C2-008 |
+| P7 | C3-003, C2-010 |
+| P8 | C3-004 |
+| P9 | C3-005 |
+| P10 | C3-006 |
 
 The Tech Lead must never schedule a work item before every declared predecessor is complete. Empty worker slots are acceptable; dependency independence outranks artificial utilization. Select only READY work from `spec/product-console-plan.yaml`.
 
@@ -345,3 +346,7 @@ Owns:
 - production demo.
 
 No worker may change frozen protocol semantics to make an adapter easier to implement.
+
+## CI takeover gate
+
+The repository's ShareNet Architecture Governance workflow is a mandatory takeover gate. The Tech Lead must not merge implementation work while this gate is failing. Every meaningful productization increment must leave the pushed HEAD passing the repository checker and its fresh integration/audit requirements.

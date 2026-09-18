@@ -108,24 +108,24 @@ work_items:
   C1-002: {owner: W1, wave: 2, depends: [C1-001], verify: [build, accessibility, e2e], title: Console shell and Conformance-inspired navigation}
   C1-003: {owner: W1, wave: 3, depends: [C1-002, C2-001], verify: [e2e, accessibility], title: Overview/connect/network/diagnostics surfaces}
   C1-004: {owner: W1, wave: 3, depends: [C1-002, C2-001], verify: [e2e, accessibility], title: Transfers/contribution/activity surfaces}
-  C1-005: {owner: W1, wave: 5, depends: [C2-006, C2-007], verify: [e2e, accessibility, integration], title: Host-app embedded UI kit and participation consent}
-  C1-006: {owner: W1, wave: 6, depends: [C2-005], verify: [e2e, accessibility], title: Developer portal for app integration and sessions}
+  C1-005: {owner: W1, wave: 6, depends: [C2-006, C2-007], verify: [e2e, accessibility, integration], title: Host-app embedded UI kit and participation consent}
+  C1-006: {owner: W1, wave: 5, depends: [C2-005], verify: [e2e, accessibility], title: Developer portal for app integration and sessions}
   C2-001: {owner: W2, wave: 1, depends: [], verify: [unit, integration, architecture, multiprocess], title: Node-agent read model and capability API}
   C2-002: {owner: W2, wave: 2, depends: [C2-001], verify: [unit, adversarial, multiprocess], title: Node-agent command API}
   C2-003: {owner: W2, wave: 2, depends: [C2-001], verify: [integration, restart], title: Realtime event stream and reconnect semantics}
   C2-004: {owner: W2, wave: 4, depends: [C2-002, C2-003], verify: [linux, restart], title: Linux node-agent packaging}
   C2-005: {owner: W2, wave: 1, depends: [], verify: [unit, adversarial, integration, architecture], title: Developer API app registry, auth, scopes and webhook model}
   C2-006: {owner: W2, wave: 3, depends: [C2-005], verify: [unit, integration, architecture], title: Cross-platform Embedded SDK contract}
-  C2-007: {owner: W2, wave: 4, depends: [C2-005, C2-006], verify: [security, integration, restart], title: User/device enrollment, host-app binding and revocation}
+  C2-007: {owner: W2, wave: 5, depends: [C2-005, C2-006], verify: [security, integration, restart], title: User/device enrollment, host-app binding and revocation}
   C2-008: {owner: W2, wave: 6, depends: [C2-003, C2-007], verify: [integration, webhook, security], title: Developer session API and signed event/webhook delivery}
-  C2-009: {owner: W2, wave: 5, depends: [C2-006, C2-007], verify: [architecture, integration], title: Capability intersection and truthful platform gating}
+  C2-009: {owner: W2, wave: 6, depends: [C2-006, C2-007], verify: [architecture, integration], title: Capability intersection and truthful platform gating}
   C2-010: {owner: W2, wave: 7, depends: [C2-008, C2-009], verify: [integration, adversarial], title: Server-side developer participation API}
   C3-001: {owner: W3, wave: 4, depends: [C2-001], verify: [deterministic, e2e], title: Deterministic demo/runtime fixture}
-  C3-002: {owner: W3, wave: 5, depends: [C2-006], verify: [unit, conformance], title: Web adapter and browser capability restrictions}
-  C3-003: {owner: W3, wave: 6, depends: [C2-006, C2-009], verify: [android, ios, desktop, architecture], title: Native platform adapter conformity harness}
-  C3-004: {owner: W3, wave: 7, depends: [C1-003, C1-004, C1-005, C1-006, C2-002, C2-003, C2-008, C3-001, C3-002, C3-003], verify: [browser-e2e, multiprocess, mobile, desktop], title: Cross-platform major-journey E2E harness}
-  C3-005: {owner: W3, wave: 8, depends: [C1-003, C1-004, C1-006, C2-004, C2-008, C2-010, C3-004], verify: [deploy, smoke, security], title: Free-tier deployment and hosted developer API}
-  C3-006: {owner: W3, wave: 9, depends: [C3-005], verify: [reproducibility, runbook], title: Production demo seed, SDK quickstarts and operator runbooks}
+  C3-002: {owner: W3, wave: 4, depends: [C2-006], verify: [unit, conformance], title: Web adapter and browser capability restrictions}
+  C3-003: {owner: W3, wave: 7, depends: [C2-006, C2-009], verify: [android, ios, desktop, architecture], title: Native platform adapter conformity harness}
+  C3-004: {owner: W3, wave: 8, depends: [C1-003, C1-004, C1-005, C1-006, C2-002, C2-003, C2-008, C3-001, C3-002, C3-003], verify: [browser-e2e, multiprocess, mobile, desktop], title: Cross-platform major-journey E2E harness}
+  C3-005: {owner: W3, wave: 9, depends: [C1-003, C1-004, C1-006, C2-004, C2-008, C2-010, C3-004], verify: [deploy, smoke, security], title: Free-tier deployment and hosted developer API}
+  C3-006: {owner: W3, wave: 10, depends: [C3-005], verify: [reproducibility, runbook], title: Production demo seed, SDK quickstarts and operator runbooks}
 execution_rules:
   max_direct_workers: 3
   wave_rule: every listed predecessor must complete in an earlier wave; never rely on same-wave ordering
@@ -135,12 +135,13 @@ waves:
   - {id: P1, parallel: [C1-001, C2-001, C2-005]}
   - {id: P2, parallel: [C1-002, C2-002, C2-003]}
   - {id: P3, parallel: [C1-003, C1-004, C2-006]}
-  - {id: P4, parallel: [C2-004, C3-001, C2-007]}
-  - {id: P5, parallel: [C3-002, C2-009, C1-005]}
-  - {id: P6, parallel: [C2-008, C1-006, C3-003]}
-  - {id: P7, parallel: [C2-010, C3-004]}
-  - {id: P8, parallel: [C3-005]}
-  - {id: P9, parallel: [C3-006]}
+  - {id: P4, parallel: [C2-004, C3-001, C3-002]}
+  - {id: P5, parallel: [C2-007, C1-006]}
+  - {id: P6, parallel: [C2-009, C1-005, C2-008]}
+  - {id: P7, parallel: [C3-003, C2-010]}
+  - {id: P8, parallel: [C3-004]}
+  - {id: P9, parallel: [C3-005]}
+  - {id: P10, parallel: [C3-006]}
 non_goals:
   - change frozen protocol wire semantics
   - move ADCOS authority into the console or developer API

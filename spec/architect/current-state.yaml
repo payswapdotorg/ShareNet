@@ -9,6 +9,10 @@ architecture: Mission-First 1.0
 # verifications, and each names exactly what an operator with the
 # listed hardware/environment must run (the runbooks live in the
 # repo; the evidence lives in docs/tech-lead/EXECUTION-STATE.md).
+# 2026-09-18: R10-003-wall-clock was CLOSED in-sandbox (24 h 47 m
+# run, status=ok, independent re-derivation to the digit — record
+# and evidence in docs/tech-lead/EXECUTION-STATE.md +
+# docs/tech-lead/endurance-24h-certificate-evidence.txt).
 status: FROZEN_PATH_EXECUTION_COMPLETE
 source_of_truth:
   architecture: spec/architecture.md
@@ -49,14 +53,6 @@ honest_gaps:
       needs the Android NDK + a phone
     operator_step: the cargo-ndk runbook in transport/android/vpn/
       README.md §The JNI bridge
-  - id: R10-003-wall-clock
-    what: the endurance laws are proven on the accelerated profile;
-      the literal 24-hour wall-clock profile is the operator command
-      (run 1 died at 438/1440 to the R10-006 harness defect — fixed
-      2026-09-17; the sweeper + repo fix make run 2 the candidate
-      certificate)
-    operator_step: sharenet_endurance run --sessions 1440
-      --spacing-ms 60000 --uplink <real-upstream>
   - id: R2-002-device
     what: the Wi-Fi Aware adapter (R2-002, post-closure insert
       2026-09-16) is implemented and host-verified end-to-end through

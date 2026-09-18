@@ -1751,3 +1751,38 @@ untouched by the closure).
   law for long-lived orchestrator processes), same state dir: identity
   continuity verified across the harness restart (same node ids, same
   participant identity, journal ordinals continued 219→220+).
+
+## R10-003 certificate record (2026-09-18) — the 24h wall-clock endurance is CERTIFIED
+
+- **The run**: `sharenet_endurance run --state-dir state-24h --uplink 127.0.0.1:35353
+  --sessions 1440 --spacing-ms 60000` (run 2, same state dir as run 1), launched
+  2026-09-17 02:41 UTC via the setsid law, completed 2026-09-18 03:28 UTC —
+  **24 h 47 m continuous wall-clock** (the 60 s × 1440 spacing floor is 24 h;
+  per-cycle overhead ~2 s makes 24 h 47 m the honest span).
+- **The DONE line (harness verdict after its own law enforcement)**:
+  `ENDURANCE_DONE cycles=1440 kills=1440 restarts=1440 life-a=939 life-b=940
+  rss-a-max=5792 rss-b-max=6272 rss-a-growth=1420 rss-b-growth=1768 status=ok`
+- **Independent Tech Lead re-derivation (never trusted; from the raw log)**:
+  cycles numbered 0..1439 = 1440 contiguous, 1440 sessions completed,
+  1440 restarts (ordinals A=720 / B=720); **zero panics, zero ENDURANCE_ERROR**
+  in the run-2 window; exactly 2 distinct node ids
+  (`c64bd8c5…` A, `0df5399d…` B) and 1 identity (`f2ee4e21…`) across all
+  1440 cycles; RSS growth re-derived to the digit (A: 5792−4372=1420,
+  B: 6272−4504=1768 — matches the DONE line exactly) against the 64 MB
+  leak bound = 37–46× margin.
+- **The durability evidence the run 1 → run 2 boundary provides**: run 1 died
+  mid-journal at SESSION B 220 (the R10-006 harness defect); run 2's first
+  session is SESSION B **221** — the journal ordinals continued across a REAL
+  harness death with the same node ids and identity. The certificate run
+  itself began from the recovered state and completed 1440 cycles on top of it.
+- **Unattended-monitoring record (the 20 h gap no human watched)**: a
+  self-healing watchdog (never touches the harness; auto-revives the sweeper
+  PID-collision defense and the udp uplink — revive path live-tested at
+  15 s) held the run with zero alerts, hourly checkpoints all panics=0;
+  evidence file: `docs/tech-lead/endurance-24h-certificate-evidence.txt`
+  (summary + log tail + ps + store population + sweeper state at capture).
+- **Closure**: the R10-003-wall-clock honest gap is CLOSED — removed from
+  `spec/architect/current-state.yaml` honest_gaps (4 remain, all
+  operator-hardware legs with recorded runbooks). Run 1's death remains
+  honestly recorded above (harness defect, fixed by R10-006 at 660e819,
+  never a product failure).

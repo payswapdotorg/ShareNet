@@ -127,3 +127,40 @@ discover, connect, disconnect, share, queue-transfer, cancel-transfer, consume-p
 - ADCOS outage behavior
 - provider quota assumptions recorded
 - rollback runbook
+
+## Embedded SDK / Developer API deployment
+
+The hosted deployment must now expose two product planes:
+
+1. consumer/developer web console;
+2. Developer API for embedded applications and server-side integrations.
+
+The Developer API remains a control-plane service. Actual user-device participation runs inside the host app's Embedded SDK and platform adapter.
+
+### Hosted components
+
+- Vercel: consumer console + developer portal.
+- Stateless Console/Developer API layer: application registry, OAuth/session exchange, device enrollment, scopes, webhooks, session metadata.
+- Neon: application metadata, developer accounts, scoped installations, webhook configs, UI/demo metadata. Never protocol truth.
+- Cloudflare Workers: optional rate limiting/edge facade/signature verification.
+- Persistent Linux VM(s): ShareNet node-agent, gateway appliance and server-side SDK/runtime when backend participation is needed.
+
+### Native SDK distribution
+
+- Android: AAR.
+- iOS: Swift Package / native framework.
+- Desktop: Rust-native runtime with language bindings appropriate to host applications.
+- Web: TypeScript package for control/foreground integration only; no claim of native radio/TUN/offline mesh capabilities.
+
+### Deployment-specific E2E
+
+Every deployment smoke environment should exercise at least:
+
+- browser consumer console -> live node;
+- developer portal -> app registration;
+- host-app fixture -> authorization -> enrollment;
+- host-app fixture -> connection session;
+- webhook -> signed event receipt;
+- revoke -> host app disabled;
+- native/desktop fixture -> local operation when hosted API is unavailable;
+- web fixture -> explicit native-adapter-required state when offline with no local runtime.

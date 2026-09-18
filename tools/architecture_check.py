@@ -30,6 +30,44 @@ def main() -> int:
     for path in REQUIRED:
         if not (ROOT / path).is_file():
             errors.append(f"missing required authority: {path}")
+    if "FROZEN_PATH_EXECUTION_COMPLETE__POST_CLOSURE_PRODUCTIZATION_ACTIVE" not in roadmap:
+        errors.append("roadmap does not declare the frozen path complete with post-closure productization active")
+
+    if "status: FROZEN_POST_CLOSURE_IMPLEMENTATION_PLAN" not in product_plan:
+        errors.append("productization plan is not marked frozen")
+
+    product_entries = re.findall(r"- (C[0-9]+-[0-9]+): \\{owner: ([^,]+), wave: ([0-9]+), depends: \\[[^]]*\\]", product_plan)
+    product_ids = {item_id for item_id, _, _ in product_entries}
+    if len(product_ids) != 19:
+        errors.append(f"expected 19 productization work items, found {len(product_ids)}")
+
+    wave_entries = re.findall(r"- \\{id: (P[0-9]+), parallel: \\[([^]]*)\\]\\}", product_plan)
+    wave_of: dict[str, int] = {}
+    for wave_id, members in wave_entries:
+        wave_num = int(wave_id[1:])
+        member_ids = [m.strip() for m in members.split(",") if m.strip()]
+        if len(member_ids) > 3:
+            errors.append(f"{wave_id} exceeds the three-worker limit")
+        for member in member_ids:
+            if member in wave_of:
+                errors.append(f"{member} appears in multiple productization waves")
+            wave_of[member] = wave_num
+
+    product_dep_entries = re.findall(r"- (C[0-9]+-[0-9]+): \\{owner: [^,]+, wave: ([0-9]+), depends: \\[([^]]*)\\]", product_plan)
+    for item_id, wave_text, dep_group in product_dep_entries:
+        item_wave = int(wave_text)
+        deps = [d.strip() for d in dep_group.split(",") if d.strip()]
+        for dep in deps:
+            if dep not in product_ids:
+                errors.append(f"product work item {item_id} references missing predecessor {dep}")
+            elif dep not in wave_of:
+                errors.append(f"product predecessor {dep} is not scheduled in a wave")
+            elif wave_of[dep] >= item_wave:
+                errors.append(f"product work item {item_id} depends on {dep}, but the predecessor is not in an earlier wave")
+    missing_product_waves = product_ids - set(wave_of)
+    if missing_product_waves:
+        errors.append(f"product work items missing from wave schedule: {sorted(missing_product_waves)}")
+
     if errors:
         for error in errors:
             print(f"ERROR: {error}")
@@ -41,6 +79,8 @@ def main() -> int:
     handoff = text("docs/tech-lead/SHARENET-ORCHESTRATOR-HANDOFF.md")
     current = text("spec/architect/current-state.yaml")
     items = text("spec/work-items.yaml")
+    product_plan = text("spec/product-console-plan.yaml")
+    roadmap = text("spec/roadmap.yaml")
 
     for i in range(1, 26):
         lock_id = f"L{i:03d}"

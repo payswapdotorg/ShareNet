@@ -30,14 +30,28 @@ def main() -> int:
     for path in REQUIRED:
         if not (ROOT / path).is_file():
             errors.append(f"missing required authority: {path}")
-    if "FROZEN_PATH_EXECUTION_COMPLETE__POST_CLOSURE_PRODUCTIZATION_ACTIVE" not in roadmap:
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}")
+        return 1
+
+    locks = text("spec/architecture-lock.md")
+    architecture = text("spec/architecture.md")
+    agents = text("AGENTS.md")
+    handoff = text("docs/tech-lead/SHARENET-ORCHESTRATOR-HANDOFF.md")
+    current = text("spec/architect/current-state.yaml")
+    items = text("spec/work-items.yaml")
+    product_plan = text("spec/product-console-plan.yaml")
+    roadmap = text("spec/roadmap.yaml")
+
+    if "program_status: FROZEN_PATH_EXECUTION_COMPLETE__POST_CLOSURE_PRODUCTIZATION_ACTIVE" not in roadmap:
         errors.append("roadmap does not declare the frozen path complete with post-closure productization active")
 
     if "status: FROZEN_POST_CLOSURE_IMPLEMENTATION_PLAN" not in product_plan:
         errors.append("productization plan is not marked frozen")
 
-    product_entries = re.findall(r"- (C[0-9]+-[0-9]+): \\{owner: ([^,]+), wave: ([0-9]+), depends: \\[[^]]*\\]", product_plan)
-    product_ids = {item_id for item_id, _, _ in product_entries}
+    product_entries = re.findall(r"^  C([123]-[0-9]{3}): \\{owner: ([^,]+), wave: ([0-9]+), depends: \\[([^]]*)\\],", product_plan, re.MULTILINE)
+    product_ids = {"C" + item_id for item_id, _, _, _ in product_entries}
     if len(product_ids) != 19:
         errors.append(f"expected 19 productization work items, found {len(product_ids)}")
 
@@ -53,8 +67,8 @@ def main() -> int:
                 errors.append(f"{member} appears in multiple productization waves")
             wave_of[member] = wave_num
 
-    product_dep_entries = re.findall(r"- (C[0-9]+-[0-9]+): \\{owner: [^,]+, wave: ([0-9]+), depends: \\[([^]]*)\\]", product_plan)
-    for item_id, wave_text, dep_group in product_dep_entries:
+    for item_id, wave_text, dep_group in product_entries:
+        item_id = "C" + item_id
         item_wave = int(wave_text)
         deps = [d.strip() for d in dep_group.split(",") if d.strip()]
         for dep in deps:
@@ -68,19 +82,6 @@ def main() -> int:
     if missing_product_waves:
         errors.append(f"product work items missing from wave schedule: {sorted(missing_product_waves)}")
 
-    if errors:
-        for error in errors:
-            print(f"ERROR: {error}")
-        return 1
-
-    locks = text("spec/architecture-lock.md")
-    architecture = text("spec/architecture.md")
-    agents = text("AGENTS.md")
-    handoff = text("docs/tech-lead/SHARENET-ORCHESTRATOR-HANDOFF.md")
-    current = text("spec/architect/current-state.yaml")
-    items = text("spec/work-items.yaml")
-    product_plan = text("spec/product-console-plan.yaml")
-    roadmap = text("spec/roadmap.yaml")
 
     for i in range(1, 26):
         lock_id = f"L{i:03d}"

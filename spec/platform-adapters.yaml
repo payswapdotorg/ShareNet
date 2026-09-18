@@ -1,0 +1,115 @@
+version: 1
+program: ShareNet
+status: NORMATIVE_POST_CLOSURE_PRODUCTIZATION
+purpose: >
+  Define the platform-adapter boundary and truthful capability model for
+  web, desktop, and mobile hosts. Protocol semantics remain in reference/.
+invariants:
+  - platform code is an adapter; it never defines wire semantics
+  - capability advertisement is runtime-derived and fail-closed
+  - a hosted API is not a data-plane gateway or mesh transport
+  - user participation inside a third-party app requires an embedded SDK/adapter
+  - web cannot provide system-wide Internet tunneling, raw radio access, or reliable background relay
+  - native platforms are required for offline/no-Internet device participation
+  - no platform may advertise a capability the adapter cannot actually execute
+platforms:
+  web:
+    role: experience-and-embedded-app-adapter
+    can:
+      - hosted-api-client
+      - user-session
+      - connection-status
+      - developer-portal
+      - foreground-content-participation
+    cannot:
+      - system-traffic-tunnel
+      - raw-tun
+      - native-radio-peer-discovery
+      - reliable-background-relay
+      - internet-gateway
+    offline_rule: >
+      A cached/PWA shell may open without Internet, but it cannot bootstrap
+      mesh connectivity by itself. It can operate against a locally reachable
+      native ShareNet node if one exists.
+  android:
+    role: native-data-plane-and-experience-adapter
+    can:
+      - system-traffic-tunnel
+      - nearby-peer-transport
+      - wifi-aware-transport
+      - embedded-app-participation
+      - foreground-background-managed-runtime
+    conditional:
+      - mesh-relay
+      - internet-gateway
+    restrictions: >
+      Advertise only capabilities actually supported by the installed adapter,
+      OS lifecycle, permissions and verified runtime path.
+  ios:
+    role: native-endpoint-and-experience-adapter
+    can:
+      - embedded-app-participation
+      - system-traffic-tunnel
+      - network-framework-peer-transport
+    cannot_by_default:
+      - internet-gateway
+      - reliable-community-relay
+    restrictions: >
+      Network Extension entitlement and Apple platform rules gate system
+      networking; Apple-only adapter verification remains a recorded gap.
+  desktop:
+    role: native-data-plane-and-experience-adapter
+    variants: [linux, macos, windows]
+    can:
+      - embedded-app-participation
+      - endpoint
+      - local-control
+    conditional:
+      - mesh-relay
+      - internet-gateway
+      - community-relay
+    restrictions: >
+      Capability comes from the concrete desktop adapter and OS privileges.
+      Linux is the reference gateway target.
+adapter_contract:
+  identity:
+    - provision_node_identity
+    - revoke_local_identity
+    - get_public_identity_fingerprint
+  participation:
+    - request_capabilities
+    - observe_capabilities
+    - enable_participation
+    - disable_participation
+  connectivity:
+    - request_live_session
+    - observe_connection
+    - disconnect
+  topology:
+    - discover
+    - observe_path
+  transfer:
+    - publish
+    - fetch
+    - queue
+    - observe_transfer
+  contribution:
+    - observe_contribution
+    - observe_points
+    - consume_perk
+  diagnostics:
+    - health
+    - evidence
+    - export_evidence
+architecture:
+  protocol_core: reference/
+  platform_runtime: transport/ + platform-specific adapter packages
+  host_app_sdk: sdk/
+  developer_api: developer-api/
+  console: console/
+  console_api: console-api/
+  rule: >
+    Host applications call the SDK contract. The SDK selects the platform
+    adapter. The adapter talks to the node runtime. The node runtime talks to
+    protocol/transport/ADCOS seams. No host application directly imports
+    protocol internals.

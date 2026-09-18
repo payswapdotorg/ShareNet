@@ -32,3 +32,7 @@ See:
 - `spec/dependency-graph.md`
 - `docs/tech-lead/SHARENET-TECH-LEAD-HANDOFF.md`
 - `simulation/results.md`
+
+## Productization / user console
+
+The frozen protocol/runtime program is now being surfaced through a post-closure user productization layer. The source-of-truth plan is spec/product-console-plan.yaml, with the Tech Lead handoff in docs/tech-lead/SHARENET-CONSOLE-IMPLEMENTATION-HANDOFF.md, the journey simulation in docs/simulation/SHARENET-USER-JOURNEY-SIMULATION.md, and the free-tier deployment plan in docs/deployment/SHARENET-FREE-TIER-DEPLOYMENT-PLAN.md.

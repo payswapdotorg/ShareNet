@@ -1786,3 +1786,27 @@ untouched by the closure).
   operator-hardware legs with recorded runbooks). Run 1's death remains
   honestly recorded above (harness defect, fixed by R10-006 at 660e819,
   never a product failure).
+
+## R10-003 certificate precision amendment (2026-09-18, second independent re-verification)
+
+- A post-commit independent re-derivation (session resumed after context
+  exhaustion; raw log only, neither the committed record nor the watchdog
+  evidence trusted) reproduced **every digit** of the record above: 1440
+  contiguous CYCLE DONE lines (cycles numbered 0..1439), 1440 RESTART lines,
+  0 panics / 0 ENDURANCE_ERROR inside the window, 2 node ids + 1 identity
+  throughout, SESSION ordinals A 220→939 / B 221→940, RSS first/max
+  A 4372→5792 / B 4504→6272 (growth 1420 / 1768 KB; the stricter max−min
+  reading is 2652 / 3120 KB — both 2–5 % of the 64 MB bound).
+- **Window definition made explicit**: the certified run-2 window begins at
+  the log's LAST `ENDURANCE_BEGIN` (02:41 UTC launch, pid 27171). A first
+  02:40 re-arm attempt immediately prior completed exactly one cycle
+  (SESSION B 220 — the journal continuation step) and exited silently with
+  no panic line; its single cycle is not part of the 1440. The re-arm
+  record's "ordinals continued 219→220+" above already reflects this;
+  this amendment names the aborted attempt explicitly so the window
+  boundary is reproducible by any future auditor.
+- **Watchdog display artifact (cosmetic)**: the captured evidence summary
+  reads `cycles_done: 1439` because the watchdog's window heuristic
+  ("after last CYCLE 1 BEGIN") excluded the final harness's CYCLE 0.
+  The DONE-line detection and the operator notification were correct;
+  only the internal progress counter was off by one. Raw-log truth: 1440.

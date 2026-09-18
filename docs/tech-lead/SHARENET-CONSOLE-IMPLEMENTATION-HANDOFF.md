@@ -156,3 +156,188 @@ A productization item is complete only when:
 - browser E2E covers the journey;
 - fresh pushed-HEAD audit passes.
 
+## New architectural requirement: platform adapters
+
+The platform layer is now explicitly adapter-driven.
+
+The product contract is:
+
+`Host App -> ShareNet Embedded SDK -> Platform Adapter -> Node Agent/Runtime -> existing ShareNet protocol`
+
+The hosted console is itself a web experience/control adapter. It is not the data-plane runtime.
+
+### Web
+
+Use the web adapter for:
+
+- consumer console;
+- developer portal;
+- host-app web integration;
+- foreground content/application sessions;
+- status, diagnostics and evidence.
+
+Do NOT advertise web as a standalone offline mesh node. A cached/PWA shell can open without Internet, but without a locally reachable native ShareNet runtime it cannot obtain Wi-Fi/BLE/Wi-Fi Aware/TUN capabilities or provide reliable background relay.
+
+### Native
+
+Android, iOS, Linux, macOS and Windows implementations are platform adapters around the same Embedded SDK contract. Their advertised capabilities must be runtime-derived and intersected with:
+
+`developer scopes ∩ user consent ∩ platform capability ∩ runtime policy`
+
+The adapter must fail closed on unsupported capabilities.
+
+## New architectural requirement: embedded third-party participation
+
+Third-party applications are now a first-class ShareNet integration surface.
+
+The user does **not** need a separate ShareNet app when the host application embeds the SDK.
+
+There are two distinct developer surfaces:
+
+### Hosted Developer API
+
+Owns:
+- app registration;
+- environments;
+- credentials;
+- scopes;
+- user authorization/session exchange;
+- device enrollment;
+- host-app/node binding;
+- webhook registration and signed events;
+- application-level session APIs;
+- quotas/rate limits;
+- evidence references.
+
+It does NOT own:
+- node private keys;
+- route/circuit authority;
+- raw packet forwarding;
+- ConnectivityContract authority;
+- durable node state.
+
+### Embedded SDK
+
+Owns local:
+- node lifecycle;
+- identity enrollment;
+- capability negotiation;
+- connectivity requests;
+- transfer requests;
+- contribution participation;
+- status/events;
+- local/offline behavior.
+
+## Developer/frontend journey requirements
+
+The implementation must cover all of these as complete end-to-end journeys:
+
+### DEV-001 — Developer integration
+
+Developer Portal -> Create app -> Choose scopes -> Create environment -> credentials -> SDK quickstart -> webhook verification -> first test session.
+
+### DEV-002 — User opts in inside an existing app
+
+Host App -> “Use ShareNet” -> explain participation -> user consent -> capability preview -> device enrollment -> active.
+
+There must be no ShareNet-app installation requirement.
+
+### DEV-003 — Host app requests resilient connectivity
+
+Host App -> ShareNetConnectControl -> capability check -> discovery -> gateway selection -> live circuit -> Connected.
+
+The host app sees human-level state, not route/circuit construction internals.
+
+### DEV-004 — Host app survives loss of normal Internet
+
+Native Host App -> local runtime -> existing peer/gateway/DTN capabilities -> delivery/recovery.
+
+The cloud Developer API is optional once local authorization/runtime state exists.
+
+### DEV-005 — User contributes from the host app
+
+Host App -> ParticipationConsent -> platform capability check -> sharing enabled -> verified useful work -> contribution receipt -> Civic Points.
+
+No self-reporting.
+
+### DEV-006 — Host app observes recovery
+
+Host App -> Degraded -> Recovering -> Gateway changed -> Recovered.
+
+Events are emitted by the node runtime, not synthesized by UI.
+
+### DEV-007 — Developer observes its users
+
+Developer Portal -> sessions -> status -> signed event/webhook -> evidence reference.
+
+The developer gets application-scoped observability, not private node secrets.
+
+### DEV-008 — User revokes participation
+
+Host App -> disable/revoke -> session/device grant revoked -> runtime stops the relevant participation -> state becomes disabled.
+
+### DEV-009 — Web offline limitation
+
+Cached Web UI -> local-node discovery only if a native runtime is reachable -> otherwise explain that native adapter participation is required.
+
+### DEV-010 — Backend/service participation
+
+Developer backend -> Developer API -> provision/authorize server runtime -> service session -> application-level events.
+
+A cloud API call alone is never treated as a substitute for a ShareNet-compatible data-plane runtime.
+
+## Reference implementation source
+
+The older design repository was explicitly audited:
+
+https://github.com/pectoraux/ShareNet
+
+Useful patterns to preserve conceptually:
+- the `src/lib/sharenet/*` UI adapter boundary;
+- Conformance-style network/path/evidence UX;
+- `android/sharenet-sdk` as the intent for a single public application entry point.
+
+Do not copy its explicit prototype limitations into the new implementation. Its current UI uses a mock adapter, and its Android SDK factory contains stub/in-memory production wiring. Those are design-history inputs only, not implementation truth.
+
+## Worker ownership
+
+### W1 — Console + host-app UX
+
+Owns:
+- console;
+- developer portal UI;
+- embedded host-app UI components;
+- consent/capability screens;
+- connection/recovery/transfer/contribution UI;
+- accessibility;
+- browser E2E.
+
+### W2 — Runtime + Developer API + SDK contract
+
+Owns:
+- node-agent;
+- normalized read model;
+- command API;
+- realtime events;
+- developer application registry/auth/scopes;
+- user/device enrollment;
+- host-app/node binding;
+- revocation;
+- webhooks;
+- common Embedded SDK contract;
+- capability intersection enforcement;
+- server-side developer participation surface.
+
+### W3 — Platform adapters + integration + deployment
+
+Owns:
+- web adapter restrictions;
+- native adapter conformity harness;
+- Android/iOS/desktop adapter integration against the common SDK;
+- deterministic fixtures;
+- cross-platform E2E;
+- Vercel/Neon/free-tier deployment;
+- SDK quickstarts;
+- production demo.
+
+No worker may change frozen protocol semantics to make an adapter easier to implement.

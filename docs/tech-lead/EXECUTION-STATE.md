@@ -1810,3 +1810,43 @@ untouched by the closure).
   ("after last CYCLE 1 BEGIN") excluded the final harness's CYCLE 0.
   The DONE-line detection and the operator notification were correct;
   only the internal progress counter was off by one. Raw-log truth: 1440.
+
+## C2-005 — Developer API app registry, auth, scopes and webhook model — COMPLETE (Wave P1)
+
+- Implemented on `work/c2-005-developer-api-registry` (worker commit `cf2d511`
+  on base `origin/main = d773c23`), merged to `main` at `84a0f4a`, pushed.
+  13 new files, 6399 insertions, all under `developer-api/`; zero existing
+  files modified (git-verified: `git status` shows only the untracked crate).
+- Delivered by W2 worker session `sharenet-w2-c2005` (chat `71ca4b7b`,
+  attempt-6) through the documented night-grind: ~30+ nudge-revive cycles
+  under sustained server capacity pressure; artifacts captured via the
+  workspace Download button (insurance capture after the workspaces list
+  API went http-404) into
+  `/home/z/replay2/download/c2-005-workspace-capture/` (commits.txt,
+  status.txt, work.diff 264 KB, worklog.md).
+- The crate (`sharenet-developer-api`, pure model): registry-issued ids
+  (deterministic SHA-256 seed/counter mint, lower-base32, fail-closed
+  parse); app registry with terminal cascading revocation; Ed25519
+  public-key credentials with bounded rotation overlap and single-use
+  challenge auth; the 17-scope taxonomy with total decide_scope (11 typed
+  denials); webhook registration + signed events
+  (`sharenet-webhook-hmacsha256-v1`: HMAC-SHA-256 over the fixed-order
+  canonical envelope, ±300 s window, replay guard surviving snapshot
+  restore); fixed-window quota policy model; JSON snapshot round-trip
+  with fail-closed restore.
+- Architecture boundary: zero `sharenet-*` dependencies (lockfile proof),
+  no protocol-core imports, `#![forbid(unsafe_code)]`, no I/O / wall
+  clock / randomness (deployment/serving is C3-005 per the plan).
+- Tech Lead independent verification (2026-09-19, fresh clone at d773c23 +
+  patch + fresh-HEAD audit after merge): `work.diff` applies cleanly;
+  architecture_check.py PASS at HEAD; developer-api 79/79 (64 unit +
+  12 adversarial + 3 integration) — worker's claim reproduced exactly;
+  spot-checks admission 25/25 and economics 74/74 — exact match to the
+  worker's recorded sweep (workspace-total 979/979, worker-live-verified
+  with a disk-full incident honestly recorded and re-verified clean).
+- Worker honesty notes accepted: no push (no credentials by design),
+  no spec/doc/tool edits, no enforcement callers (C2-002/C2-008/C2-010
+  build them), no OAuth2.1/PKCE (later hosted-auth items), no new
+  architecture locks proposed.
+- Wave P1 sequential doctrine state: C2-005 DONE; C2-001 and C1-001
+  remain (dispatch queue).
